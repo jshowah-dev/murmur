@@ -1,6 +1,6 @@
 use crate::config::config_dir;
 use crate::phonetic;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use similar::{ChangeTag, TextDiff};
 use std::path::PathBuf;
@@ -22,6 +22,12 @@ fn default_true() -> bool {
 pub struct Dictionary {
     #[serde(rename = "term", default)]
     pub terms: Vec<Term>,
+    #[serde(skip, default = "default_loaded_cleanly")]
+    loaded_cleanly: bool,
+}
+
+fn default_loaded_cleanly() -> bool {
+    true
 }
 
 const SEED: &[(&str, &[&str])] = &[
@@ -62,7 +68,13 @@ fn strip_suffix(core: &str) -> (&str, &str) {
 
 impl Dictionary {
     pub fn from_terms(terms: Vec<Term>) -> Self {
-        Dictionary { terms }
+        Dictionary { terms, loaded_cleanly: true }
+    }
+
+    /// An empty dictionary marked as not loaded cleanly; used as a fallback when the real
+    /// dictionary failed to load so it can never overwrite the on-disk file.
+    pub fn empty_unloaded() -> Self {
+        Dictionary { terms: vec![], loaded_cleanly: false }
     }
 
     pub fn seed() -> Self {
@@ -93,8 +105,17 @@ impl Dictionary {
     }
 
     pub fn save(&self) -> Result<()> {
+        if !self.loaded_cleanly {
+            return Err(anyhow!("dictionary was not loaded cleanly; fix dictionary.toml first"));
+        }
         std::fs::create_dir_all(config_dir())?;
-        std::fs::write(path(), self.to_toml()?).context("write dictionary.toml")
+        let p = path();
+        if p.exists() {
+            std::fs::copy(&p, p.with_extension("toml.bak")).context("backup dictionary.toml")?;
+        }
+        let tmp = p.with_extension("toml.tmp");
+        std::fs::write(&tmp, self.to_toml()?).context("write dictionary.toml.tmp")?;
+        std::fs::rename(&tmp, &p).context("rename dictionary.toml.tmp")
     }
 
     /// All (phrase, written) pairs, longest phrase first, lowercased phrase.
@@ -187,6 +208,8 @@ impl Dictionary {
                 let n = new.join(" ");
                 let (_, o_core, _) = split_token(&o);
                 let (_, n_core, _) = split_token(&n);
+                let (o_core, _) = strip_suffix(o_core);
+                let (n_core, _) = strip_suffix(n_core);
                 if !o_core.is_empty() && !n_core.is_empty() && o_core.to_ascii_lowercase() != n_core.to_ascii_lowercase() && phonetic::similar(o_core, n_core) {
                     let spoken = o_core.to_ascii_lowercase();
                     if let Some(t) = this.terms.iter_mut().find(|t| t.written == n_core) {
@@ -272,6 +295,16 @@ mod tests {
         assert_eq!(learned[0].written, "HAWB");
         assert_eq!(learned[0].spoken, vec!["hob"]);
         assert_eq!(d.apply("hob"), "HAWB");
+    }
+
+    #[test]
+    fn learn_plural_strips_suffix() {
+        let mut d = Dictionary::from_terms(vec![]);
+        let learned = d.learn("two hobs", "two HAWBs");
+        assert_eq!(learned.len(), 1);
+        assert_eq!(learned[0].written, "HAWB");
+        assert!(learned[0].spoken.contains(&"hob".to_string()));
+        assert_eq!(d.apply("hobs"), "HAWBs");
     }
 
     #[test]

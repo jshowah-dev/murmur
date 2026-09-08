@@ -1,4 +1,4 @@
-use crate::history::InjectRecord;
+use crate::history::{InjectMethod, InjectRecord};
 use anyhow::{anyhow, Result};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -134,9 +134,8 @@ fn type_unicode(text: &str) {
     }
 }
 
-fn record(text: &str, hwnd: isize) -> InjectRecord {
-    let _ = text;
-    InjectRecord { hwnd, at: Instant::now() }
+fn record(hwnd: isize, method: InjectMethod) -> InjectRecord {
+    InjectRecord { hwnd, at: Instant::now(), method }
 }
 
 /// Save clipboard text, set ours, Ctrl+V, restore. Falls back to unicode typing when the clipboard is unavailable.
@@ -156,7 +155,7 @@ pub fn paste(text: &str) -> Result<InjectRecord> {
             log::warn!("{e}; falling back to unicode typing");
             let hwnd = foreground_hwnd();
             type_unicode(text);
-            return Ok(record(text, hwnd));
+            return Ok(record(hwnd, InjectMethod::Typed));
         }
     };
     sleep(Duration::from_millis(30));
@@ -168,7 +167,7 @@ pub fn paste(text: &str) -> Result<InjectRecord> {
             let _ = write_text_locked(&prev);
         }
     }
-    Ok(record(text, hwnd))
+    Ok(record(hwnd, InjectMethod::Paste))
 }
 
 /// Undo the previous paste in the target app, then paste `text`.

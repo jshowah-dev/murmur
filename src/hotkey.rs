@@ -23,23 +23,28 @@ pub fn spawn(ptt_vk: u16, tx: Sender<HotkeyEvent>) -> JoinHandle<()> {
     thread::Builder::new()
         .name("hotkey".into())
         .spawn(move || loop {
-            while !down(ptt_vk) {
-                sleep(POLL);
-            }
-            let shift = down(VK_SHIFT.0);
-            let t0 = Instant::now();
-            let mut sent_press = false;
-            while down(ptt_vk) {
-                if !shift && !sent_press && t0.elapsed() >= MIN_HOLD {
-                    let _ = tx.send(HotkeyEvent::Press);
-                    sent_press = true;
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                while !down(ptt_vk) {
+                    sleep(POLL);
                 }
-                sleep(POLL);
-            }
-            if shift {
-                let _ = tx.send(HotkeyEvent::FixLast);
-            } else if sent_press {
-                let _ = tx.send(HotkeyEvent::Release);
+                let shift = down(VK_SHIFT.0);
+                let t0 = Instant::now();
+                let mut sent_press = false;
+                while down(ptt_vk) {
+                    if !shift && !sent_press && t0.elapsed() >= MIN_HOLD {
+                        let _ = tx.send(HotkeyEvent::Press);
+                        sent_press = true;
+                    }
+                    sleep(POLL);
+                }
+                if shift {
+                    let _ = tx.send(HotkeyEvent::FixLast);
+                } else if sent_press {
+                    let _ = tx.send(HotkeyEvent::Release);
+                }
+            }));
+            if result.is_err() {
+                log::error!("hotkey thread panicked; restarting");
             }
         })
         .expect("spawn hotkey thread")

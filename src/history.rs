@@ -1,10 +1,17 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InjectMethod {
+    Paste,
+    Typed,
+}
+
 #[derive(Debug, Clone)]
 pub struct InjectRecord {
     pub hwnd: isize,
     pub at: Instant,
+    pub method: InjectMethod,
 }
 
 #[derive(Debug, Clone)]

@@ -27,10 +27,21 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tray::{Tray, TrayEvent};
 
+const MAX_LOG_BYTES: u64 = 1024 * 1024;
+
 fn init_logging() {
     let dir = config::config_dir();
     let _ = std::fs::create_dir_all(&dir);
-    if let Ok(f) = std::fs::File::create(dir.join("murmur.log")) {
+    let path = dir.join("murmur.log");
+    let truncate = std::fs::metadata(&path).map(|m| m.len() > MAX_LOG_BYTES).unwrap_or(false);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true);
+    if truncate {
+        opts.write(true).truncate(true);
+    } else {
+        opts.append(true);
+    }
+    if let Ok(f) = opts.open(&path) {
         let _ = simplelog::WriteLogger::init(log::LevelFilter::Info, simplelog::Config::default(), f);
     }
 }
@@ -55,7 +66,7 @@ fn main() -> Result<()> {
         Err(e) => {
             log::error!("{e:#}");
             startup_errors.push(format!("dictionary: {e}"));
-            Dictionary::from_terms(vec![])
+            Dictionary::empty_unloaded()
         }
     }));
     let mut history = History::new(10);
@@ -93,7 +104,10 @@ fn main() -> Result<()> {
                     paused = !paused;
                     tray.set_paused(paused);
                 }
-                TrayEvent::FixLast => correction::fix_last(&mut history, &dict, &tray),
+                TrayEvent::FixLast => {
+                    correction::fix_last(&mut history, &dict, &tray);
+                    while hk_rx.try_recv().is_ok() {}
+                }
                 TrayEvent::OpenDictionary => open_path(&config::config_dir().join("dictionary.toml")),
                 TrayEvent::OpenConfigDir => open_path(&config::config_dir()),
                 TrayEvent::Quit => break,
@@ -121,7 +135,10 @@ fn main() -> Result<()> {
                     }
                     let _ = cmd_tx.send(PipelineCmd::Stop);
                 }
-                HotkeyEvent::FixLast => correction::fix_last(&mut history, &dict, &tray),
+                HotkeyEvent::FixLast => {
+                    correction::fix_last(&mut history, &dict, &tray);
+                    while hk_rx.try_recv().is_ok() {}
+                }
                 _ => {}
             }
         }

@@ -89,6 +89,7 @@ impl State {
         if !self.recording {
             return;
         }
+        let stop_start = Instant::now();
         self.recording = false;
         let _ = self.tx.send(PipelineMsg::Processing);
         let segs = self.vad.as_mut().map(|v| v.flush()).unwrap_or_default();
@@ -111,7 +112,7 @@ impl State {
                 None
             }
         };
-        log::info!("dictated {} chars", cleaned.chars().count());
+        log::info!("dictated {} chars, release_to_text_ms={}", cleaned.chars().count(), stop_start.elapsed().as_millis());
         let _ = self.tx.send(PipelineMsg::Done(Entry { raw, cleaned, inject }));
     }
 

@@ -1,5 +1,5 @@
 use crate::dictionary::Dictionary;
-use crate::history::History;
+use crate::history::{History, InjectMethod};
 use crate::inject;
 use crate::tray::Tray;
 use std::sync::atomic::{AtomicIsize, Ordering};
@@ -129,6 +129,16 @@ pub fn fix_last(history: &mut History, dict: &Arc<Mutex<Dictionary>>, tray: &Tra
     }
     let learned = {
         let mut d = dict.lock().unwrap_or_else(|e| e.into_inner());
+        match Dictionary::load_or_seed() {
+            Ok(fresh) => *d = fresh,
+            Err(e) => {
+                log::error!("reload dictionary: {e}");
+                tray.notify("Dictionary", "not loaded — fix dictionary.toml before corrections are saved");
+                drop(d);
+                paste_or_copy_correction(history, tray, &last, target_hwnd, edited);
+                return;
+            }
+        }
         let l = d.learn(&last.cleaned, &edited);
         if !l.is_empty() {
             if let Err(e) = d.save() {
@@ -141,10 +151,24 @@ pub fn fix_last(history: &mut History, dict: &Arc<Mutex<Dictionary>>, tray: &Tra
         let summary = learned.iter().map(|t| format!("{} → {}", t.spoken.last().cloned().unwrap_or_default(), t.written)).collect::<Vec<_>>().join(", ");
         tray.notify("Learned", &summary);
     }
-    let fresh = last.inject.as_ref().map(|r| r.hwnd == target_hwnd && r.at.elapsed() < Duration::from_secs(60)).unwrap_or(false);
+    paste_or_copy_correction(history, tray, &last, target_hwnd, edited);
+}
+
+fn paste_or_copy_correction(history: &mut History, tray: &Tray, last: &crate::history::Entry, target_hwnd: isize, edited: String) {
+    let fresh = last
+        .inject
+        .as_ref()
+        .map(|r| r.hwnd == target_hwnd && r.at.elapsed() < Duration::from_secs(60) && r.method == InjectMethod::Paste)
+        .unwrap_or(false);
     if fresh {
         // give focus back to the target before undo+paste
         std::thread::sleep(Duration::from_millis(150));
+        if inject::foreground_hwnd() != target_hwnd {
+            let _ = inject::set_clipboard_text(&edited);
+            tray.notify("Corrected text copied", "target window changed; paste it yourself");
+            history.replace_last_cleaned(edited);
+            return;
+        }
         match inject::undo_then_paste(&edited) {
             Ok(_) => history.replace_last_cleaned(edited),
             Err(e) => tray.notify("Replace failed", &e.to_string()),
