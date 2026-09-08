@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::config::config_dir;
 use crate::phonetic;
 use anyhow::{Context, Result};

@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use crossbeam_channel::Sender;
 use std::thread::{self, sleep, JoinHandle};
 use std::time::{Duration, Instant};

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use rphonetic::{DoubleMetaphone, Encoder};
 use std::collections::HashSet;
 use std::sync::OnceLock;

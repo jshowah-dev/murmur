@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use anyhow::{anyhow, Result};
 use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig};
 use std::path::Path;

@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use anyhow::Result;
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};

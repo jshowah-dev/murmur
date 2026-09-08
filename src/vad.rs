@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use anyhow::{anyhow, Result};
 use sherpa_onnx::{VadModelConfig, VoiceActivityDetector};
 use std::path::Path;

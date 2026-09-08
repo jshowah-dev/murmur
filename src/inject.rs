@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use crate::history::InjectRecord;
 use anyhow::{anyhow, Result};
 use std::thread::sleep;
