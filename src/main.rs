@@ -1,4 +1,5 @@
 mod config;
+mod dictionary;
 mod phonetic;
 
 fn main() {
