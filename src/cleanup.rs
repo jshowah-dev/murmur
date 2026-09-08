@@ -51,14 +51,19 @@ fn strip_fillers(text: &str, fillers: &[String]) -> String {
     out.join(" ")
 }
 
+/// Lowercased token with STT punctuation stripped, so "New" / "line." match command words.
+fn bare(tok: &str) -> String {
+    tok.trim_matches(|c: char| !c.is_alphanumeric()).to_ascii_lowercase()
+}
+
 fn apply_commands(text: &str) -> String {
     let tokens: Vec<&str> = text.split(' ').collect();
     let mut out: Vec<String> = Vec::new();
     let mut i = 0;
     while i < tokens.len() {
-        let cur = tokens[i].to_ascii_lowercase();
+        let cur = bare(tokens[i]);
         if cur == "new" && i + 1 < tokens.len() {
-            let next = tokens[i + 1].to_ascii_lowercase();
+            let next = bare(tokens[i + 1]);
             if next == "line" {
                 out.push("\n".to_string());
                 i += 2;
@@ -146,6 +151,15 @@ mod tests {
     fn spoken_commands() {
         let (d, c) = env();
         assert_eq!(clean("first line new line second line new paragraph third", &d, &c), "First line\nSecond line\n\nThird");
+    }
+
+    #[test]
+    fn spoken_commands_with_stt_punctuation() {
+        let (d, c) = env();
+        // Parakeet punctuates: command words arrive as "New line." / "new paragraph,"
+        assert_eq!(clean("The HAWB is late. New line. Send it to Delgado.", &d, &c), "The HAWB is late.\nSend it to Delgado.");
+        assert_eq!(clean("first, new paragraph, second", &d, &c), "First,\n\nSecond");
+        assert_eq!(clean("I'm in a comment new line. Next", &d, &c), "I'm in a comment\nNext");
     }
 
     #[test]
