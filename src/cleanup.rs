@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::config::Config;
 use crate::dictionary::Dictionary;
 
@@ -52,12 +54,36 @@ fn strip_fillers(text: &str, fillers: &[String]) -> String {
 }
 
 fn apply_commands(text: &str) -> String {
-    let mut s = text.to_string();
-    for (cmd, rep) in [(" new paragraph ", "\n\n"), (" new line ", "\n")] {
-        let padded = format!(" {} ", s.trim());
-        s = padded.replace(cmd, rep).trim().to_string();
+    let tokens: Vec<&str> = text.split(' ').collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        let cur = tokens[i].to_ascii_lowercase();
+        if cur == "new" && i + 1 < tokens.len() {
+            let next = tokens[i + 1].to_ascii_lowercase();
+            if next == "line" {
+                out.push("\n".to_string());
+                i += 2;
+                continue;
+            } else if next == "paragraph" {
+                out.push("\n\n".to_string());
+                i += 2;
+                continue;
+            }
+        }
+        out.push(tokens[i].to_string());
+        i += 1;
     }
-    s
+    let mut result = String::new();
+    for (idx, tok) in out.iter().enumerate() {
+        if idx == 0 || tok.starts_with('\n') || result.ends_with('\n') {
+            result.push_str(tok);
+        } else {
+            result.push(' ');
+            result.push_str(tok);
+        }
+    }
+    result
 }
 
 fn tidy(text: &str) -> String {
@@ -122,6 +148,12 @@ mod tests {
     fn spoken_commands() {
         let (d, c) = env();
         assert_eq!(clean("first line new line second line new paragraph third", &d, &c), "First line\nSecond line\n\nThird");
+    }
+
+    #[test]
+    fn spoken_commands_consecutive() {
+        let (d, c) = env();
+        assert_eq!(clean("a new line new line b", &d, &c), "A\n\nB");
     }
 
     #[test]
