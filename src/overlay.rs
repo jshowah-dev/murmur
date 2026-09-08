@@ -1,16 +1,19 @@
 #![allow(dead_code)]
 use anyhow::{anyhow, Result};
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+use windows::Win32::Foundation::{
+    COLORREF, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+};
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, CreateRoundRectRgn, CreateSolidBrush, DeleteDC, DeleteObject, FillRect, FillRgn,
     GetDC, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::Foundation::GetLastError;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow, GetWindowRect, PeekMessageW, RegisterClassW,
     SetWindowPos, ShowWindow, TranslateMessage, UpdateLayeredWindow, HWND_TOPMOST, MSG, PM_REMOVE, SWP_NOACTIVATE,
-    SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA, WM_QUIT, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA, WM_QUIT, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::Win32::Graphics::Gdi::{MonitorFromWindow, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST};
@@ -52,7 +55,7 @@ impl Overlay {
                 lpszClassName: PCWSTR(class.as_ptr()),
                 ..Default::default()
             };
-            if RegisterClassW(&wc) == 0 {
+            if RegisterClassW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
                 return Err(anyhow!("RegisterClassW"));
             }
             let hwnd = CreateWindowExW(
@@ -97,6 +100,11 @@ impl Overlay {
             };
             let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
             let bmp: HBITMAP = CreateDIBSection(Some(mem), &bmi, DIB_RGB_COLORS, &mut bits, None, 0).unwrap_or_default();
+            if bmp.is_invalid() || bits.is_null() {
+                let _ = DeleteDC(mem);
+                ReleaseDC(None, screen);
+                return;
+            }
             let old = SelectObject(mem, bmp.into());
 
             // premultiplied BGRA: fully transparent background
@@ -174,7 +182,7 @@ impl Overlay {
                 _ => {
                     self.paint();
                     if was_hidden {
-                        let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+                        let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
                         let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
                     }
                 }
