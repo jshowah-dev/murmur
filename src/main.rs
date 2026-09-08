@@ -9,6 +9,7 @@ mod overlay;
 mod phonetic;
 mod vad;
 mod stt;
+mod tray;
 
 fn main() {
     println!("murmur");
