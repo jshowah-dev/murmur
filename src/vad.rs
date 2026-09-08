@@ -15,6 +15,9 @@ pub struct Vad {
 
 impl Vad {
     pub fn new(model: &Path, min_silence_ms: u32) -> Result<Vad> {
+        if let Err(e) = std::fs::metadata(model) {
+            return Err(anyhow!("VAD model unreadable: {}: {e}", model.display()));
+        }
         let mut config = VadModelConfig::default();
         config.silero_vad.model = Some(model.to_string_lossy().into_owned());
         config.silero_vad.threshold = 0.5;

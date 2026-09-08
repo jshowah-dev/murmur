@@ -85,7 +85,9 @@ fn main() -> Result<()> {
     let mut paused = false;
     let mut listening = false;
 
-    if !cfg.model_dir_path().join("encoder.int8.onnx").exists() {
+    let encoder = cfg.model_dir_path().join("encoder.int8.onnx");
+    if let Err(e) = std::fs::metadata(&encoder) {
+        log::error!("model check failed for {}: {e} (LOCALAPPDATA={:?})", encoder.display(), std::env::var("LOCALAPPDATA"));
         tray.notify("Model missing", "run setup-model.cmd");
     }
     for msg in &startup_errors {
