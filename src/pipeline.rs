@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 pub enum PipelineCmd {
     Start,
     Stop,
+    Abort,
     Audio(Vec<f32>),
     Shutdown,
 }
@@ -116,6 +117,17 @@ impl State {
         let _ = self.tx.send(PipelineMsg::Done(Entry { raw, cleaned, inject }));
     }
 
+    fn abort(&mut self) {
+        self.recording = false;
+        self.parts.clear();
+        self.raw_parts.clear();
+        self.speech_samples = 0;
+        if let Some(v) = self.vad.as_mut() {
+            v.reset();
+        }
+        let _ = self.tx.send(PipelineMsg::Done(Entry { raw: String::new(), cleaned: String::new(), inject: None }));
+    }
+
     fn maybe_unload(&mut self) {
         let mins = self.cfg.idle_unload_minutes;
         if mins > 0 && !self.recording && self.rec.is_some() && self.last_used.elapsed() > Duration::from_secs(mins * 60) {
@@ -155,6 +167,7 @@ fn run(st: &mut State, rx: &Receiver<PipelineCmd>) {
             Ok(PipelineCmd::Start) => st.start(),
             Ok(PipelineCmd::Audio(c)) => st.audio(c),
             Ok(PipelineCmd::Stop) => st.stop(),
+            Ok(PipelineCmd::Abort) => st.abort(),
             Ok(PipelineCmd::Shutdown) | Err(RecvTimeoutError::Disconnected) => return,
             Err(RecvTimeoutError::Timeout) => st.maybe_unload(),
         }

@@ -83,6 +83,7 @@ fn main() -> Result<()> {
     let tray = Tray::create()?;
     let mut capture: Option<audio::Capture> = None;
     let mut paused = false;
+    let mut listening = false;
 
     if !cfg.model_dir_path().join("encoder.int8.onnx").exists() {
         tray.notify("Model missing", "run setup-model.cmd");
@@ -115,12 +116,11 @@ fn main() -> Result<()> {
         }
         while let Ok(ev) = hk_rx.try_recv() {
             match ev {
-                HotkeyEvent::Press if !paused => {
+                HotkeyEvent::Down if !paused => {
                     let _ = cmd_tx.send(PipelineCmd::Start);
                     match audio::Capture::start(audio_tx.clone()) {
                         Ok(c) => {
                             capture = Some(c);
-                            overlay.set(OverlayState::Listening(0.0));
                         }
                         Err(e) => {
                             tray.notify("Microphone", &e.to_string());
@@ -128,11 +128,24 @@ fn main() -> Result<()> {
                         }
                     }
                 }
-                HotkeyEvent::Release => {
-                    capture = None;
+                HotkeyEvent::Press => {
+                    listening = true;
+                    overlay.set(OverlayState::Listening(0.0));
+                }
+                HotkeyEvent::Cancel => {
+                    capture.take();
                     while let Ok(chunk) = audio_rx.try_recv() {
                         let _ = cmd_tx.send(PipelineCmd::Audio(chunk));
                     }
+                    listening = false;
+                    let _ = cmd_tx.send(PipelineCmd::Abort);
+                }
+                HotkeyEvent::Release => {
+                    capture.take();
+                    while let Ok(chunk) = audio_rx.try_recv() {
+                        let _ = cmd_tx.send(PipelineCmd::Audio(chunk));
+                    }
+                    listening = false;
                     let _ = cmd_tx.send(PipelineCmd::Stop);
                 }
                 HotkeyEvent::FixLast => {
@@ -144,7 +157,7 @@ fn main() -> Result<()> {
         }
         while let Ok(m) = msg_rx.try_recv() {
             match m {
-                PipelineMsg::Level(l) if capture.is_some() => overlay.set(OverlayState::Listening(l)),
+                PipelineMsg::Level(l) if listening => overlay.set(OverlayState::Listening(l)),
                 PipelineMsg::Level(_) => {}
                 PipelineMsg::Processing => overlay.set(OverlayState::Processing),
                 PipelineMsg::Done(e) => {
@@ -156,7 +169,8 @@ fn main() -> Result<()> {
                 }
                 PipelineMsg::Error(s) => {
                     overlay.set(OverlayState::Hidden);
-                    capture = None;
+                    capture.take();
+                    listening = false;
                     while let Ok(chunk) = audio_rx.try_recv() {
                         let _ = cmd_tx.send(PipelineCmd::Audio(chunk));
                     }
