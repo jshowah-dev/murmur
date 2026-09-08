@@ -1,8 +1,150 @@
 use crate::dictionary::Dictionary;
 use crate::history::History;
+use crate::inject;
 use crate::tray::Tray;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use windows::core::PCWSTR;
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, SetFocus, VK_CONTROL, VK_ESCAPE, VK_RETURN};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, GetWindowTextLengthW, GetWindowTextW,
+    PostQuitMessage, RegisterClassW, SendMessageW, SetWindowTextW, ShowWindow, TranslateMessage, BS_DEFPUSHBUTTON, ES_AUTOVSCROLL,
+    ES_MULTILINE, ES_WANTRETURN, MSG, SW_SHOW, WM_COMMAND, WM_DESTROY, WM_KEYDOWN, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD,
+    WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL, WM_SETFONT,
+};
+use windows::Win32::Graphics::Gdi::{GetStockObject, DEFAULT_GUI_FONT};
 
-pub fn fix_last(_history: &mut History, _dict: &Arc<Mutex<Dictionary>>, tray: &Tray) {
-    tray.notify("Fix last", "not implemented yet");
+const ID_OK: usize = 1;
+const ID_CANCEL: usize = 2;
+
+static mut RESULT: Option<String> = None;
+static mut EDIT: HWND = HWND(std::ptr::null_mut());
+
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+unsafe fn edit_text() -> String {
+    let len = GetWindowTextLengthW(EDIT) as usize;
+    let mut buf = vec![0u16; len + 1];
+    let n = GetWindowTextW(EDIT, &mut buf) as usize;
+    String::from_utf16_lossy(&buf[..n]).replace("\r\n", "\n")
+}
+
+unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    match msg {
+        WM_COMMAND => {
+            match (wp.0 & 0xFFFF) as usize {
+                ID_OK => {
+                    RESULT = Some(edit_text());
+                    let _ = DestroyWindow(hwnd);
+                }
+                ID_CANCEL => {
+                    let _ = DestroyWindow(hwnd);
+                }
+                _ => {}
+            }
+            LRESULT(0)
+        }
+        WM_DESTROY => {
+            PostQuitMessage(0);
+            LRESULT(0)
+        }
+        _ => DefWindowProcW(hwnd, msg, wp, lp),
+    }
+}
+
+/// Modal-ish edit dialog on the calling (main) thread. Returns the edited text, or None on cancel.
+fn show_dialog(initial: &str) -> Option<String> {
+    unsafe {
+        RESULT = None;
+        let hinst = GetModuleHandleW(None).ok()?;
+        let class = wide("MurmurFix");
+        let wc = WNDCLASSW { lpfnWndProc: Some(wndproc), hInstance: hinst.into(), lpszClassName: PCWSTR(class.as_ptr()), ..Default::default() };
+        let _ = RegisterClassW(&wc); // 0 on re-registration is fine
+        let hwnd = CreateWindowExW(
+            Default::default(), PCWSTR(class.as_ptr()), PCWSTR(wide("Murmur — fix last").as_ptr()),
+            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+            200, 200, 560, 300, None, None, Some(hinst.into()), None,
+        ).ok()?;
+        let font = GetStockObject(DEFAULT_GUI_FONT);
+        EDIT = CreateWindowExW(
+            Default::default(), PCWSTR(wide("EDIT").as_ptr()), PCWSTR::null(),
+            windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | WS_BORDER.0 | WS_VSCROLL.0 | WS_TABSTOP.0 | ES_MULTILINE as u32 | ES_AUTOVSCROLL as u32 | ES_WANTRETURN as u32),
+            10, 10, 525, 200, Some(hwnd), None, Some(hinst.into()), None,
+        ).ok()?;
+        let _ = SendMessageW(EDIT, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+        let _ = SetWindowTextW(EDIT, PCWSTR(wide(&initial.replace('\n', "\r\n")).as_ptr()));
+        for (label, id, x) in [("OK (Ctrl+Enter)", ID_OK, 330), ("Cancel (Esc)", ID_CANCEL, 440)] {
+            let b = CreateWindowExW(
+                Default::default(), PCWSTR(wide("BUTTON").as_ptr()), PCWSTR(wide(label).as_ptr()),
+                windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | if id == ID_OK { BS_DEFPUSHBUTTON as u32 } else { 0 }),
+                x, 220, 100, 28, Some(hwnd), Some(windows::Win32::UI::WindowsAndMessaging::HMENU(id as *mut _)), Some(hinst.into()), None,
+            ).ok()?;
+            let _ = SendMessageW(b, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+        }
+        let _ = ShowWindow(hwnd, SW_SHOW);
+        let _ = SetFocus(Some(EDIT));
+
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            if msg.message == WM_KEYDOWN {
+                let ctrl = (GetKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
+                if msg.wParam.0 as u16 == VK_RETURN.0 && ctrl {
+                    RESULT = Some(edit_text());
+                    let _ = DestroyWindow(hwnd);
+                    continue;
+                }
+                if msg.wParam.0 as u16 == VK_ESCAPE.0 {
+                    let _ = DestroyWindow(hwnd);
+                    continue;
+                }
+            }
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        RESULT.take()
+    }
+}
+
+pub fn fix_last(history: &mut History, dict: &Arc<Mutex<Dictionary>>, tray: &Tray) {
+    let Some(last) = history.last().cloned() else {
+        tray.notify("Fix last", "nothing to fix yet");
+        return;
+    };
+    let target_hwnd = inject::foreground_hwnd();
+    let Some(edited) = show_dialog(&last.cleaned) else { return };
+    let edited = edited.trim().to_string();
+    if edited == last.cleaned {
+        return;
+    }
+    let learned = {
+        let mut d = dict.lock().unwrap();
+        let l = d.learn(&last.cleaned, &edited);
+        if !l.is_empty() {
+            if let Err(e) = d.save() {
+                log::error!("save dictionary: {e}");
+            }
+        }
+        l
+    };
+    if !learned.is_empty() {
+        let summary = learned.iter().map(|t| format!("{} → {}", t.spoken.last().cloned().unwrap_or_default(), t.written)).collect::<Vec<_>>().join(", ");
+        tray.notify("Learned", &summary);
+    }
+    let fresh = last.inject.as_ref().map(|r| r.hwnd == target_hwnd && r.at.elapsed() < Duration::from_secs(60)).unwrap_or(false);
+    if fresh {
+        // give focus back to the target before undo+paste
+        std::thread::sleep(Duration::from_millis(150));
+        match inject::undo_then_paste(&edited) {
+            Ok(_) => history.replace_last_cleaned(edited),
+            Err(e) => tray.notify("Replace failed", &e.to_string()),
+        }
+    } else {
+        let _ = inject::set_clipboard_text(&edited);
+        tray.notify("Corrected text copied", "target window changed; paste it yourself");
+        history.replace_last_cleaned(edited);
+    }
 }

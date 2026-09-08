@@ -15,7 +15,6 @@ pub enum PipelineCmd {
     Start,
     Stop,
     Audio(Vec<f32>),
-    Unload,
     Shutdown,
 }
 
@@ -154,7 +153,6 @@ fn run(st: &mut State, rx: &Receiver<PipelineCmd>) {
             Ok(PipelineCmd::Start) => st.start(),
             Ok(PipelineCmd::Audio(c)) => st.audio(c),
             Ok(PipelineCmd::Stop) => st.stop(),
-            Ok(PipelineCmd::Unload) => st.rec = None,
             Ok(PipelineCmd::Shutdown) | Err(RecvTimeoutError::Disconnected) => return,
             Err(RecvTimeoutError::Timeout) => st.maybe_unload(),
         }
