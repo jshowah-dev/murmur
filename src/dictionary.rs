@@ -111,7 +111,9 @@ impl Dictionary {
         std::fs::create_dir_all(config_dir())?;
         let p = path();
         if p.exists() {
-            std::fs::copy(&p, p.with_extension("toml.bak")).context("backup dictionary.toml")?;
+            if let Err(e) = std::fs::copy(&p, p.with_extension("toml.bak")) {
+                log::warn!("failed to back up dictionary.toml: {e}");
+            }
         }
         let tmp = p.with_extension("toml.tmp");
         std::fs::write(&tmp, self.to_toml()?).context("write dictionary.toml.tmp")?;
@@ -208,8 +210,16 @@ impl Dictionary {
                 let n = new.join(" ");
                 let (_, o_core, _) = split_token(&o);
                 let (_, n_core, _) = split_token(&n);
-                let (o_core, _) = strip_suffix(o_core);
-                let (n_core, _) = strip_suffix(n_core);
+                let (o_stem, o_suf) = strip_suffix(o_core);
+                let (n_stem, n_suf) = strip_suffix(n_core);
+                // Only strip the written (after) side's suffix when both sides share the
+                // same suffix (e.g. "hobs"->"HAWBs"); otherwise keep the written side verbatim
+                // (e.g. "hermez"->"Hermes" must not become "Brink").
+                let (o_core, n_core) = if !o_suf.is_empty() && o_suf.eq_ignore_ascii_case(n_suf) {
+                    (o_stem, n_stem)
+                } else {
+                    (o_stem, n_core)
+                };
                 if !o_core.is_empty() && !n_core.is_empty() && o_core.to_ascii_lowercase() != n_core.to_ascii_lowercase() && phonetic::similar(o_core, n_core) {
                     let spoken = o_core.to_ascii_lowercase();
                     if let Some(t) = this.terms.iter_mut().find(|t| t.written == n_core) {
@@ -305,6 +315,15 @@ mod tests {
         assert_eq!(learned[0].written, "HAWB");
         assert!(learned[0].spoken.contains(&"hob".to_string()));
         assert_eq!(d.apply("hobs"), "HAWBs");
+    }
+
+    #[test]
+    fn learn_keeps_written_form_when_suffixes_differ() {
+        let mut d = Dictionary::from_terms(vec![]);
+        let learned = d.learn("send to hermez", "send to Hermes");
+        assert_eq!(learned.len(), 1);
+        assert_eq!(learned[0].written, "Hermes");
+        assert_eq!(d.apply("hermez"), "Hermes");
     }
 
     #[test]
