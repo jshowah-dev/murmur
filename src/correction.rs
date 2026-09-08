@@ -2,6 +2,7 @@ use crate::dictionary::Dictionary;
 use crate::history::History;
 use crate::inject;
 use crate::tray::Tray;
+use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use windows::core::PCWSTR;
@@ -19,17 +20,22 @@ use windows::Win32::Graphics::Gdi::{GetStockObject, DEFAULT_GUI_FONT};
 const ID_OK: usize = 1;
 const ID_CANCEL: usize = 2;
 
-static mut RESULT: Option<String> = None;
-static mut EDIT: HWND = HWND(std::ptr::null_mut());
+static RESULT: Mutex<Option<String>> = Mutex::new(None);
+static EDIT: AtomicIsize = AtomicIsize::new(0);
+
+fn edit_hwnd() -> HWND {
+    HWND(EDIT.load(Ordering::SeqCst) as *mut _)
+}
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 unsafe fn edit_text() -> String {
-    let len = GetWindowTextLengthW(EDIT) as usize;
+    let edit = edit_hwnd();
+    let len = GetWindowTextLengthW(edit) as usize;
     let mut buf = vec![0u16; len + 1];
-    let n = GetWindowTextW(EDIT, &mut buf) as usize;
+    let n = GetWindowTextW(edit, &mut buf) as usize;
     String::from_utf16_lossy(&buf[..n]).replace("\r\n", "\n")
 }
 
@@ -38,7 +44,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_COMMAND => {
             match (wp.0 & 0xFFFF) as usize {
                 ID_OK => {
-                    RESULT = Some(edit_text());
+                    *RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(edit_text());
                     let _ = DestroyWindow(hwnd);
                 }
                 ID_CANCEL => {
@@ -59,7 +65,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 /// Modal-ish edit dialog on the calling (main) thread. Returns the edited text, or None on cancel.
 fn show_dialog(initial: &str) -> Option<String> {
     unsafe {
-        RESULT = None;
+        *RESULT.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let hinst = GetModuleHandleW(None).ok()?;
         let class = wide("MurmurFix");
         let wc = WNDCLASSW { lpfnWndProc: Some(wndproc), hInstance: hinst.into(), lpszClassName: PCWSTR(class.as_ptr()), ..Default::default() };
@@ -70,13 +76,14 @@ fn show_dialog(initial: &str) -> Option<String> {
             200, 200, 560, 300, None, None, Some(hinst.into()), None,
         ).ok()?;
         let font = GetStockObject(DEFAULT_GUI_FONT);
-        EDIT = CreateWindowExW(
+        let edit = CreateWindowExW(
             Default::default(), PCWSTR(wide("EDIT").as_ptr()), PCWSTR::null(),
             windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | WS_BORDER.0 | WS_VSCROLL.0 | WS_TABSTOP.0 | ES_MULTILINE as u32 | ES_AUTOVSCROLL as u32 | ES_WANTRETURN as u32),
             10, 10, 525, 200, Some(hwnd), None, Some(hinst.into()), None,
         ).ok()?;
-        let _ = SendMessageW(EDIT, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
-        let _ = SetWindowTextW(EDIT, PCWSTR(wide(&initial.replace('\n', "\r\n")).as_ptr()));
+        EDIT.store(edit.0 as isize, Ordering::SeqCst);
+        let _ = SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+        let _ = SetWindowTextW(edit, PCWSTR(wide(&initial.replace('\n', "\r\n")).as_ptr()));
         for (label, id, x) in [("OK (Ctrl+Enter)", ID_OK, 330), ("Cancel (Esc)", ID_CANCEL, 440)] {
             let b = CreateWindowExW(
                 Default::default(), PCWSTR(wide("BUTTON").as_ptr()), PCWSTR(wide(label).as_ptr()),
@@ -86,14 +93,14 @@ fn show_dialog(initial: &str) -> Option<String> {
             let _ = SendMessageW(b, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
         }
         let _ = ShowWindow(hwnd, SW_SHOW);
-        let _ = SetFocus(Some(EDIT));
+        let _ = SetFocus(Some(edit_hwnd()));
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             if msg.message == WM_KEYDOWN {
                 let ctrl = (GetKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
                 if msg.wParam.0 as u16 == VK_RETURN.0 && ctrl {
-                    RESULT = Some(edit_text());
+                    *RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(edit_text());
                     let _ = DestroyWindow(hwnd);
                     continue;
                 }
@@ -105,7 +112,7 @@ fn show_dialog(initial: &str) -> Option<String> {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
-        RESULT.take()
+        RESULT.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 }
 
@@ -121,7 +128,7 @@ pub fn fix_last(history: &mut History, dict: &Arc<Mutex<Dictionary>>, tray: &Tra
         return;
     }
     let learned = {
-        let mut d = dict.lock().unwrap();
+        let mut d = dict.lock().unwrap_or_else(|e| e.into_inner());
         let l = d.learn(&last.cleaned, &edited);
         if !l.is_empty() {
             if let Err(e) = d.save() {

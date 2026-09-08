@@ -4,7 +4,6 @@ use std::time::Instant;
 #[derive(Debug, Clone)]
 pub struct InjectRecord {
     pub hwnd: isize,
-    pub len: usize,
     pub at: Instant,
 }
 
@@ -33,6 +32,7 @@ impl History {
     pub fn last(&self) -> Option<&Entry> {
         self.items.back()
     }
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.items.len()
     }

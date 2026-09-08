@@ -135,7 +135,8 @@ fn type_unicode(text: &str) {
 }
 
 fn record(text: &str, hwnd: isize) -> InjectRecord {
-    InjectRecord { hwnd, len: text.chars().count(), at: Instant::now() }
+    let _ = text;
+    InjectRecord { hwnd, at: Instant::now() }
 }
 
 /// Save clipboard text, set ours, Ctrl+V, restore. Falls back to unicode typing when the clipboard is unavailable.

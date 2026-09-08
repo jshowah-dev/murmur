@@ -99,8 +99,9 @@ impl State {
             return;
         }
         let raw = cleanup::join_parts(&self.raw_parts);
+        log::debug!("raw: {raw}");
         let cleaned = {
-            let d = self.dict.lock().unwrap();
+            let d = self.dict.lock().unwrap_or_else(|e| e.into_inner());
             cleanup::clean(&cleanup::join_parts(&self.parts), &d, &self.cfg)
         };
         let inject = match inject::paste(&cleaned) {

@@ -41,8 +41,23 @@ fn open_path(p: &std::path::Path) {
 
 fn main() -> Result<()> {
     init_logging();
-    let cfg = Config::load_or_create()?;
-    let dict = Arc::new(Mutex::new(Dictionary::load_or_seed()?));
+    let mut startup_errors: Vec<String> = Vec::new();
+    let cfg = match Config::load_or_create() {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("{e:#}");
+            startup_errors.push(format!("config: {e}"));
+            Config::default()
+        }
+    };
+    let dict = Arc::new(Mutex::new(match Dictionary::load_or_seed() {
+        Ok(d) => d,
+        Err(e) => {
+            log::error!("{e:#}");
+            startup_errors.push(format!("dictionary: {e}"));
+            Dictionary::from_terms(vec![])
+        }
+    }));
     let mut history = History::new(10);
 
     let (hk_tx, hk_rx) = unbounded::<HotkeyEvent>();
@@ -52,15 +67,6 @@ fn main() -> Result<()> {
 
     hotkey::spawn(cfg.ptt_vk(), hk_tx);
     pipeline::spawn(cfg.clone(), dict.clone(), cmd_rx, msg_tx);
-    // forward audio chunks to the pipeline
-    {
-        let cmd_tx = cmd_tx.clone();
-        std::thread::spawn(move || {
-            for chunk in audio_rx {
-                let _ = cmd_tx.send(PipelineCmd::Audio(chunk));
-            }
-        });
-    }
 
     let mut overlay = Overlay::create()?;
     let tray = Tray::create()?;
@@ -70,10 +76,16 @@ fn main() -> Result<()> {
     if !cfg.model_dir_path().join("encoder.int8.onnx").exists() {
         tray.notify("Model missing", "run setup-model.cmd");
     }
+    for msg in &startup_errors {
+        tray.notify("Startup", msg);
+    }
 
     loop {
         if !overlay.pump_once() {
             break;
+        }
+        while let Ok(chunk) = audio_rx.try_recv() {
+            let _ = cmd_tx.send(PipelineCmd::Audio(chunk));
         }
         if let Some(ev) = tray.poll() {
             match ev {
@@ -104,6 +116,9 @@ fn main() -> Result<()> {
                 }
                 HotkeyEvent::Release => {
                     capture = None;
+                    while let Ok(chunk) = audio_rx.try_recv() {
+                        let _ = cmd_tx.send(PipelineCmd::Audio(chunk));
+                    }
                     let _ = cmd_tx.send(PipelineCmd::Stop);
                 }
                 HotkeyEvent::FixLast => correction::fix_last(&mut history, &dict, &tray),
@@ -118,12 +133,16 @@ fn main() -> Result<()> {
                 PipelineMsg::Done(e) => {
                     overlay.set(OverlayState::Hidden);
                     if !e.cleaned.is_empty() {
+                        log::debug!("raw: {}", e.raw);
                         history.push(e);
                     }
                 }
                 PipelineMsg::Error(s) => {
                     overlay.set(OverlayState::Hidden);
                     capture = None;
+                    while let Ok(chunk) = audio_rx.try_recv() {
+                        let _ = cmd_tx.send(PipelineCmd::Audio(chunk));
+                    }
                     tray.notify("Murmur", &s);
                 }
             }
