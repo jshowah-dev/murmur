@@ -1,0 +1,4 @@
+/target
+/probe/target
+*.wav
+!tests/fixtures/*.wav
