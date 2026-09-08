@@ -1,3 +1,4 @@
+mod cleanup;
 mod config;
 mod dictionary;
 mod phonetic;
