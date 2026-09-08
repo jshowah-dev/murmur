@@ -3,11 +3,11 @@ use crate::history::InjectRecord;
 use anyhow::{anyhow, Result};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
-use windows::Win32::Foundation::{HANDLE, HGLOBAL};
+use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard, SetClipboardData,
 };
-use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VIRTUAL_KEY, VK_CONTROL,
     VK_V, VK_Z,
@@ -52,8 +52,9 @@ fn read_text_locked() -> Option<String> {
         if p.is_null() {
             return None;
         }
+        let max = GlobalSize(HGLOBAL(h.0)) / 2;
         let mut len = 0;
-        while *p.add(len) != 0 {
+        while len < max && *p.add(len) != 0 {
             len += 1;
         }
         let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, len));
@@ -69,11 +70,15 @@ fn write_text_locked(text: &str) -> Result<()> {
         let h: HGLOBAL = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2)?;
         let p = GlobalLock(h) as *mut u16;
         if p.is_null() {
+            let _ = GlobalFree(Some(h));
             return Err(anyhow!("GlobalLock"));
         }
         std::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len());
         let _ = GlobalUnlock(h);
-        SetClipboardData(CF_UNICODETEXT, Some(HANDLE(h.0)))?;
+        if let Err(e) = SetClipboardData(CF_UNICODETEXT, Some(HANDLE(h.0))) {
+            let _ = GlobalFree(Some(h));
+            return Err(e.into());
+        }
     }
     Ok(())
 }
@@ -95,7 +100,10 @@ fn key(vk: VIRTUAL_KEY, up: bool) -> INPUT {
 fn chord(vk: VIRTUAL_KEY) {
     let inputs = [key(VK_CONTROL, false), key(vk, false), key(vk, true), key(VK_CONTROL, true)];
     unsafe {
-        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        let sent = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        if sent as usize != inputs.len() {
+            log::warn!("SendInput sent {sent} of {} inputs", inputs.len());
+        }
     }
 }
 
@@ -119,13 +127,16 @@ fn type_unicode(text: &str) {
     }
     for chunk in inputs.chunks(64) {
         unsafe {
-            SendInput(chunk, std::mem::size_of::<INPUT>() as i32);
+            let sent = SendInput(chunk, std::mem::size_of::<INPUT>() as i32);
+            if sent as usize != chunk.len() {
+                log::warn!("SendInput sent {sent} of {} inputs", chunk.len());
+            }
         }
     }
 }
 
-fn record(text: &str) -> InjectRecord {
-    InjectRecord { hwnd: foreground_hwnd(), len: text.chars().count(), at: Instant::now() }
+fn record(text: &str, hwnd: isize) -> InjectRecord {
+    InjectRecord { hwnd, len: text.chars().count(), at: Instant::now() }
 }
 
 /// Save clipboard text, set ours, Ctrl+V, restore. Falls back to unicode typing when the clipboard is unavailable.
@@ -133,16 +144,25 @@ pub fn paste(text: &str) -> Result<InjectRecord> {
     let saved = match Clipboard::open() {
         Ok(_c) => {
             let saved = read_text_locked();
-            write_text_locked(text)?;
+            if let Err(e) = write_text_locked(text) {
+                if let Some(prev) = saved {
+                    if let Ok(_c) = Clipboard::open() {
+                        let _ = write_text_locked(&prev);
+                    }
+                }
+                return Err(e);
+            }
             saved
         }
         Err(e) => {
             log::warn!("{e}; falling back to unicode typing");
+            let hwnd = foreground_hwnd();
             type_unicode(text);
-            return Ok(record(text));
+            return Ok(record(text, hwnd));
         }
     };
     sleep(Duration::from_millis(30));
+    let hwnd = foreground_hwnd();
     chord(VK_V);
     sleep(Duration::from_millis(150));
     if let Some(prev) = saved {
@@ -150,7 +170,7 @@ pub fn paste(text: &str) -> Result<InjectRecord> {
             let _ = write_text_locked(&prev);
         }
     }
-    Ok(record(text))
+    Ok(record(text, hwnd))
 }
 
 /// Undo the previous paste in the target app, then paste `text`.
