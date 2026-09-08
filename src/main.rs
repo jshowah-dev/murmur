@@ -1,3 +1,4 @@
+mod audio;
 mod cleanup;
 mod config;
 mod dictionary;
