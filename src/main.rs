@@ -5,6 +5,7 @@ mod dictionary;
 mod history;
 mod hotkey;
 mod inject;
+mod overlay;
 mod phonetic;
 mod vad;
 mod stt;
