@@ -145,10 +145,8 @@ pub fn paste(text: &str) -> Result<InjectRecord> {
         Ok(_c) => {
             let saved = read_text_locked();
             if let Err(e) = write_text_locked(text) {
-                if let Some(prev) = saved {
-                    if let Ok(_c) = Clipboard::open() {
-                        let _ = write_text_locked(&prev);
-                    }
+                if let Some(prev) = &saved {
+                    let _ = write_text_locked(prev);
                 }
                 return Err(e);
             }
