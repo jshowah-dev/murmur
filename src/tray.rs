@@ -1,9 +1,8 @@
 use anyhow::Result;
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
-use windows::core::PCWSTR;
+use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Shell::{Shell_NotifyIconW, NIF_INFO, NIIF_INFO, NIM_MODIFY, NOTIFYICONDATAW};
-use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayEvent {
@@ -72,26 +71,19 @@ impl Tray {
 
     pub fn notify(&self, title: &str, body: &str) {
         log::info!("notify: {title}: {body}");
-        if !balloon(title, body) {
-            // Fallback: tray-icon window not found, use the tooltip as a lightweight notice.
+        if !balloon(&self._icon, title, body) {
+            // Fallback: Shell_NotifyIconW failed, use the tooltip as a lightweight notice.
             let _ = self._icon.set_tooltip(Some(format!("Murmur — {title}: {body}")));
         }
     }
 }
 
 /// tray-icon has no balloon API, but it internally registers the icon with Shell_NotifyIconW
-/// using its own hidden window (class "tray_icon_app") and a uID counter that starts at 1;
-/// Murmur creates exactly one tray icon, so its uID is always 1.
-fn balloon(title: &str, body: &str) -> bool {
+/// and a uID counter that starts at 1; Murmur creates exactly one tray icon, so its uID is
+/// always 1. `TrayIcon::window_handle` gives us its hidden window directly.
+fn balloon(icon: &TrayIcon, title: &str, body: &str) -> bool {
     unsafe {
-        let class_name = to_wide("tray_icon_app");
-        let hwnd = match FindWindowW(PCWSTR(class_name.as_ptr()), PCWSTR::null()) {
-            Ok(h) => h,
-            Err(_) => return false,
-        };
-        if hwnd.is_invalid() {
-            return false;
-        }
+        let hwnd = HWND(icon.window_handle() as *mut _);
         let mut nid = NOTIFYICONDATAW {
             cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
             hWnd: hwnd,
@@ -106,12 +98,9 @@ fn balloon(title: &str, body: &str) -> bool {
     }
 }
 
-fn to_wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
 /// Copies `s` into a fixed-size UTF-16 buffer, truncating on a UTF-16 code-unit boundary
-/// (leaving room for the trailing NUL) if it doesn't fit.
+/// (leaving room for the trailing NUL) if it doesn't fit. This truncation point may fall
+/// in the middle of a surrogate pair, splitting it.
 fn set_wide_field<const N: usize>(field: &mut [u16; N], s: &str) {
     let wide: Vec<u16> = s.encode_utf16().collect();
     let max = N - 1;

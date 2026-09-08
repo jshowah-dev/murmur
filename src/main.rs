@@ -124,19 +124,17 @@ fn main() -> Result<()> {
                         }
                         Err(e) => {
                             tray.notify("Microphone", &e.to_string());
-                            let _ = cmd_tx.send(PipelineCmd::Stop);
+                            let _ = cmd_tx.send(PipelineCmd::Abort);
                         }
                     }
                 }
-                HotkeyEvent::Press => {
+                HotkeyEvent::Press if !paused => {
                     listening = true;
                     overlay.set(OverlayState::Listening(0.0));
                 }
                 HotkeyEvent::Cancel => {
                     capture.take();
-                    while let Ok(chunk) = audio_rx.try_recv() {
-                        let _ = cmd_tx.send(PipelineCmd::Audio(chunk));
-                    }
+                    while audio_rx.try_recv().is_ok() {}
                     listening = false;
                     let _ = cmd_tx.send(PipelineCmd::Abort);
                 }
