@@ -119,7 +119,8 @@ pub fn clean(text: &str, dict: &Dictionary, cfg: &Config) -> String {
     if cfg.spoken_commands {
         s = apply_commands(&s);
     }
-    tidy(&s).trim().to_string()
+    // trim spaces only: a leading/trailing "new line" command is deliberate
+    tidy(&s).trim_matches(' ').to_string()
 }
 
 #[cfg(test)]
@@ -185,5 +186,12 @@ mod tests {
     fn trims() {
         let (d, c) = env();
         assert_eq!(clean("  hi  ", &d, &c), "Hi");
+    }
+
+    #[test]
+    fn leading_new_line_command_is_kept() {
+        let (d, c) = env();
+        assert_eq!(clean("New line Put it in Delgado.", &d, &c), "\nPut it in Delgado.");
+        assert_eq!(clean("done new line", &d, &c), "Done\n");
     }
 }
