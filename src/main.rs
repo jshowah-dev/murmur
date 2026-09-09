@@ -1,19 +1,12 @@
 #![windows_subsystem = "windows"]
 
-mod audio;
-mod cleanup;
-mod config;
+use murmur_lib::{audio, cleanup, config, dictionary, history, stt, vad};
 mod correction;
-mod dictionary;
-mod history;
 mod hotkey;
 mod inject;
 mod overlay;
-mod phonetic;
 mod pipeline;
-mod stt;
 mod tray;
-mod vad;
 
 use anyhow::Result;
 use config::Config;

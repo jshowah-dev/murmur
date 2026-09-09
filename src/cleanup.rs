@@ -64,12 +64,21 @@ fn apply_commands(text: &str) -> String {
         let cur = bare(tokens[i]);
         if cur == "new" && i + 1 < tokens.len() {
             let next = bare(tokens[i + 1]);
-            if next == "line" {
-                out.push("\n".to_string());
-                i += 2;
-                continue;
-            } else if next == "paragraph" {
-                out.push("\n\n".to_string());
+            let brk = match next.as_str() {
+                "line" => Some("\n"),
+                "paragraph" => Some("\n\n"),
+                _ => None,
+            };
+            if let Some(brk) = brk {
+                // the model punctuates the command ("Thanks, New Line, Jeff."):
+                // a comma left on the word before a break was a sentence end
+                if let Some(prev) = out.last_mut() {
+                    if prev.ends_with(',') {
+                        prev.pop();
+                        prev.push('.');
+                    }
+                }
+                out.push(brk.to_string());
                 i += 2;
                 continue;
             }
@@ -159,7 +168,7 @@ mod tests {
         let (d, c) = env();
         // Parakeet punctuates: command words arrive as "New line." / "new paragraph,"
         assert_eq!(clean("The HAWB is late. New line. Send it to Delgado.", &d, &c), "The HAWB is late.\nSend it to Delgado.");
-        assert_eq!(clean("first, new paragraph, second", &d, &c), "First,\n\nSecond");
+        assert_eq!(clean("first, new paragraph, second", &d, &c), "First.\n\nSecond");
         assert_eq!(clean("I'm in a comment new line. Next", &d, &c), "I'm in a comment\nNext");
     }
 
@@ -193,5 +202,12 @@ mod tests {
         let (d, c) = env();
         assert_eq!(clean("New line Put it in Delgado.", &d, &c), "\nPut it in Delgado.");
         assert_eq!(clean("done new line", &d, &c), "Done\n");
+    }
+
+    #[test]
+    fn comma_before_new_line_command_becomes_period() {
+        let (d, c) = env();
+        assert_eq!(clean("Thanks, New Line, Jeff.", &d, &c), "Thanks.\nJeff.");
+        assert_eq!(clean("Thanks. New line. Jeff.", &d, &c), "Thanks.\nJeff.");
     }
 }

@@ -37,10 +37,11 @@ const SEED: &[(&str, &[&str])] = &[
     ("Delgado", &[]),
     ("Orion", &[]),
     ("WildFly", &["wild fly"]),
-    ("Jira", &[]),
+    ("Jira", &["jerry"]),
     ("Hermes", &["hermes", "hermes'"]),
     ("HFS", &["aitch eff ess"]),
     ("QA", &["queue ay"]),
+    ("EAR", &["ear"]),
 ];
 
 fn path() -> PathBuf {
