@@ -24,6 +24,7 @@ use hotkey::HotkeyEvent;
 use overlay::{Overlay, OverlayState};
 use pipeline::{PipelineCmd, PipelineMsg};
 use std::sync::{Arc, Mutex};
+use std::collections::VecDeque;
 use std::time::Duration;
 use tray::{Tray, TrayEvent};
 
@@ -81,7 +82,12 @@ fn main() -> Result<()> {
 
     let mut overlay = Overlay::create()?;
     let tray = Tray::create()?;
-    let mut capture: Option<audio::Capture> = None;
+    // The mic stays open while not paused: a rolling buffer of the last PRE_ROLL_SAMPLES is
+    // fed to the pipeline ahead of the live audio on key-down, so the first consonant is not
+    // lost to device start-up latency.
+    let mut capture = open_mic(&audio_tx, &tray);
+    let mut ring: VecDeque<f32> = VecDeque::with_capacity(PRE_ROLL_SAMPLES * 2);
+    let mut forwarding = false;
     let mut paused = false;
     let mut listening = false;
     let mut resting_tick: u32 = 0;
@@ -101,7 +107,14 @@ fn main() -> Result<()> {
             break;
         }
         while let Ok(chunk) = audio_rx.try_recv() {
-            let _ = cmd_tx.send(PipelineCmd::Audio(chunk));
+            if forwarding {
+                let _ = cmd_tx.send(PipelineCmd::Audio(chunk));
+            } else {
+                ring.extend(chunk);
+                while ring.len() > PRE_ROLL_SAMPLES {
+                    ring.pop_front();
+                }
+            }
         }
         if let Some(ev) = tray.poll() {
             match ev {
@@ -109,6 +122,12 @@ fn main() -> Result<()> {
                     paused = !paused;
                     tray.set_paused(paused);
                     overlay.set(resting(paused));
+                    if paused {
+                        capture.take();
+                        ring.clear();
+                    } else {
+                        capture = open_mic(&audio_tx, &tray);
+                    }
                 }
                 TrayEvent::FixLast => {
                     correction::fix_last(&mut history, &dict, &tray);
@@ -123,32 +142,31 @@ fn main() -> Result<()> {
         while let Ok(ev) = hk_rx.try_recv() {
             match ev {
                 HotkeyEvent::Down if !paused => {
-                    let _ = cmd_tx.send(PipelineCmd::Start);
-                    match audio::Capture::start(audio_tx.clone()) {
-                        Ok(c) => {
-                            capture = Some(c);
-                        }
-                        Err(e) => {
-                            tray.notify("Microphone", &e.to_string());
-                            let _ = cmd_tx.send(PipelineCmd::Abort);
-                        }
+                    if capture.is_none() {
+                        capture = open_mic(&audio_tx, &tray);
                     }
+                    if capture.is_none() {
+                        continue;
+                    }
+                    let _ = cmd_tx.send(PipelineCmd::Start);
+                    let _ = cmd_tx.send(PipelineCmd::Audio(ring.drain(..).collect()));
+                    forwarding = true;
                 }
                 HotkeyEvent::Press if !paused => {
                     listening = true;
                     overlay.set(OverlayState::Listening(0.0));
                 }
                 HotkeyEvent::Cancel => {
-                    capture.take();
+                    forwarding = false;
                     while audio_rx.try_recv().is_ok() {}
                     listening = false;
                     let _ = cmd_tx.send(PipelineCmd::Abort);
                 }
                 HotkeyEvent::Release => {
-                    capture.take();
                     while let Ok(chunk) = audio_rx.try_recv() {
                         let _ = cmd_tx.send(PipelineCmd::Audio(chunk));
                     }
+                    forwarding = false;
                     listening = false;
                     let _ = cmd_tx.send(PipelineCmd::Stop);
                 }
@@ -174,11 +192,9 @@ fn main() -> Result<()> {
                 }
                 PipelineMsg::Error(s) => {
                     overlay.set(resting(paused));
-                    capture.take();
+                    forwarding = false;
                     listening = false;
-                    while let Ok(chunk) = audio_rx.try_recv() {
-                        let _ = cmd_tx.send(PipelineCmd::Audio(chunk));
-                    }
+                    while audio_rx.try_recv().is_ok() {}
                     tray.notify("Murmur", &s);
                 }
             }
@@ -191,6 +207,20 @@ fn main() -> Result<()> {
     }
     let _ = cmd_tx.send(PipelineCmd::Shutdown);
     Ok(())
+}
+
+/// Audio kept while idle and prepended on key-down: 500 ms at 16 kHz.
+const PRE_ROLL_SAMPLES: usize = 8_000;
+
+fn open_mic(audio_tx: &crossbeam_channel::Sender<Vec<f32>>, tray: &Tray) -> Option<audio::Capture> {
+    match audio::Capture::start(audio_tx.clone()) {
+        Ok(c) => Some(c),
+        Err(e) => {
+            log::error!("open mic: {e}");
+            tray.notify("Microphone", &e.to_string());
+            None
+        }
+    }
 }
 
 fn resting(paused: bool) -> OverlayState {
