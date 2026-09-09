@@ -8,9 +8,11 @@ use std::time::Duration;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, SetFocus, VK_CONTROL, VK_ESCAPE, VK_RETURN};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, GetWindowTextLengthW, GetWindowTextW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow, GetMessageW, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, SetForegroundWindow, SetWindowPos, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE,
     PostQuitMessage, RegisterClassW, SendMessageW, SetWindowTextW, ShowWindow, TranslateMessage, BS_DEFPUSHBUTTON, ES_AUTOVSCROLL,
     ES_MULTILINE, ES_WANTRETURN, MSG, SW_SHOW, WM_COMMAND, WM_DESTROY, WM_KEYDOWN, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD,
     WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL, WM_SETFONT,
@@ -62,6 +64,24 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     }
 }
 
+/// Windows only lets the process that received the last input activate a window. The hotkey
+/// press went to the target app, so attach to its input queue for the activation call;
+/// without this the dialog opens behind the target and merely flashes on the taskbar.
+unsafe fn bring_to_front(hwnd: HWND) {
+    unsafe {
+        let fg = GetForegroundWindow();
+        let fg_tid = GetWindowThreadProcessId(fg, None);
+        let me = GetCurrentThreadId();
+        let attached = fg_tid != 0 && fg_tid != me && AttachThreadInput(fg_tid, me, true).as_bool();
+        let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        let _ = SetWindowPos(hwnd, Some(HWND_NOTOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        let _ = SetForegroundWindow(hwnd);
+        if attached {
+            let _ = AttachThreadInput(fg_tid, me, false);
+        }
+    }
+}
+
 /// Modal-ish edit dialog on the calling (main) thread. Returns the edited text, or None on cancel.
 fn show_dialog(initial: &str) -> Option<String> {
     unsafe {
@@ -93,6 +113,7 @@ fn show_dialog(initial: &str) -> Option<String> {
             let _ = SendMessageW(b, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
         }
         let _ = ShowWindow(hwnd, SW_SHOW);
+        bring_to_front(hwnd);
         let _ = SetFocus(Some(edit_hwnd()));
 
         let mut msg = MSG::default();

@@ -145,8 +145,12 @@ impl Dictionary {
         // (e.g. "hob"/"hobby" both -> "HP"); require equal length so an
         // unrelated longer word doesn't false-match a shorter dictionary entry.
         let close = |candidate: &str| candidate.chars().count() == core.chars().count();
+        // An all-caps acronym is spelled out when spoken ("bee oh el"), so its written form
+        // is never what the STT heard; matching it phonetically turns any short "PL"-sounding
+        // word into "BOL". Acronyms match only through their spoken forms.
+        let acronym = |w: &str| w.len() > 1 && w.chars().all(|c| c.is_ascii_uppercase());
         for t in self.terms.iter().filter(|t| t.phonetic) {
-            if (phonetic::key(&t.written) == k && close(&t.written))
+            if (!acronym(&t.written) && phonetic::key(&t.written) == k && close(&t.written))
                 || t.spoken.iter().any(|s| !s.contains(' ') && phonetic::key(s) == k && close(s))
             {
                 return Some(&t.written);
@@ -260,6 +264,13 @@ mod tests {
             Term { written: "BOL".into(), spoken: vec!["bee oh el".into()], phonetic: true },
             Term { written: "Delgado".into(), spoken: vec![], phonetic: true },
         ])
+    }
+
+    #[test]
+    fn acronym_written_form_is_not_phonetically_matched() {
+        // "bul" keys to "PL" like "BOL"; it must stay as heard (Jeff said "plus", got "BOL")
+        assert_eq!(dict().apply("add the bul now"), "add the bul now");
+        assert_eq!(dict().apply("the hob is late"), "the HAWB is late");
     }
 
     #[test]

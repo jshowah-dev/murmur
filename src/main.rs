@@ -166,7 +166,7 @@ fn main() -> Result<()> {
                 PipelineMsg::Done(e) => {
                     overlay.set(resting(paused));
                     if !e.cleaned.is_empty() {
-                        log::debug!("raw: {}", e.raw);
+                        log::info!("raw: {}", e.raw);
                         history.push(e);
                     }
                 }
