@@ -11,14 +11,13 @@ pub enum TrayEvent {
     FixLast,
     OpenDictionary,
     OpenConfigDir,
-    TestNotify,
     Quit,
 }
 
 pub struct Tray {
     _icon: TrayIcon,
     pause: MenuItem,
-    ids: [(MenuId, TrayEvent); 6],
+    ids: [(MenuId, TrayEvent); 5],
 }
 
 fn icon(paused: bool) -> Icon {
@@ -48,15 +47,13 @@ impl Tray {
         let fix = MenuItem::new("Fix last (Left Shift+PTT)", true, None);
         let dict = MenuItem::new("Open dictionary", true, None);
         let cfg = MenuItem::new("Open config folder", true, None);
-        let test = MenuItem::new("Test notification", true, None);
         let quit = MenuItem::new("Quit", true, None);
-        menu.append_items(&[&pause, &fix, &PredefinedMenuItem::separator(), &dict, &cfg, &test, &PredefinedMenuItem::separator(), &quit])?;
+        menu.append_items(&[&pause, &fix, &PredefinedMenuItem::separator(), &dict, &cfg, &PredefinedMenuItem::separator(), &quit])?;
         let ids = [
             (pause.id().clone(), TrayEvent::TogglePause),
             (fix.id().clone(), TrayEvent::FixLast),
             (dict.id().clone(), TrayEvent::OpenDictionary),
             (cfg.id().clone(), TrayEvent::OpenConfigDir),
-            (test.id().clone(), TrayEvent::TestNotify),
             (quit.id().clone(), TrayEvent::Quit),
         ];
         let _icon = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("Murmur").with_icon(icon(false)).build()?;
