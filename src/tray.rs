@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::sync::atomic::{AtomicU32, Ordering};
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use windows::Win32::Foundation::HWND;
@@ -82,25 +83,36 @@ impl Tray {
     }
 }
 
-/// tray-icon has no balloon API, but it internally registers the icon with Shell_NotifyIconW
-/// and a uID counter that starts at 1; Murmur creates exactly one tray icon, so its uID is
-/// always 1. `TrayIcon::window_handle` gives us its hidden window directly.
+/// tray-icon has no balloon API, but it registers the icon with Shell_NotifyIconW using an
+/// internal counter shared with its unique-id generator, so the uID is not fixed (2 with
+/// tray-icon 0.24: the builder burns 1 on its string id). NIM_MODIFY on a wrong uID just
+/// returns false, so probe a few and remember the one Windows accepts.
+static BALLOON_UID: AtomicU32 = AtomicU32::new(0);
+
 fn balloon(icon: &TrayIcon, title: &str, body: &str) -> bool {
-    unsafe {
-        let hwnd = HWND(icon.window_handle() as *mut _);
-        log::info!("balloon: hwnd={:?} uID=1", hwnd);
+    let hwnd = HWND(icon.window_handle() as *mut _);
+    let known = BALLOON_UID.load(Ordering::Relaxed);
+    let candidates: Vec<u32> = if known != 0 { vec![known] } else { (1..=4).collect() };
+    for uid in candidates {
         let mut nid = NOTIFYICONDATAW {
             cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
             hWnd: hwnd,
-            uID: 1,
+            uID: uid,
             uFlags: NIF_INFO,
             dwInfoFlags: NIIF_INFO,
             ..Default::default()
         };
         set_wide_field(&mut nid.szInfoTitle, title);
         set_wide_field(&mut nid.szInfo, body);
-        Shell_NotifyIconW(NIM_MODIFY, &nid).as_bool()
+        if unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid).as_bool() } {
+            if known == 0 {
+                log::info!("balloon uID resolved to {uid}");
+                BALLOON_UID.store(uid, Ordering::Relaxed);
+            }
+            return true;
+        }
     }
+    false
 }
 
 /// Copies `s` into a fixed-size UTF-16 buffer, truncating on a UTF-16 code-unit boundary
