@@ -47,6 +47,17 @@ fn open_path(p: &std::path::Path) {
 fn main() -> Result<()> {
     init_logging();
     log::info!("murmur {} starting, cwd {:?}", env!("CARGO_PKG_VERSION"), std::env::current_dir().ok());
+    // second instance would capture the same hotkey and paste every dictation twice
+    let _instance = unsafe {
+        use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+        use windows::Win32::System::Threading::CreateMutexW;
+        let m = CreateMutexW(None, false, windows::core::w!("Local\\Murmur.SingleInstance"))?;
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            log::warn!("another instance is running; exiting");
+            return Ok(());
+        }
+        m
+    };
     let mut startup_errors: Vec<String> = Vec::new();
     let cfg = match Config::load_or_create() {
         Ok(c) => c,
