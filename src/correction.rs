@@ -183,7 +183,8 @@ fn paste_or_copy_correction(history: &mut History, tray: &Tray, last: &crate::hi
         .map(|r| r.hwnd == target_hwnd && r.at.elapsed() < Duration::from_secs(60) && r.method == InjectMethod::Paste)
         .unwrap_or(false);
     if fresh {
-        // give focus back to the target before undo+paste
+        // the dialog took focus; hand it back to the target before undo+paste
+        unsafe { bring_to_front(HWND(target_hwnd as *mut _)) };
         std::thread::sleep(Duration::from_millis(150));
         if inject::foreground_hwnd() != target_hwnd {
             let _ = inject::set_clipboard_text(&edited);
@@ -197,7 +198,7 @@ fn paste_or_copy_correction(history: &mut History, tray: &Tray, last: &crate::hi
         }
     } else {
         let _ = inject::set_clipboard_text(&edited);
-        tray.notify("Corrected text copied", "target window changed; paste it yourself");
+        tray.notify("Corrected text copied", "last dictation is older than a minute or was not pasted; paste it yourself");
         history.replace_last_cleaned(edited);
     }
 }
