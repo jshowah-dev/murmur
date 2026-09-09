@@ -10,13 +10,14 @@ pub enum TrayEvent {
     FixLast,
     OpenDictionary,
     OpenConfigDir,
+    TestNotify,
     Quit,
 }
 
 pub struct Tray {
     _icon: TrayIcon,
     pause: MenuItem,
-    ids: [(MenuId, TrayEvent); 5],
+    ids: [(MenuId, TrayEvent); 6],
 }
 
 fn icon(paused: bool) -> Icon {
@@ -43,16 +44,18 @@ impl Tray {
     pub fn create() -> Result<Tray> {
         let menu = Menu::new();
         let pause = MenuItem::new("Pause", true, None);
-        let fix = MenuItem::new("Fix last (Shift+PTT)", true, None);
+        let fix = MenuItem::new("Fix last (Left Shift+PTT)", true, None);
         let dict = MenuItem::new("Open dictionary", true, None);
         let cfg = MenuItem::new("Open config folder", true, None);
+        let test = MenuItem::new("Test notification", true, None);
         let quit = MenuItem::new("Quit", true, None);
-        menu.append_items(&[&pause, &fix, &PredefinedMenuItem::separator(), &dict, &cfg, &PredefinedMenuItem::separator(), &quit])?;
+        menu.append_items(&[&pause, &fix, &PredefinedMenuItem::separator(), &dict, &cfg, &test, &PredefinedMenuItem::separator(), &quit])?;
         let ids = [
             (pause.id().clone(), TrayEvent::TogglePause),
             (fix.id().clone(), TrayEvent::FixLast),
             (dict.id().clone(), TrayEvent::OpenDictionary),
             (cfg.id().clone(), TrayEvent::OpenConfigDir),
+            (test.id().clone(), TrayEvent::TestNotify),
             (quit.id().clone(), TrayEvent::Quit),
         ];
         let _icon = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("Murmur").with_icon(icon(false)).build()?;
@@ -70,8 +73,9 @@ impl Tray {
     }
 
     pub fn notify(&self, title: &str, body: &str) {
-        log::info!("notify: {title}: {body}");
-        if !balloon(&self._icon, title, body) {
+        let ok = balloon(&self._icon, title, body);
+        log::info!("notify: {title}: {body} (balloon accepted: {ok})");
+        if !ok {
             // Fallback: Shell_NotifyIconW failed, use the tooltip as a lightweight notice.
             let _ = self._icon.set_tooltip(Some(format!("Murmur — {title}: {body}")));
         }
@@ -84,6 +88,7 @@ impl Tray {
 fn balloon(icon: &TrayIcon, title: &str, body: &str) -> bool {
     unsafe {
         let hwnd = HWND(icon.window_handle() as *mut _);
+        log::info!("balloon: hwnd={:?} uID=1", hwnd);
         let mut nid = NOTIFYICONDATAW {
             cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
             hWnd: hwnd,

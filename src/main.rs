@@ -116,6 +116,7 @@ fn main() -> Result<()> {
                 }
                 TrayEvent::OpenDictionary => open_path(&config::config_dir().join("dictionary.toml")),
                 TrayEvent::OpenConfigDir => open_path(&config::config_dir()),
+                TrayEvent::TestNotify => tray.notify("Murmur", "Notifications are working"),
                 TrayEvent::Quit => break,
             }
         }
