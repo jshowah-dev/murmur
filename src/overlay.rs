@@ -12,8 +12,8 @@ use windows::Win32::Foundation::GetLastError;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow, GetWindowRect, PeekMessageW, RegisterClassW,
     SetWindowPos, ShowWindow, TranslateMessage, UpdateLayeredWindow, HWND_TOPMOST, MSG, PM_REMOVE, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA, WM_QUIT, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE, ULW_ALPHA, WM_QUIT, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::Win32::Graphics::Gdi::{MonitorFromWindow, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST};
 use windows::Win32::Graphics::Gdi::AC_SRC_ALPHA;
@@ -21,13 +21,28 @@ use windows::Win32::Graphics::Gdi::BLENDFUNCTION;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OverlayState {
-    Hidden,
+    /// Always-on resting pill: small, dim, green dot.
+    Idle,
+    /// Resting pill while dictation is paused from the tray: small, dim, grey dot.
+    Paused,
     Listening(f32),
     Processing,
 }
 
+impl OverlayState {
+    fn is_resting(self) -> bool {
+        matches!(self, OverlayState::Idle | OverlayState::Paused)
+    }
+    /// (width, height, body alpha) — the resting pill is small and dim, live states are full size.
+    fn geometry(self) -> (i32, i32, u32) {
+        if self.is_resting() { (IDLE_W, IDLE_H, 0x80) } else { (W, H, 0xE6) }
+    }
+}
+
 const W: i32 = 160;
 const H: i32 = 36;
+const IDLE_W: i32 = 56;
+const IDLE_H: i32 = 14;
 
 pub struct Overlay {
     hwnd: HWND,
@@ -58,38 +73,41 @@ impl Overlay {
                 return Err(anyhow!("RegisterClassW"));
             }
             let hwnd = CreateWindowExW(
-                WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
                 PCWSTR(class.as_ptr()),
                 PCWSTR(wide("Murmur").as_ptr()),
                 WS_POPUP,
                 0, 0, W, H,
                 None, None, Some(hinst.into()), None,
             )?;
-            Ok(Overlay { hwnd, state: OverlayState::Hidden, tick: 0 })
+            Ok(Overlay { hwnd, state: OverlayState::Idle, tick: 0 })
         }
     }
 
-    fn target_position(&self) -> (i32, i32) {
+    /// Bottom-centre of the work area on the foreground window's monitor; the pill's
+    /// bottom edge stays put as it grows from the resting size to the live size.
+    fn target_position(&self, w: i32, h: i32) -> (i32, i32) {
         unsafe {
             let fg = GetForegroundWindow();
             let mon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
             let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
             let r: RECT = if GetMonitorInfoW(mon, &mut mi).as_bool() { mi.rcWork } else { RECT { left: 0, top: 0, right: 1920, bottom: 1080 } };
             let _ = GetWindowRect(fg, &mut RECT::default());
-            ((r.left + r.right) / 2 - W / 2, r.bottom - H - 24)
+            ((r.left + r.right) / 2 - w / 2, r.bottom - h - 24)
         }
     }
 
     /// Paint the pill into a 32-bit DIB and push it with UpdateLayeredWindow.
     fn paint(&mut self) {
+        let (w, h, alpha) = self.state.geometry();
         unsafe {
             let screen = GetDC(None);
             let mem = CreateCompatibleDC(Some(screen));
             let bmi = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
                     biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: W,
-                    biHeight: -H,
+                    biWidth: w,
+                    biHeight: -h,
                     biPlanes: 1,
                     biBitCount: 32,
                     biCompression: BI_RGB.0,
@@ -107,20 +125,31 @@ impl Overlay {
             let old = SelectObject(mem, bmp.into());
 
             // premultiplied BGRA: fully transparent background
-            let px = std::slice::from_raw_parts_mut(bits as *mut u32, (W * H) as usize);
+            let px = std::slice::from_raw_parts_mut(bits as *mut u32, (w * h) as usize);
             px.fill(0);
             // pill body
-            let rgn = CreateRoundRectRgn(0, 0, W, H, H, H);
+            let rgn = CreateRoundRectRgn(0, 0, w, h, h, h);
             let body = CreateSolidBrush(COLORREF(0x00202020));
             let _ = FillRgn(mem, rgn, body);
-            // opaque alpha for the body pixels
+            // body alpha: dim when resting, near-opaque when live (premultiplied)
+            let ch = 0x20 * alpha / 255;
+            let body_px = (alpha << 24) | (ch << 16) | (ch << 8) | ch;
             for p in px.iter_mut() {
                 if *p != 0 {
-                    *p |= 0xE600_0000;
+                    *p = body_px;
                 }
             }
             // content
             match self.state {
+                OverlayState::Idle | OverlayState::Paused => {
+                    let c = if self.state == OverlayState::Idle { 0x0060D060 } else { 0x00808080 };
+                    let d = h - 8;
+                    let dot_rgn = CreateRoundRectRgn(w / 2 - d / 2, 4, w / 2 + d / 2, 4 + d, d, d);
+                    let dot = CreateSolidBrush(COLORREF(c));
+                    let _ = FillRgn(mem, dot_rgn, dot);
+                    let _ = DeleteObject(dot.into());
+                    let _ = DeleteObject(dot_rgn.into());
+                }
                 OverlayState::Listening(level) => {
                     let bar_w = ((W - 40) as f32 * level.clamp(0.0, 1.0)) as i32;
                     let r = RECT { left: 20, top: H / 2 - 3, right: 20 + bar_w.max(4), bottom: H / 2 + 3 };
@@ -139,7 +168,6 @@ impl Overlay {
                         let _ = DeleteObject(b.into());
                     }
                 }
-                OverlayState::Hidden => {}
             }
             for p in px.iter_mut() {
                 if *p & 0xFF00_0000 == 0 && *p != 0 {
@@ -149,13 +177,13 @@ impl Overlay {
             let _ = DeleteObject(body.into());
             let _ = DeleteObject(rgn.into());
 
-            let (x, y) = self.target_position();
+            let (x, y) = self.target_position(w, h);
             let blend = BLENDFUNCTION { BlendOp: 0, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
             let _ = UpdateLayeredWindow(
                 self.hwnd,
                 Some(screen),
                 Some(&POINT { x, y }),
-                Some(&SIZE { cx: W, cy: H }),
+                Some(&SIZE { cx: w, cy: h }),
                 Some(mem),
                 Some(&POINT { x: 0, y: 0 }),
                 COLORREF(0),
@@ -170,22 +198,20 @@ impl Overlay {
     }
 
     pub fn set(&mut self, state: OverlayState) {
-        let was_hidden = self.state == OverlayState::Hidden;
         self.state = state;
         self.tick = self.tick.wrapping_add(1);
+        self.paint();
         unsafe {
-            match state {
-                OverlayState::Hidden => {
-                    let _ = ShowWindow(self.hwnd, SW_HIDE);
-                }
-                _ => {
-                    self.paint();
-                    if was_hidden {
-                        let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
-                        let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
-                    }
-                }
-            }
+            // re-assert topmost on every state change so a fullscreen app cannot bury the pill
+            let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
+            let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+        }
+    }
+
+    /// Re-paint the resting pill so it follows the foreground window's monitor.
+    pub fn refresh_resting(&mut self) {
+        if self.state.is_resting() {
+            self.paint();
         }
     }
 

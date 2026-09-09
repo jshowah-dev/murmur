@@ -84,6 +84,8 @@ fn main() -> Result<()> {
     let mut capture: Option<audio::Capture> = None;
     let mut paused = false;
     let mut listening = false;
+    let mut resting_tick: u32 = 0;
+    overlay.set(OverlayState::Idle);
 
     let encoder = cfg.model_dir_path().join("encoder.int8.onnx");
     if let Err(e) = std::fs::metadata(&encoder) {
@@ -106,6 +108,7 @@ fn main() -> Result<()> {
                 TrayEvent::TogglePause => {
                     paused = !paused;
                     tray.set_paused(paused);
+                    overlay.set(resting(paused));
                 }
                 TrayEvent::FixLast => {
                     correction::fix_last(&mut history, &dict, &tray);
@@ -161,14 +164,14 @@ fn main() -> Result<()> {
                 PipelineMsg::Level(_) => {}
                 PipelineMsg::Processing => overlay.set(OverlayState::Processing),
                 PipelineMsg::Done(e) => {
-                    overlay.set(OverlayState::Hidden);
+                    overlay.set(resting(paused));
                     if !e.cleaned.is_empty() {
                         log::debug!("raw: {}", e.raw);
                         history.push(e);
                     }
                 }
                 PipelineMsg::Error(s) => {
-                    overlay.set(OverlayState::Hidden);
+                    overlay.set(resting(paused));
                     capture.take();
                     listening = false;
                     while let Ok(chunk) = audio_rx.try_recv() {
@@ -178,8 +181,16 @@ fn main() -> Result<()> {
                 }
             }
         }
+        resting_tick = resting_tick.wrapping_add(1);
+        if resting_tick % 64 == 0 {
+            overlay.refresh_resting();
+        }
         std::thread::sleep(Duration::from_millis(15));
     }
     let _ = cmd_tx.send(PipelineCmd::Shutdown);
     Ok(())
+}
+
+fn resting(paused: bool) -> OverlayState {
+    if paused { OverlayState::Paused } else { OverlayState::Idle }
 }
