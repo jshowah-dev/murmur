@@ -1,29 +1,6 @@
 use crate::config::Config;
 use crate::dictionary::Dictionary;
 
-/// Join VAD-segment transcripts; capitalise after a segment that ended a sentence.
-pub fn join_parts(parts: &[String]) -> String {
-    let mut out = String::new();
-    for p in parts.iter().map(|s| s.trim()).filter(|s| !s.is_empty()) {
-        if out.is_empty() {
-            out.push_str(p);
-            continue;
-        }
-        let ends_sentence = out.ends_with(['.', '!', '?']);
-        out.push(' ');
-        if ends_sentence {
-            let mut cs = p.chars();
-            if let Some(f) = cs.next() {
-                out.extend(f.to_uppercase());
-                out.push_str(cs.as_str());
-            }
-        } else {
-            out.push_str(p);
-        }
-    }
-    out
-}
-
 fn strip_fillers(text: &str, fillers: &[String]) -> String {
     let mut out: Vec<String> = Vec::new();
     for tok in text.split(' ') {
@@ -183,12 +160,6 @@ mod tests {
         let (d, mut c) = env();
         c.spoken_commands = false;
         assert_eq!(clean("a new line b", &d, &c), "A new line b");
-    }
-
-    #[test]
-    fn join_parts_repairs_segment_boundaries() {
-        assert_eq!(join_parts(&["Hello there.".into(), "how are you".into()]), "Hello there. How are you");
-        assert_eq!(join_parts(&["one".into(), "".into(), "two".into()]), "one two");
     }
 
     #[test]

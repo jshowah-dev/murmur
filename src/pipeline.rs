@@ -27,6 +27,8 @@ pub enum PipelineMsg {
 }
 
 const MIN_SPEECH_SAMPLES: usize = 16_000 * 300 / 1000;
+// silence inserted between VAD segments so the model hears the pause but sees one utterance
+const SEGMENT_GAP: usize = 16_000 * 200 / 1000;
 
 struct State {
     cfg: Config,
@@ -34,8 +36,7 @@ struct State {
     tx: Sender<PipelineMsg>,
     vad: Option<Vad>,
     rec: Option<Recognizer>,
-    parts: Vec<String>,
-    raw_parts: Vec<String>,
+    speech: Vec<f32>,
     speech_samples: usize,
     recording: bool,
     last_used: Instant,
@@ -53,15 +54,15 @@ impl State {
         Ok(())
     }
 
-    fn transcribe_segments(&mut self, segs: Vec<crate::vad::Segment>) {
-        let Some(rec) = self.rec.as_ref() else { return };
+    /// Segments are buffered, not transcribed: the model punctuates whatever it is
+    /// given as a full sentence, so per-segment decoding turned every pause into a period.
+    fn collect_segments(&mut self, segs: Vec<crate::vad::Segment>) {
         for s in segs {
             self.speech_samples += s.samples.len().saturating_sub(crate::vad::PRE_ROLL);
-            let text = rec.transcribe(&s.samples);
-            if !text.is_empty() {
-                self.raw_parts.push(text.clone());
-                self.parts.push(text);
+            if !self.speech.is_empty() {
+                self.speech.extend(std::iter::repeat(0.0).take(SEGMENT_GAP));
             }
+            self.speech.extend(s.samples);
         }
     }
 
@@ -71,8 +72,7 @@ impl State {
             return;
         }
         self.vad.as_mut().unwrap().reset();
-        self.parts.clear();
-        self.raw_parts.clear();
+        self.speech.clear();
         self.speech_samples = 0;
         self.recording = true;
     }
@@ -83,7 +83,7 @@ impl State {
         }
         let _ = self.tx.send(PipelineMsg::Level((rms(&chunk) * 6.0).min(1.0)));
         let segs = self.vad.as_mut().map(|v| v.push(&chunk)).unwrap_or_default();
-        self.transcribe_segments(segs);
+        self.collect_segments(segs);
     }
 
     fn stop(&mut self) {
@@ -94,17 +94,21 @@ impl State {
         self.recording = false;
         let _ = self.tx.send(PipelineMsg::Processing);
         let segs = self.vad.as_mut().map(|v| v.flush()).unwrap_or_default();
-        self.transcribe_segments(segs);
+        self.collect_segments(segs);
         self.last_used = Instant::now();
-        if self.speech_samples < MIN_SPEECH_SAMPLES || self.parts.is_empty() {
+        let raw = match self.rec.as_ref() {
+            Some(rec) if self.speech_samples >= MIN_SPEECH_SAMPLES => rec.transcribe(&self.speech),
+            _ => String::new(),
+        };
+        self.speech.clear();
+        if raw.is_empty() {
             let _ = self.tx.send(PipelineMsg::Done(Entry { raw: String::new(), cleaned: String::new(), inject: None }));
             return;
         }
-        let raw = cleanup::join_parts(&self.raw_parts);
         log::debug!("raw: {raw}");
         let cleaned = {
             let d = self.dict.lock().unwrap_or_else(|e| e.into_inner());
-            cleanup::clean(&cleanup::join_parts(&self.parts), &d, &self.cfg)
+            cleanup::clean(&raw, &d, &self.cfg)
         };
         let inject = match inject::paste(&cleaned) {
             Ok(r) => Some(r),
@@ -119,8 +123,7 @@ impl State {
 
     fn abort(&mut self) {
         self.recording = false;
-        self.parts.clear();
-        self.raw_parts.clear();
+        self.speech.clear();
         self.speech_samples = 0;
         if let Some(v) = self.vad.as_mut() {
             v.reset();
@@ -141,7 +144,7 @@ pub fn spawn(cfg: Config, dict: Arc<Mutex<Dictionary>>, rx: Receiver<PipelineCmd
     thread::Builder::new()
         .name("pipeline".into())
         .spawn(move || {
-            let mut st = State { cfg, dict, tx, vad: None, rec: None, parts: vec![], raw_parts: vec![], speech_samples: 0, recording: false, last_used: Instant::now() };
+            let mut st = State { cfg, dict, tx, vad: None, rec: None, speech: vec![], speech_samples: 0, recording: false, last_used: Instant::now() };
             // Spec § Error handling: a panic is logged and the loop restarts; the tray survives.
             loop {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut st, &rx)));
