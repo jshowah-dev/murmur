@@ -1,7 +1,7 @@
 use crossbeam_channel::Sender;
 use std::thread::{self, sleep, JoinHandle};
 use std::time::{Duration, Instant};
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_SHIFT};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LSHIFT, VK_RSHIFT, VK_SHIFT};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyEvent {
@@ -19,6 +19,10 @@ fn down(vk: u16) -> bool {
     unsafe { (GetAsyncKeyState(vk as i32) as u16 & 0x8000) != 0 }
 }
 
+fn shift_down() -> bool {
+    down(VK_SHIFT.0) || down(VK_LSHIFT.0) || down(VK_RSHIFT.0)
+}
+
 /// Polls one key. Down fires immediately on key-down (unless Shift is held) so capture starts early;
 /// Press is reported only after MIN_HOLD; a release before MIN_HOLD sends Cancel instead of Release.
 /// Shift held at the moment of the press means FixLast instead of a recording.
@@ -32,13 +36,25 @@ pub fn spawn(ptt_vk: u16, tx: Sender<HotkeyEvent>) -> JoinHandle<()> {
                 while !down(ptt_vk) {
                     sleep(POLL);
                 }
-                let shift = down(VK_SHIFT.0);
+                let mut shift = shift_down();
+                log::info!("ptt down, shift={shift}");
                 let t0 = Instant::now();
                 if !shift {
                     let _ = tx.send(HotkeyEvent::Down);
                     sent_down = true;
                 }
                 while down(ptt_vk) {
+                    // Shift is often reported a poll or two late; any Shift during the hold
+                    // turns the press into fix-last and abandons the capture.
+                    if !shift && shift_down() {
+                        shift = true;
+                        log::info!("shift seen during hold");
+                        if sent_down {
+                            let _ = tx.send(HotkeyEvent::Cancel);
+                            sent_down = false;
+                            sent_press = false;
+                        }
+                    }
                     if !shift && !sent_press && t0.elapsed() >= MIN_HOLD {
                         let _ = tx.send(HotkeyEvent::Press);
                         sent_press = true;
