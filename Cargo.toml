@@ -2,6 +2,7 @@
 name = "murmur"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
 
 [[bin]]
 name = "murmur"
@@ -31,6 +32,9 @@ dirs = "7"
 anyhow = "1"
 log = "0.4"
 simplelog = "0.12"
+
+[build-dependencies]
+winresource = "0.1"
 
 [profile.release]
 opt-level = 3
