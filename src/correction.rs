@@ -114,6 +114,7 @@ fn show_dialog(initial: &str) -> Option<String> {
         }
         let _ = ShowWindow(hwnd, SW_SHOW);
         bring_to_front(hwnd);
+        log::info!("fix-last dialog shown, in front: {}", GetForegroundWindow() == hwnd);
         let _ = SetFocus(Some(edit_hwnd()));
 
         let mut msg = MSG::default();

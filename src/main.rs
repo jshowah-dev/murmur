@@ -152,6 +152,7 @@ fn main() -> Result<()> {
                     let _ = cmd_tx.send(PipelineCmd::Stop);
                 }
                 HotkeyEvent::FixLast => {
+                    log::info!("fix-last hotkey");
                     correction::fix_last(&mut history, &dict, &tray);
                     while hk_rx.try_recv().is_ok() {}
                 }

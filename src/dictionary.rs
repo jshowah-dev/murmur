@@ -224,7 +224,9 @@ impl Dictionary {
                 } else {
                     (o_stem, n_core)
                 };
-                if !o_core.is_empty() && !n_core.is_empty() && o_core.to_ascii_lowercase() != n_core.to_ascii_lowercase() && phonetic::similar(o_core, n_core) {
+                // Never learn a common word as a spoken form: exact matching would then
+                // rewrite it everywhere ("all" -> "Call" after a clipped first word).
+                if !o_core.is_empty() && !n_core.is_empty() && !phonetic::is_common(o_core) && o_core.to_ascii_lowercase() != n_core.to_ascii_lowercase() && phonetic::similar(o_core, n_core) {
                     let spoken = o_core.to_ascii_lowercase();
                     if let Some(t) = this.terms.iter_mut().find(|t| t.written == n_core) {
                         if !t.spoken.contains(&spoken) {
@@ -264,6 +266,13 @@ mod tests {
             Term { written: "BOL".into(), spoken: vec!["bee oh el".into()], phonetic: true },
             Term { written: "Delgado".into(), spoken: vec![], phonetic: true },
         ])
+    }
+
+    #[test]
+    fn learn_refuses_common_word_as_spoken_form() {
+        let mut d = dict();
+        assert!(d.learn("All Mr. Kowalczyk today.", "Call Mr. Kowalczyk today.").is_empty());
+        assert_eq!(d.apply("all of them"), "all of them");
     }
 
     #[test]
