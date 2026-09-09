@@ -56,7 +56,7 @@ impl State {
     fn transcribe_segments(&mut self, segs: Vec<crate::vad::Segment>) {
         let Some(rec) = self.rec.as_ref() else { return };
         for s in segs {
-            self.speech_samples += s.samples.len();
+            self.speech_samples += s.samples.len().saturating_sub(crate::vad::PRE_ROLL);
             let text = rec.transcribe(&s.samples);
             if !text.is_empty() {
                 self.raw_parts.push(text.clone());
