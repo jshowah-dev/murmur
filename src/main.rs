@@ -25,7 +25,7 @@ use overlay::{Overlay, OverlayState};
 use pipeline::{PipelineCmd, PipelineMsg};
 use std::sync::{Arc, Mutex};
 use std::collections::VecDeque;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tray::{Tray, TrayEvent};
 
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
@@ -85,7 +85,8 @@ fn main() -> Result<()> {
     // The mic stays open while not paused: a rolling buffer of the last PRE_ROLL_SAMPLES is
     // fed to the pipeline ahead of the live audio on key-down, so the first consonant is not
     // lost to device start-up latency.
-    let mut capture = open_mic(&audio_tx, &tray);
+    let mut capture = if cfg.mic_always_on { open_mic(&audio_tx, &tray) } else { None };
+    let mut mic_used = Instant::now();
     let mut ring: VecDeque<f32> = VecDeque::with_capacity(PRE_ROLL_SAMPLES * 2);
     let mut forwarding = false;
     let mut paused = false;
@@ -125,8 +126,9 @@ fn main() -> Result<()> {
                     if paused {
                         capture.take();
                         ring.clear();
-                    } else {
+                    } else if cfg.mic_always_on {
                         capture = open_mic(&audio_tx, &tray);
+                        mic_used = Instant::now();
                     }
                 }
                 TrayEvent::FixLast => {
@@ -148,6 +150,7 @@ fn main() -> Result<()> {
                     if capture.is_none() {
                         continue;
                     }
+                    mic_used = Instant::now();
                     let _ = cmd_tx.send(PipelineCmd::Start);
                     let _ = cmd_tx.send(PipelineCmd::Audio(ring.drain(..).collect()));
                     forwarding = true;
@@ -161,6 +164,9 @@ fn main() -> Result<()> {
                     while audio_rx.try_recv().is_ok() {}
                     listening = false;
                     let _ = cmd_tx.send(PipelineCmd::Abort);
+                    if !cfg.mic_always_on {
+                        capture.take();
+                    }
                 }
                 HotkeyEvent::Release => {
                     while let Ok(chunk) = audio_rx.try_recv() {
@@ -169,6 +175,9 @@ fn main() -> Result<()> {
                     forwarding = false;
                     listening = false;
                     let _ = cmd_tx.send(PipelineCmd::Stop);
+                    if !cfg.mic_always_on {
+                        capture.take();
+                    }
                 }
                 HotkeyEvent::FixLast => {
                     log::info!("fix-last hotkey");
@@ -202,6 +211,12 @@ fn main() -> Result<()> {
         resting_tick = resting_tick.wrapping_add(1);
         if resting_tick % 64 == 0 {
             overlay.refresh_resting();
+            let mins = cfg.idle_unload_minutes;
+            if mins > 0 && capture.is_some() && !forwarding && mic_used.elapsed() > Duration::from_secs(mins * 60) {
+                log::info!("closing mic after idle");
+                capture.take();
+                ring.clear();
+            }
         }
         std::thread::sleep(Duration::from_millis(15));
     }

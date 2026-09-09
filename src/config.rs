@@ -12,6 +12,9 @@ pub struct Config {
     pub min_silence_ms: u32,
     pub fillers: Vec<String>,
     pub spoken_commands: bool,
+    /// Keep the mic open between dictations so the first consonant is not lost to device
+    /// start-up. It closes after `idle_unload_minutes` without a dictation. false = open on press.
+    pub mic_always_on: bool,
 }
 
 impl Default for Config {
@@ -24,6 +27,7 @@ impl Default for Config {
             min_silence_ms: 500,
             fillers: ["um", "uh", "er", "hmm", "mm"].iter().map(|s| s.to_string()).collect(),
             spoken_commands: true,
+            mic_always_on: true,
         }
     }
 }
