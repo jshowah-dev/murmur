@@ -46,6 +46,7 @@ fn open_path(p: &std::path::Path) {
 
 fn main() -> Result<()> {
     init_logging();
+    log::info!("murmur {} starting, cwd {:?}", env!("CARGO_PKG_VERSION"), std::env::current_dir().ok());
     let mut startup_errors: Vec<String> = Vec::new();
     let cfg = match Config::load_or_create() {
         Ok(c) => c,
