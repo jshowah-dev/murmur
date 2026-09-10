@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 use murmur_lib::{audio, cleanup, config, dictionary, history, stt, vad};
+mod audio_out;
 mod correction;
 mod hotkey;
 mod inject;
@@ -97,6 +98,7 @@ fn main() -> Result<()> {
     let mut paused = false;
     let mut listening = false;
     let mut resting_tick: u32 = 0;
+    let mut output_mute = audio_out::OutputMute::new();
     overlay.set(OverlayState::Idle);
 
     let encoder = cfg.model_dir_path().join("encoder.int8.onnx");
@@ -155,6 +157,9 @@ fn main() -> Result<()> {
                         continue;
                     }
                     mic_used = Instant::now();
+                    if cfg.mute_output {
+                        output_mute.mute();
+                    }
                     let _ = cmd_tx.send(PipelineCmd::Start);
                     let _ = cmd_tx.send(PipelineCmd::Audio(ring.drain(..).collect()));
                     forwarding = true;
@@ -164,6 +169,7 @@ fn main() -> Result<()> {
                     overlay.set(OverlayState::Listening(0.0));
                 }
                 HotkeyEvent::Cancel => {
+                    output_mute.restore();
                     forwarding = false;
                     while audio_rx.try_recv().is_ok() {}
                     listening = false;
@@ -176,6 +182,7 @@ fn main() -> Result<()> {
                     while let Ok(chunk) = audio_rx.try_recv() {
                         let _ = cmd_tx.send(PipelineCmd::Audio(chunk));
                     }
+                    output_mute.restore();
                     forwarding = false;
                     listening = false;
                     let _ = cmd_tx.send(PipelineCmd::Stop);

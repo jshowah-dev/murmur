@@ -15,6 +15,8 @@ pub struct Config {
     /// Keep the mic open between dictations so the first consonant is not lost to device
     /// start-up. It closes after `idle_unload_minutes` without a dictation. false = open on press.
     pub mic_always_on: bool,
+    /// Mute the default speaker while the PTT key is held (Spotify, YouTube ...).
+    pub mute_output: bool,
 }
 
 impl Default for Config {
@@ -28,6 +30,7 @@ impl Default for Config {
             fillers: ["um", "uh", "er", "hmm", "mm"].iter().map(|s| s.to_string()).collect(),
             spoken_commands: true,
             mic_always_on: true,
+            mute_output: true,
         }
     }
 }
