@@ -4,8 +4,8 @@ use windows::Win32::Foundation::{
     COLORREF, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, CreateRoundRectRgn, CreateSolidBrush, DeleteDC, DeleteObject, FillRect, FillRgn,
-    GetDC, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP,
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::Foundation::GetLastError;
@@ -101,7 +101,7 @@ impl Overlay {
 
     /// Paint the pill into a 32-bit DIB and push it with UpdateLayeredWindow.
     fn paint(&mut self) {
-        let (w, h, alpha) = self.state.geometry();
+        let (w, h, pixels) = render(self.state, self.tick);
         unsafe {
             let screen = GetDC(None);
             let mem = CreateCompatibleDC(Some(screen));
@@ -126,70 +126,7 @@ impl Overlay {
             }
             let old = SelectObject(mem, bmp.into());
 
-            // premultiplied BGRA: fully transparent background
-            let px = std::slice::from_raw_parts_mut(bits as *mut u32, (w * h) as usize);
-            px.fill(0);
-            // pill body
-            let rgn = CreateRoundRectRgn(0, 0, w, h, h, h);
-            let body = CreateSolidBrush(COLORREF(0x00202020));
-            let _ = FillRgn(mem, rgn, body);
-            // body alpha: dim when resting, near-opaque when live (premultiplied)
-            let ch = 0x20 * alpha / 255;
-            let body_px = (alpha << 24) | (ch << 16) | (ch << 8) | ch;
-            for p in px.iter_mut() {
-                if *p != 0 {
-                    *p = body_px;
-                }
-            }
-            // content
-            match self.state {
-                OverlayState::Idle | OverlayState::Paused => {
-                    let c = if self.state == OverlayState::Idle { 0x0060D060 } else { 0x00808080 };
-                    let d = h - 8;
-                    let dot_rgn = CreateRoundRectRgn(w / 2 - d / 2, 4, w / 2 + d / 2, 4 + d, d, d);
-                    let dot = CreateSolidBrush(COLORREF(c));
-                    let _ = FillRgn(mem, dot_rgn, dot);
-                    let _ = DeleteObject(dot.into());
-                    let _ = DeleteObject(dot_rgn.into());
-                }
-                OverlayState::Listening(level) | OverlayState::Locked(level) => {
-                    let locked = matches!(self.state, OverlayState::Locked(_));
-                    // the locked bar stops short of the dot at the right end
-                    let span = if locked { W - 58 } else { W - 40 };
-                    let bar_w = (span as f32 * level.clamp(0.0, 1.0)) as i32;
-                    let r = RECT { left: 20, top: H / 2 - 3, right: 20 + bar_w.max(4), bottom: H / 2 + 3 };
-                    let fg = CreateSolidBrush(COLORREF(0x0060D060));
-                    FillRect(mem, &r, fg);
-                    let _ = DeleteObject(fg.into());
-                    if locked {
-                        let d = 10;
-                        let x = W - 20 - d;
-                        let dot_rgn = CreateRoundRectRgn(x, H / 2 - d / 2, x + d, H / 2 + d / 2, d, d);
-                        let dot = CreateSolidBrush(COLORREF(0x004040E0));
-                        let _ = FillRgn(mem, dot_rgn, dot);
-                        let _ = DeleteObject(dot.into());
-                        let _ = DeleteObject(dot_rgn.into());
-                    }
-                }
-                OverlayState::Processing => {
-                    let on = (self.tick / 4) % 3;
-                    for i in 0..3 {
-                        let x = W / 2 - 18 + i * 14;
-                        let r = RECT { left: x, top: H / 2 - 3, right: x + 6, bottom: H / 2 + 3 };
-                        let c = if i as u32 == on { 0x00FFFFFF } else { 0x00707070 };
-                        let b = CreateSolidBrush(COLORREF(c));
-                        FillRect(mem, &r, b);
-                        let _ = DeleteObject(b.into());
-                    }
-                }
-            }
-            for p in px.iter_mut() {
-                if *p & 0xFF00_0000 == 0 && *p != 0 {
-                    *p |= 0xFF00_0000;
-                }
-            }
-            let _ = DeleteObject(body.into());
-            let _ = DeleteObject(rgn.into());
+            std::slice::from_raw_parts_mut(bits as *mut u32, pixels.len()).copy_from_slice(&pixels);
 
             let (x, y) = self.target_position(w, h);
             let blend = BLENDFUNCTION { BlendOp: 0, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
@@ -242,5 +179,130 @@ impl Overlay {
             }
         }
         true
+    }
+}
+
+/// Premultiplied RGBA canvas; shapes are drawn with per-pixel coverage so edges are antialiased.
+struct Canvas {
+    w: i32,
+    h: i32,
+    px: Vec<[f32; 4]>,
+}
+
+impl Canvas {
+    fn new(w: i32, h: i32) -> Self {
+        Canvas { w, h, px: vec![[0.0; 4]; (w * h) as usize] }
+    }
+
+    /// Composite a capsule (rounded rect, radius = half the short side) of 0xRRGGBB at `alpha` over the canvas.
+    fn capsule(&mut self, x: f32, y: f32, cw: f32, ch: f32, rgb: u32, alpha: f32) {
+        let r = cw.min(ch) / 2.0;
+        let (cx, cy) = (x + cw / 2.0, y + ch / 2.0);
+        let (bx, by) = (cw / 2.0 - r, ch / 2.0 - r);
+        let col = [(rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF].map(|c| c as f32 / 255.0);
+        for py in (y.floor() as i32).max(0)..((y + ch).ceil() as i32).min(self.h) {
+            for pxl in (x.floor() as i32).max(0)..((x + cw).ceil() as i32).min(self.w) {
+                // signed distance from the pixel centre to the capsule edge
+                let qx = (pxl as f32 + 0.5 - cx).abs() - bx;
+                let qy = (py as f32 + 0.5 - cy).abs() - by;
+                let d = qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - r;
+                let a = (0.5 - d).clamp(0.0, 1.0) * alpha;
+                if a > 0.0 {
+                    let dst = &mut self.px[(py * self.w + pxl) as usize];
+                    for i in 0..3 {
+                        dst[i] = col[i] * a + dst[i] * (1.0 - a);
+                    }
+                    dst[3] = a + dst[3] * (1.0 - a);
+                }
+            }
+        }
+    }
+
+    /// Pack as premultiplied BGRA (0xAARRGGBB little-endian), what UpdateLayeredWindow expects.
+    fn into_bgra(self) -> Vec<u32> {
+        let q = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u32;
+        self.px.into_iter().map(|[r, g, b, a]| (q(a) << 24) | (q(r) << 16) | (q(g) << 8) | q(b)).collect()
+    }
+}
+
+/// Paint `state` into premultiplied BGRA pixels, row-major, `w * h` long.
+fn render(state: OverlayState, tick: u32) -> (i32, i32, Vec<u32>) {
+    let (w, h, alpha) = state.geometry();
+    let mut c = Canvas::new(w, h);
+    let (wf, hf) = (w as f32, h as f32);
+    // body: dim when resting, near-opaque when live
+    c.capsule(0.0, 0.0, wf, hf, 0x202020, alpha as f32 / 255.0);
+    match state {
+        OverlayState::Idle | OverlayState::Paused => {
+            let rgb = if state == OverlayState::Idle { 0x60D060 } else { 0x808080 };
+            let d = hf - 8.0;
+            c.capsule(wf / 2.0 - d / 2.0, 4.0, d, d, rgb, 1.0);
+        }
+        OverlayState::Listening(level) | OverlayState::Locked(level) => {
+            let locked = matches!(state, OverlayState::Locked(_));
+            // the locked bar stops short of the dot at the right end
+            let span = if locked { W - 58 } else { W - 40 } as f32;
+            let bar_w = (span * level.clamp(0.0, 1.0)).max(6.0);
+            c.capsule(20.0, hf / 2.0 - 3.0, bar_w, 6.0, 0x60D060, 1.0);
+            if locked {
+                let d = 10.0;
+                c.capsule(wf - 20.0 - d, hf / 2.0 - d / 2.0, d, d, 0xE04040, 1.0);
+            }
+        }
+        OverlayState::Processing => {
+            let on = (tick / 4) % 3;
+            for i in 0..3 {
+                let rgb = if i == on { 0xFFFFFF } else { 0x707070 };
+                c.capsule(wf / 2.0 - 18.0 + i as f32 * 14.0, hf / 2.0 - 3.0, 6.0, 6.0, rgb, 1.0);
+            }
+        }
+    }
+    (w, h, c.into_bgra())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn alpha(p: u32) -> u32 {
+        p >> 24
+    }
+
+    #[test]
+    fn body_is_opaque_inside_and_clear_at_corners() {
+        let (w, _, px) = render(OverlayState::Listening(0.0), 0);
+        assert_eq!(alpha(px[(4 * w + w / 2) as usize]), 0xE6);
+        assert_eq!(px[0], 0);
+        assert_eq!(px[(w - 1) as usize], 0);
+    }
+
+    #[test]
+    fn rim_is_antialiased() {
+        for state in [OverlayState::Idle, OverlayState::Listening(0.0)] {
+            let (_, _, px) = render(state, 0);
+            let (_, _, body) = state.geometry();
+            assert!(px.iter().any(|&p| alpha(p) > 0 && alpha(p) < body), "{state:?} has no partial rim pixels");
+        }
+    }
+
+    #[test]
+    fn pixels_are_premultiplied() {
+        for state in [OverlayState::Idle, OverlayState::Paused, OverlayState::Listening(0.7), OverlayState::Locked(0.4), OverlayState::Processing] {
+            let (_, _, px) = render(state, 0);
+            for p in px {
+                let a = alpha(p);
+                assert!((p >> 16) & 0xFF <= a && (p >> 8) & 0xFF <= a && p & 0xFF <= a, "{state:?}: {p:08X}");
+            }
+        }
+    }
+
+    #[test]
+    fn locked_dot_is_red_and_idle_dot_is_green() {
+        let (w, h, px) = render(OverlayState::Locked(0.0), 0);
+        let p = px[((h / 2) * w + W - 25) as usize];
+        assert!((p >> 16) & 0xFF > p & 0xFF, "locked dot not red: {p:08X}");
+        let (w, h, px) = render(OverlayState::Idle, 0);
+        let p = px[((h / 2) * w + w / 2) as usize];
+        assert!((p >> 8) & 0xFF > (p >> 16) & 0xFF, "idle dot not green: {p:08X}");
     }
 }
