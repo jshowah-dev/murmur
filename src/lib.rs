@@ -3,6 +3,7 @@ pub mod cleanup;
 pub mod config;
 pub mod dictionary;
 pub mod history;
+pub mod model_fetch;
 pub mod phonetic;
 pub mod snippets;
 pub mod stt;
