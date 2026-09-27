@@ -5,6 +5,7 @@ mod audio_out;
 mod caret;
 mod correction;
 mod correction_ui;
+mod history_ui;
 mod hotkey;
 mod inject;
 mod overlay;
@@ -82,7 +83,7 @@ fn main() -> Result<()> {
         log::error!("{e:#}");
         startup_errors.push(format!("snippets: {e}"));
     }
-    let mut history = History::new(10);
+    let mut history = History::new(25);
 
     let (hk_tx, hk_rx) = unbounded::<HotkeyEvent>();
     let (cmd_tx, cmd_rx) = unbounded::<PipelineCmd>();
@@ -154,6 +155,14 @@ fn main() -> Result<()> {
                 TrayEvent::FixLast => {
                     correction::fix_last(&mut history, &dict, &tray);
                     while hk_rx.try_recv().is_ok() {}
+                }
+                TrayEvent::History => {
+                    if history.last().is_none() {
+                        tray.notify("History", "nothing dictated yet");
+                    } else {
+                        history_ui::show(history.newest_first().map(|e| (e.cleaned.clone(), e.at)).collect());
+                        while hk_rx.try_recv().is_ok() {}
+                    }
                 }
                 TrayEvent::OpenDictionary => open_path(&config::config_dir().join("dictionary.toml")),
                 TrayEvent::OpenSnippets => open_path(&snippets::path()),

@@ -19,6 +19,8 @@ pub struct Entry {
     pub raw: String,
     pub cleaned: String,
     pub inject: Option<InjectRecord>,
+    /// When the dictation finished, whether or not the paste worked.
+    pub at: Instant,
 }
 
 pub struct History {
@@ -35,6 +37,9 @@ impl History {
             self.items.pop_front();
         }
         self.items.push_back(e);
+    }
+    pub fn newest_first(&self) -> impl Iterator<Item = &Entry> {
+        self.items.iter().rev()
     }
     pub fn last(&self) -> Option<&Entry> {
         self.items.back()
@@ -55,7 +60,7 @@ mod tests {
     use super::*;
 
     fn e(s: &str) -> Entry {
-        Entry { raw: s.into(), cleaned: s.into(), inject: None }
+        Entry { raw: s.into(), cleaned: s.into(), inject: None, at: Instant::now() }
     }
 
     #[test]
@@ -66,6 +71,15 @@ mod tests {
         h.push(e("c"));
         assert_eq!(h.len(), 2);
         assert_eq!(h.last().unwrap().cleaned, "c");
+    }
+
+    #[test]
+    fn newest_first_order() {
+        let mut h = History::new(3);
+        for s in ["a", "b", "c", "d"] {
+            h.push(e(s));
+        }
+        assert_eq!(h.newest_first().map(|e| e.cleaned.as_str()).collect::<Vec<_>>(), ["d", "c", "b"]);
     }
 
     #[test]

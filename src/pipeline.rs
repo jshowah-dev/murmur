@@ -138,7 +138,7 @@ impl State {
         let raw = std::mem::take(&mut self.texts).join(" ");
         self.speech.clear();
         if raw.is_empty() {
-            let _ = self.tx.send(PipelineMsg::Done(Entry { raw: String::new(), cleaned: String::new(), inject: None }));
+            let _ = self.tx.send(PipelineMsg::Done(Entry { raw: String::new(), cleaned: String::new(), inject: None, at: Instant::now() }));
             return;
         }
         log::debug!("raw: {raw}");
@@ -157,7 +157,7 @@ impl State {
             }
         };
         log::info!("dictated {} chars, release_to_text_ms={}", cleaned.chars().count(), stop_start.elapsed().as_millis());
-        let _ = self.tx.send(PipelineMsg::Done(Entry { raw, cleaned, inject }));
+        let _ = self.tx.send(PipelineMsg::Done(Entry { raw, cleaned, inject, at: Instant::now() }));
     }
 
     fn abort(&mut self) {
@@ -168,7 +168,7 @@ impl State {
         if let Some(v) = self.vad.as_mut() {
             v.reset();
         }
-        let _ = self.tx.send(PipelineMsg::Done(Entry { raw: String::new(), cleaned: String::new(), inject: None }));
+        let _ = self.tx.send(PipelineMsg::Done(Entry { raw: String::new(), cleaned: String::new(), inject: None, at: Instant::now() }));
     }
 
     fn maybe_unload(&mut self) {

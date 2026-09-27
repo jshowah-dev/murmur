@@ -9,6 +9,7 @@ use windows::Win32::UI::Shell::{Shell_NotifyIconW, NIF_INFO, NIIF_INFO, NIM_MODI
 pub enum TrayEvent {
     TogglePause,
     FixLast,
+    History,
     OpenDictionary,
     OpenSnippets,
     OpenConfigDir,
@@ -18,7 +19,7 @@ pub enum TrayEvent {
 pub struct Tray {
     _icon: TrayIcon,
     pause: MenuItem,
-    ids: [(MenuId, TrayEvent); 6],
+    ids: [(MenuId, TrayEvent); 7],
 }
 
 fn icon(paused: bool) -> Icon {
@@ -46,14 +47,16 @@ impl Tray {
         let menu = Menu::new();
         let pause = MenuItem::new("Pause", true, None);
         let fix = MenuItem::new("Fix last (Left Shift+PTT)", true, None);
+        let hist = MenuItem::new("History…", true, None);
         let dict = MenuItem::new("Open dictionary", true, None);
         let snip = MenuItem::new("Open snippets", true, None);
         let cfg = MenuItem::new("Open config folder", true, None);
         let quit = MenuItem::new("Quit", true, None);
-        menu.append_items(&[&pause, &fix, &PredefinedMenuItem::separator(), &dict, &snip, &cfg, &PredefinedMenuItem::separator(), &quit])?;
+        menu.append_items(&[&pause, &fix, &hist, &PredefinedMenuItem::separator(), &dict, &snip, &cfg, &PredefinedMenuItem::separator(), &quit])?;
         let ids = [
             (pause.id().clone(), TrayEvent::TogglePause),
             (fix.id().clone(), TrayEvent::FixLast),
+            (hist.id().clone(), TrayEvent::History),
             (dict.id().clone(), TrayEvent::OpenDictionary),
             (snip.id().clone(), TrayEvent::OpenSnippets),
             (cfg.id().clone(), TrayEvent::OpenConfigDir),

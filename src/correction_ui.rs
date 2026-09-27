@@ -17,11 +17,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 const WIDTH: f32 = 540.0;
-const BG: Color32 = Color32::from_rgb(0x1F, 0x1F, 0x1F);
-const BORDER: Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
-const TEXT: Color32 = Color32::from_rgb(0xEE, 0xEE, 0xEE);
-const MUTED: Color32 = Color32::from_rgb(0x99, 0x99, 0x99);
-const GREEN: Color32 = Color32::from_rgb(0x60, 0xD0, 0x60);
+pub(crate) const BG: Color32 = Color32::from_rgb(0x1F, 0x1F, 0x1F);
+pub(crate) const BORDER: Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
+pub(crate) const TEXT: Color32 = Color32::from_rgb(0xEE, 0xEE, 0xEE);
+pub(crate) const MUTED: Color32 = Color32::from_rgb(0x99, 0x99, 0x99);
+pub(crate) const GREEN: Color32 = Color32::from_rgb(0x60, 0xD0, 0x60);
 const AMBER: Color32 = Color32::from_rgb(0xF5, 0xC5, 0x4A);
 const AMBER_BG: Color32 = Color32::from_rgba_premultiplied(0x36, 0x2B, 0x10, 0x38);
 const SPOKEN: Color32 = Color32::from_rgb(0xD9, 0x8C, 0x7A);
@@ -91,7 +91,7 @@ impl FixApp {
     }
 }
 
-fn keycap(ui: &mut egui::Ui, label: &str) {
+pub(crate) fn keycap(ui: &mut egui::Ui, label: &str) {
     Frame::new()
         .stroke(Stroke::new(1.0, Color32::from_rgb(0x48, 0x48, 0x48)))
         .corner_radius(CornerRadius::same(4))
@@ -221,7 +221,7 @@ impl eframe::App for FixApp {
     }
 }
 
-fn load_system_font(ctx: &egui::Context) {
+pub(crate) fn load_system_font(ctx: &egui::Context) {
     let dir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
     for name in ["SegUIVar.ttf", "segoeui.ttf"] {
         if let Ok(bytes) = std::fs::read(format!(r"{dir}\Fonts\{name}")) {
@@ -235,7 +235,7 @@ fn load_system_font(ctx: &egui::Context) {
     }
 }
 
-fn hwnd_of(cc: &eframe::CreationContext) -> Option<HWND> {
+pub(crate) fn hwnd_of(cc: &eframe::CreationContext) -> Option<HWND> {
     match cc.window_handle().ok()?.as_raw() {
         RawWindowHandle::Win32(h) => Some(HWND(h.hwnd.get() as *mut _)),
         _ => None,
