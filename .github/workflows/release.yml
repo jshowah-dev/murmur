@@ -1,0 +1,75 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Read version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          "version=$v" >> $env:GITHUB_OUTPUT
+          if ('${{ github.ref_type }}' -eq 'tag' -and "v$v" -ne '${{ github.ref_name }}') {
+            throw "tag ${{ github.ref_name }} does not match Cargo.toml version $v"
+          }
+
+      # sherpa-onnx-sys downloads its prebuilt DLLs into target/release during this build
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Test
+        shell: pwsh
+        run: |
+          # the ONNX tests crash on System32's older onnxruntime.dll unless the bundled DLLs sit next to the test binaries
+          Copy-Item target/release/*.dll target/release/deps/
+          cargo test --release --locked --bin murmur
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo test --release --locked --lib
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          # no model on CI: this prints "model not installed; skipping" and proves nothing here
+          cargo test --release --locked --test stt_integration -- --nocapture
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Package
+        id: pkg
+        shell: pwsh
+        run: |
+          $name = "murmur-v${{ steps.ver.outputs.version }}-windows-x64"
+          $files = @('murmur.exe', 'onnxruntime.dll', 'onnxruntime_providers_shared.dll', 'sherpa-onnx-c-api.dll', 'sherpa-onnx-cxx-api.dll') |
+            ForEach-Object { "target/release/$_" }
+          foreach ($doc in 'README.md', 'LICENSE') {
+            if (Test-Path $doc) { $files += $doc }
+            elseif ('${{ github.ref_type }}' -eq 'tag') { throw "$doc is required for a release" }
+          }
+          Compress-Archive -Path $files -DestinationPath "$name.zip"
+          $hash = (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name.zip" | Out-File -Encoding ascii "$name.zip.sha256"
+          "name=$name" >> $env:GITHUB_OUTPUT
+
+      - name: Upload artifact
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.name }}
+          path: |
+            ${{ steps.pkg.outputs.name }}.zip
+            ${{ steps.pkg.outputs.name }}.zip.sha256
+
+      - name: Draft release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" --draft --title "Murmur ${{ github.ref_name }}" "${{ steps.pkg.outputs.name }}.zip" "${{ steps.pkg.outputs.name }}.zip.sha256"
