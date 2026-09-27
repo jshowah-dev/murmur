@@ -40,8 +40,10 @@ fn init_logging() {
         opts.append(true);
     }
     if let Ok(f) = opts.open(&path) {
-        let _ = simplelog::WriteLogger::init(log::LevelFilter::Info, simplelog::Config::default(), f);
+        // the logger accepts DEBUG; the global max level decides, raised once config says debug_log
+        let _ = simplelog::WriteLogger::init(log::LevelFilter::Debug, simplelog::Config::default(), f);
     }
+    log::set_max_level(log::LevelFilter::Info);
 }
 
 fn open_path(p: &std::path::Path) {
@@ -71,6 +73,9 @@ fn main() -> Result<()> {
             Config::default()
         }
     };
+    if cfg.debug_log {
+        log::set_max_level(log::LevelFilter::Debug);
+    }
     let dict = Arc::new(Mutex::new(match Dictionary::load_or_seed() {
         Ok(d) => d,
         Err(e) => {
@@ -234,7 +239,6 @@ fn main() -> Result<()> {
                 PipelineMsg::Done(e) => {
                     overlay.set(resting(paused));
                     if !e.cleaned.is_empty() {
-                        log::info!("raw: {}", e.raw);
                         history.push(e);
                     }
                 }

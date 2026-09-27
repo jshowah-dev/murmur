@@ -19,6 +19,8 @@ pub struct Config {
     pub mute_output: bool,
     /// Hands-free (double-tap) recordings stop and paste after this many minutes.
     pub hands_free_max_minutes: u64,
+    /// Also log dictated text (DEBUG level). Off by default for privacy.
+    pub debug_log: bool,
 }
 
 impl Default for Config {
@@ -34,6 +36,7 @@ impl Default for Config {
             mic_always_on: true,
             mute_output: true,
             hands_free_max_minutes: 5,
+            debug_log: false,
         }
     }
 }
@@ -136,6 +139,7 @@ mod tests {
         assert!(c.spoken_commands);
         assert_eq!(c.fillers, vec!["um", "uh", "er", "hmm", "mm"]);
         assert_eq!(c.hands_free_max_minutes, 5);
+        assert!(!c.debug_log);
     }
 
     #[test]
