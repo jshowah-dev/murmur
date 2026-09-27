@@ -230,6 +230,58 @@ fn finish(part: &Path, target: &Path, hasher: Sha256, asset: &Asset) -> Result<P
     Ok(target.to_path_buf())
 }
 
+pub fn tar_exe() -> PathBuf {
+    let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+    PathBuf::from(root).join("System32").join("tar.exe")
+}
+
+/// Unpacks a .tar.bz2 holding one top-level folder into `dir` with Windows' own tar.exe, via
+/// `dir\.staging` so a crash mid-unpack leaves nothing that looks installed. The archive is
+/// deleted only on success.
+pub fn extract(archive: &Path, dir: &Path) -> Result<PathBuf, FetchError> {
+    let staging = dir.join(".staging");
+    if staging.exists() {
+        fs::remove_dir_all(&staging)?;
+    }
+    fs::create_dir_all(&staging)?;
+    let result = untar(archive, &staging).and_then(|()| move_single_dir(&staging, dir));
+    let _ = fs::remove_dir_all(&staging);
+    let unpacked = result?;
+    fs::remove_file(archive)?;
+    Ok(unpacked)
+}
+
+fn untar(archive: &Path, into: &Path) -> Result<(), FetchError> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let tar = tar_exe();
+    let status = std::process::Command::new(&tar)
+        .arg("-xjf")
+        .arg(archive)
+        .arg("-C")
+        .arg(into)
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .map_err(|e| FetchError::Unpack(format!("{}: {e}", tar.display())))?;
+    if !status.success() {
+        return Err(FetchError::Unpack(format!("tar exit {}", status.code().unwrap_or(-1))));
+    }
+    Ok(())
+}
+
+fn move_single_dir(staging: &Path, dir: &Path) -> Result<PathBuf, FetchError> {
+    let mut dirs = fs::read_dir(staging)?.filter_map(|e| e.ok()).filter(|e| e.path().is_dir());
+    let (Some(only), None) = (dirs.next(), dirs.next()) else {
+        return Err(FetchError::Unpack("archive must hold exactly one folder".into()));
+    };
+    let dest = dir.join(only.file_name());
+    if dest.exists() {
+        fs::remove_dir_all(&dest)?;
+    }
+    fs::rename(only.path(), &dest)?;
+    Ok(dest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -521,5 +573,57 @@ mod tests {
         fetcher().download(&asset_for(&url, &d), &dir, &mut |n| last = n, &AtomicBool::new(false)).unwrap();
         assert!(seen.lock().unwrap().is_empty());
         assert_eq!(last, 2500);
+    }
+
+    fn make_archive(dir: &Path) -> PathBuf {
+        let src = dir.join("src tree");
+        fs::create_dir_all(src.join("fixture-model")).unwrap();
+        fs::write(src.join("fixture-model").join("encoder.int8.onnx"), b"x").unwrap();
+        let archive = dir.join("fixture-model.tar.bz2");
+        let st = std::process::Command::new(tar_exe())
+            .arg("-cjf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&src)
+            .arg("fixture-model")
+            .status()
+            .unwrap();
+        assert!(st.success());
+        fs::remove_dir_all(&src).unwrap();
+        archive
+    }
+
+    #[test]
+    fn extract_moves_folder_and_deletes_archive() {
+        let dir = tmp("extract ok");
+        let archive = make_archive(&dir);
+        let got = extract(&archive, &dir).unwrap();
+        assert_eq!(got, dir.join("fixture-model"));
+        assert!(is_installed(&got));
+        assert!(!archive.exists());
+        assert!(!dir.join(".staging").exists());
+    }
+
+    #[test]
+    fn extract_replaces_partial_model_dir() {
+        let dir = tmp("extract partial");
+        let archive = make_archive(&dir);
+        fs::create_dir_all(dir.join("fixture-model")).unwrap();
+        fs::write(dir.join("fixture-model").join("stale.txt"), b"old").unwrap();
+        fs::create_dir_all(dir.join(".staging").join("junk")).unwrap();
+        let got = extract(&archive, &dir).unwrap();
+        assert!(is_installed(&got));
+        assert!(!got.join("stale.txt").exists());
+    }
+
+    #[test]
+    fn bad_archive_is_kept() {
+        let dir = tmp("extract bad");
+        let archive = dir.join("broken.tar.bz2");
+        fs::write(&archive, b"not an archive").unwrap();
+        let r = extract(&archive, &dir);
+        assert!(matches!(r, Err(FetchError::Unpack(_))), "{r:?}");
+        assert!(archive.exists());
+        assert!(!dir.join(".staging").exists());
     }
 }
