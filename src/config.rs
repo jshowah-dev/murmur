@@ -17,6 +17,8 @@ pub struct Config {
     pub mic_always_on: bool,
     /// Mute the default speaker while the PTT key is held (Spotify, YouTube ...).
     pub mute_output: bool,
+    /// Hands-free (double-tap) recordings stop and paste after this many minutes.
+    pub hands_free_max_minutes: u64,
 }
 
 impl Default for Config {
@@ -31,6 +33,7 @@ impl Default for Config {
             spoken_commands: true,
             mic_always_on: true,
             mute_output: true,
+            hands_free_max_minutes: 5,
         }
     }
 }
@@ -112,6 +115,11 @@ impl Config {
             _ => 0xA3,
         }
     }
+
+    /// Length cap for a hands-free recording; at least one minute.
+    pub fn hands_free_max(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.hands_free_max_minutes.max(1) * 60)
+    }
 }
 
 #[cfg(test)]
@@ -127,6 +135,7 @@ mod tests {
         assert_eq!(c.min_silence_ms, 500);
         assert!(c.spoken_commands);
         assert_eq!(c.fillers, vec!["um", "uh", "er", "hmm", "mm"]);
+        assert_eq!(c.hands_free_max_minutes, 5);
     }
 
     #[test]

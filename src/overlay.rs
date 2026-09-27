@@ -26,6 +26,8 @@ pub enum OverlayState {
     /// Resting pill while dictation is paused from the tray: small, dim, grey dot.
     Paused,
     Listening(f32),
+    /// Hands-free listening: level bar plus a red dot, the key can be let go.
+    Locked(f32),
     Processing,
 }
 
@@ -150,12 +152,24 @@ impl Overlay {
                     let _ = DeleteObject(dot.into());
                     let _ = DeleteObject(dot_rgn.into());
                 }
-                OverlayState::Listening(level) => {
-                    let bar_w = ((W - 40) as f32 * level.clamp(0.0, 1.0)) as i32;
+                OverlayState::Listening(level) | OverlayState::Locked(level) => {
+                    let locked = matches!(self.state, OverlayState::Locked(_));
+                    // the locked bar stops short of the dot at the right end
+                    let span = if locked { W - 58 } else { W - 40 };
+                    let bar_w = (span as f32 * level.clamp(0.0, 1.0)) as i32;
                     let r = RECT { left: 20, top: H / 2 - 3, right: 20 + bar_w.max(4), bottom: H / 2 + 3 };
                     let fg = CreateSolidBrush(COLORREF(0x0060D060));
                     FillRect(mem, &r, fg);
                     let _ = DeleteObject(fg.into());
+                    if locked {
+                        let d = 10;
+                        let x = W - 20 - d;
+                        let dot_rgn = CreateRoundRectRgn(x, H / 2 - d / 2, x + d, H / 2 + d / 2, d, d);
+                        let dot = CreateSolidBrush(COLORREF(0x004040E0));
+                        let _ = FillRgn(mem, dot_rgn, dot);
+                        let _ = DeleteObject(dot.into());
+                        let _ = DeleteObject(dot_rgn.into());
+                    }
                 }
                 OverlayState::Processing => {
                     let on = (self.tick / 4) % 3;

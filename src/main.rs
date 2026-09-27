@@ -85,7 +85,7 @@ fn main() -> Result<()> {
     let (msg_tx, msg_rx) = unbounded::<PipelineMsg>();
     let (audio_tx, audio_rx) = unbounded::<Vec<f32>>();
 
-    hotkey::spawn(cfg.ptt_vk(), hk_tx);
+    hotkey::spawn(cfg.ptt_vk(), cfg.hands_free_max(), hk_tx);
     pipeline::spawn(cfg.clone(), dict.clone(), cmd_rx, msg_tx);
 
     let mut overlay = Overlay::create()?;
@@ -99,6 +99,8 @@ fn main() -> Result<()> {
     let mut forwarding = false;
     let mut paused = false;
     let mut listening = false;
+    // hands-free: recording continues after the key is let go
+    let mut locked = false;
     let mut resting_tick: u32 = 0;
     let mut output_mute = audio_out::OutputMute::new();
     overlay.set(OverlayState::Idle);
@@ -118,6 +120,11 @@ fn main() -> Result<()> {
         }
         while let Ok(chunk) = audio_rx.try_recv() {
             if forwarding {
+                // level is metered here, not in the pipeline, so it keeps moving while a chunk decodes
+                if listening {
+                    let l = (audio::rms(&chunk) * 6.0).min(1.0);
+                    overlay.set(if locked { OverlayState::Locked(l) } else { OverlayState::Listening(l) });
+                }
                 let _ = cmd_tx.send(PipelineCmd::Audio(chunk));
             } else {
                 ring.extend(chunk);
@@ -170,11 +177,17 @@ fn main() -> Result<()> {
                     listening = true;
                     overlay.set(OverlayState::Listening(0.0));
                 }
+                HotkeyEvent::Latch if forwarding => {
+                    listening = true;
+                    locked = true;
+                    overlay.set(OverlayState::Locked(0.0));
+                }
                 HotkeyEvent::Cancel => {
                     output_mute.restore();
                     forwarding = false;
                     while audio_rx.try_recv().is_ok() {}
                     listening = false;
+                    locked = false;
                     let _ = cmd_tx.send(PipelineCmd::Abort);
                     if !cfg.mic_always_on {
                         capture.take();
@@ -187,6 +200,7 @@ fn main() -> Result<()> {
                     output_mute.restore();
                     forwarding = false;
                     listening = false;
+                    locked = false;
                     let _ = cmd_tx.send(PipelineCmd::Stop);
                     if !cfg.mic_always_on {
                         capture.take();
@@ -202,8 +216,6 @@ fn main() -> Result<()> {
         }
         while let Ok(m) = msg_rx.try_recv() {
             match m {
-                PipelineMsg::Level(l) if listening => overlay.set(OverlayState::Listening(l)),
-                PipelineMsg::Level(_) => {}
                 PipelineMsg::Processing => overlay.set(OverlayState::Processing),
                 PipelineMsg::Done(e) => {
                     overlay.set(resting(paused));
@@ -216,6 +228,7 @@ fn main() -> Result<()> {
                     overlay.set(resting(paused));
                     forwarding = false;
                     listening = false;
+                    locked = false;
                     while audio_rx.try_recv().is_ok() {}
                     tray.notify("Murmur", &s);
                 }
