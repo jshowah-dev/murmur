@@ -40,7 +40,7 @@ The digests come from the GitHub releases API (`assets[].digest`). The VAD diges
   3. Response **206** → append. **200** → truncate and write from 0. Any other status → an error that includes the status code.
   4. Stream in 64 KB chunks: write, update the SHA-256, call `progress` with the total bytes so far (the caller throttles the UI), and check `cancel` on each chunk. Cancel returns `Cancelled` and keeps the `.part`.
   5. At the end, a size or SHA-256 mismatch deletes the `.part` and returns `ChecksumMismatch`. A match renames `.part` → `<file>`.
-  - Timeouts: 15 s connect, 30 s read stall.
+  - Timeouts: 15 s connect, 30 s for response headers. The body is fetched in 8 MB Range requests with a 120 s budget each; ureq 3.4 has no per-read timeout (only `timeout_recv_body`, a total per request), so chunking is what turns a stall into "Download interrupted". A server that answers a Range request with 200 is read in one response without a body timeout.
 - `extract(archive, dir) -> Result<PathBuf>`:
   1. Remove any leftover `dir/.staging`, then create it.
   2. Run `tar.exe -xjf <archive> -C <dir>/.staging` with `CREATE_NO_WINDOW`. A missing `tar.exe` or a non-zero exit returns an error, removes `.staging` and **keeps the archive**.
@@ -68,7 +68,7 @@ The digests come from the GitHub releases API (`assets[].digest`). The VAD diges
 
 | Case | Message | State left behind |
 |---|---|---|
-| Network drop / timeout | "Download interrupted" | `.part` kept; Retry resumes |
+| Network drop / stall (chunk over 120 s) | "Download interrupted" | `.part` kept; Retry resumes |
 | HTTP 404 / other status | "Model file not available at k2-fsa (HTTP n)" | nothing new; needs a Murmur update if the asset moved |
 | Checksum mismatch | "Download corrupted; Retry starts it over" | `.part` deleted |
 | `tar.exe` missing or non-zero exit | "Couldn't unpack the model (tar exit n)" | archive kept, `.staging` removed |
