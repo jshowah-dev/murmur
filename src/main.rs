@@ -95,7 +95,8 @@ fn main() -> Result<()> {
     if model_missing && cfg.model_dir == Config::default().model_dir {
         let models = model_dir.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| model_dir.clone());
         match setup_ui::run(models) {
-            setup_ui::SetupOutcome::Installed => model_missing = false,
+            // re-checked: the unpacked folder must be the one model_dir names
+            setup_ui::SetupOutcome::Installed => model_missing = !model_fetch::is_installed(&model_dir),
             setup_ui::SetupOutcome::Quit => {
                 log::info!("model setup not finished; exiting");
                 return Ok(());

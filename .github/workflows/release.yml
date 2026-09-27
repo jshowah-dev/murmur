@@ -26,9 +26,17 @@ jobs:
             throw "tag ${{ github.ref_name }} does not match Cargo.toml version $v"
           }
 
-      # sherpa-onnx-sys downloads its prebuilt DLLs into target/release during this build
+      # sherpa-onnx-sys copies its DLLs into target/release only when its build script runs, and
+      # rust-cache drops loose files from target/release; cleaning just that crate forces the copy
       - name: Build
-        run: cargo build --release --locked
+        shell: pwsh
+        run: |
+          cargo clean --release -p sherpa-onnx-sys
+          cargo build --release --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          foreach ($dll in 'onnxruntime.dll', 'onnxruntime_providers_shared.dll', 'sherpa-onnx-c-api.dll', 'sherpa-onnx-cxx-api.dll') {
+            if (-not (Test-Path "target/release/$dll")) { throw "missing target/release/$dll" }
+          }
 
       - name: Test
         shell: pwsh

@@ -99,7 +99,12 @@ impl eframe::App for SetupApp {
         }
         // the title bar's X counts as Cancel; the .part stays for next launch
         if ctx.input(|i| i.viewport().close_requested()) {
-            self.cancel.store(true, Ordering::SeqCst);
+            if matches!(self.stage, Stage::Unpacking) {
+                // tar.exe can't be stopped; closing now would orphan it mid-unpack
+                ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+            } else {
+                self.cancel.store(true, Ordering::SeqCst);
+            }
         }
         let mut retry = false;
         egui::Frame::new().inner_margin(Margin::same(18)).show(ui, |ui| {
