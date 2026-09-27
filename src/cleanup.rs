@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::dictionary::Dictionary;
+use crate::snippets::Snippets;
 
 fn strip_fillers(text: &str, fillers: &[String]) -> String {
     let mut out: Vec<String> = Vec::new();
@@ -99,14 +100,16 @@ fn tidy(text: &str) -> String {
     out
 }
 
-pub fn clean(text: &str, dict: &Dictionary, cfg: &Config) -> String {
-    let mut s = strip_fillers(text, &cfg.fillers);
+pub fn clean(text: &str, dict: &Dictionary, snippets: &Snippets, cfg: &Config) -> String {
+    let s = strip_fillers(text, &cfg.fillers);
+    // before the dictionary so phonetic matching cannot rewrite trigger words
+    let (mut s, expansions) = snippets.mark(&s);
     s = dict.apply(&s);
     if cfg.spoken_commands {
         s = apply_commands(&s);
     }
     // trim spaces only: a leading/trailing "new line" command is deliberate
-    tidy(&s).trim_matches(' ').to_string()
+    crate::snippets::restore(tidy(&s).trim_matches(' '), &expansions)
 }
 
 #[cfg(test)]
@@ -114,6 +117,33 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::dictionary::{Dictionary, Term};
+    use crate::snippets::{Snippet, Snippets};
+
+    fn snips() -> Snippets {
+        Snippets {
+            snippets: vec![
+                Snippet { trigger: "my signature".into(), text: "best,
+  jeff  new line".into() },
+                Snippet { trigger: "hob number".into(), text: "hawb-123".into() },
+            ],
+        }
+    }
+
+    #[test]
+    fn multi_line_snippet_is_pasted_verbatim() {
+        let (d, c) = env();
+        assert_eq!(clean("Thanks. New paragraph. My signature.", &d, &snips(), &c), "Thanks.
+
+best,
+  jeff  new line");
+    }
+
+    #[test]
+    fn snippet_trigger_is_not_rewritten_by_the_dictionary() {
+        let (d, c) = env();
+        assert_eq!(clean("um, the hob number is, uh, late.", &d, &snips(), &c), "The hawb-123 is late.");
+        assert_eq!(clean("Hob number.", &d, &snips(), &c), "hawb-123.");
+    }
 
     fn env() -> (Dictionary, Config) {
         (
@@ -125,60 +155,60 @@ mod tests {
     #[test]
     fn strips_fillers_and_fixes_spacing() {
         let (d, c) = env();
-        assert_eq!(clean("um, the hob is, uh, late.", &d, &c), "The HAWB is late.");
+        assert_eq!(clean("um, the hob is, uh, late.", &d, &Snippets::default(), &c), "The HAWB is late.");
     }
 
     #[test]
     fn filler_at_sentence_start_recapitalises() {
         let (d, c) = env();
-        assert_eq!(clean("Um, send it now.", &d, &c), "Send it now.");
+        assert_eq!(clean("Um, send it now.", &d, &Snippets::default(), &c), "Send it now.");
     }
 
     #[test]
     fn spoken_commands() {
         let (d, c) = env();
-        assert_eq!(clean("first line new line second line new paragraph third", &d, &c), "First line\nSecond line\n\nThird");
+        assert_eq!(clean("first line new line second line new paragraph third", &d, &Snippets::default(), &c), "First line\nSecond line\n\nThird");
     }
 
     #[test]
     fn spoken_commands_with_stt_punctuation() {
         let (d, c) = env();
         // Parakeet punctuates: command words arrive as "New line." / "new paragraph,"
-        assert_eq!(clean("The HAWB is late. New line. Send it to Delgado.", &d, &c), "The HAWB is late.\nSend it to Delgado.");
-        assert_eq!(clean("first, new paragraph, second", &d, &c), "First.\n\nSecond");
-        assert_eq!(clean("I'm in a comment new line. Next", &d, &c), "I'm in a comment\nNext");
+        assert_eq!(clean("The HAWB is late. New line. Send it to Delgado.", &d, &Snippets::default(), &c), "The HAWB is late.\nSend it to Delgado.");
+        assert_eq!(clean("first, new paragraph, second", &d, &Snippets::default(), &c), "First.\n\nSecond");
+        assert_eq!(clean("I'm in a comment new line. Next", &d, &Snippets::default(), &c), "I'm in a comment\nNext");
     }
 
     #[test]
     fn spoken_commands_consecutive() {
         let (d, c) = env();
-        assert_eq!(clean("a new line new line b", &d, &c), "A\n\nB");
+        assert_eq!(clean("a new line new line b", &d, &Snippets::default(), &c), "A\n\nB");
     }
 
     #[test]
     fn spoken_commands_off() {
         let (d, mut c) = env();
         c.spoken_commands = false;
-        assert_eq!(clean("a new line b", &d, &c), "A new line b");
+        assert_eq!(clean("a new line b", &d, &Snippets::default(), &c), "A new line b");
     }
 
     #[test]
     fn trims() {
         let (d, c) = env();
-        assert_eq!(clean("  hi  ", &d, &c), "Hi");
+        assert_eq!(clean("  hi  ", &d, &Snippets::default(), &c), "Hi");
     }
 
     #[test]
     fn leading_new_line_command_is_kept() {
         let (d, c) = env();
-        assert_eq!(clean("New line Put it in Delgado.", &d, &c), "\nPut it in Delgado.");
-        assert_eq!(clean("done new line", &d, &c), "Done\n");
+        assert_eq!(clean("New line Put it in Delgado.", &d, &Snippets::default(), &c), "\nPut it in Delgado.");
+        assert_eq!(clean("done new line", &d, &Snippets::default(), &c), "Done\n");
     }
 
     #[test]
     fn comma_before_new_line_command_becomes_period() {
         let (d, c) = env();
-        assert_eq!(clean("Thanks, New Line, Jeff.", &d, &c), "Thanks.\nJeff.");
-        assert_eq!(clean("Thanks. New line. Jeff.", &d, &c), "Thanks.\nJeff.");
+        assert_eq!(clean("Thanks, New Line, Jeff.", &d, &Snippets::default(), &c), "Thanks.\nJeff.");
+        assert_eq!(clean("Thanks. New line. Jeff.", &d, &Snippets::default(), &c), "Thanks.\nJeff.");
     }
 }

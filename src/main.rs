@@ -1,6 +1,6 @@
 #![windows_subsystem = "windows"]
 
-use murmur_lib::{audio, cleanup, config, dictionary, history, stt, vad};
+use murmur_lib::{audio, cleanup, config, dictionary, history, snippets, stt, vad};
 mod audio_out;
 mod caret;
 mod correction;
@@ -78,6 +78,10 @@ fn main() -> Result<()> {
             Dictionary::empty_unloaded()
         }
     }));
+    if let Err(e) = snippets::ensure_file() {
+        log::error!("{e:#}");
+        startup_errors.push(format!("snippets: {e}"));
+    }
     let mut history = History::new(10);
 
     let (hk_tx, hk_rx) = unbounded::<HotkeyEvent>();
@@ -152,6 +156,7 @@ fn main() -> Result<()> {
                     while hk_rx.try_recv().is_ok() {}
                 }
                 TrayEvent::OpenDictionary => open_path(&config::config_dir().join("dictionary.toml")),
+                TrayEvent::OpenSnippets => open_path(&snippets::path()),
                 TrayEvent::OpenConfigDir => open_path(&config::config_dir()),
                 TrayEvent::Quit => break,
             }

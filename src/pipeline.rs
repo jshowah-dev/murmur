@@ -3,6 +3,7 @@ use crate::config::Config;
 use crate::dictionary::Dictionary;
 use crate::history::Entry;
 use crate::inject;
+use crate::snippets::{self, SnippetFile};
 use crate::stt::Recognizer;
 use crate::vad::Vad;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
@@ -42,6 +43,7 @@ fn chunk_ready(buffered: usize, last_segment: usize) -> bool {
 struct State {
     cfg: Config,
     dict: Arc<Mutex<Dictionary>>,
+    snippets: SnippetFile,
     tx: Sender<PipelineMsg>,
     vad: Option<Vad>,
     rec: Option<Recognizer>,
@@ -140,9 +142,12 @@ impl State {
             return;
         }
         log::debug!("raw: {raw}");
+        if let Some(e) = self.snippets.refresh() {
+            let _ = self.tx.send(PipelineMsg::Error(e));
+        }
         let cleaned = {
             let d = self.dict.lock().unwrap_or_else(|e| e.into_inner());
-            cleanup::clean(&raw, &d, &self.cfg)
+            cleanup::clean(&raw, &d, &self.snippets.current, &self.cfg)
         };
         let inject = match inject::paste(&cleaned) {
             Ok(r) => Some(r),
@@ -179,7 +184,7 @@ pub fn spawn(cfg: Config, dict: Arc<Mutex<Dictionary>>, rx: Receiver<PipelineCmd
     thread::Builder::new()
         .name("pipeline".into())
         .spawn(move || {
-            let mut st = State { cfg, dict, tx, vad: None, rec: None, speech: vec![], speech_samples: 0, texts: vec![], recording: false, last_used: Instant::now() };
+            let mut st = State { cfg, dict, snippets: SnippetFile::new(snippets::path()), tx, vad: None, rec: None, speech: vec![], speech_samples: 0, texts: vec![], recording: false, last_used: Instant::now() };
             // Spec § Error handling: a panic is logged and the loop restarts; the tray survives.
             loop {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut st, &rx)));

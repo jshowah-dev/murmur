@@ -10,6 +10,7 @@ pub enum TrayEvent {
     TogglePause,
     FixLast,
     OpenDictionary,
+    OpenSnippets,
     OpenConfigDir,
     Quit,
 }
@@ -17,7 +18,7 @@ pub enum TrayEvent {
 pub struct Tray {
     _icon: TrayIcon,
     pause: MenuItem,
-    ids: [(MenuId, TrayEvent); 5],
+    ids: [(MenuId, TrayEvent); 6],
 }
 
 fn icon(paused: bool) -> Icon {
@@ -46,13 +47,15 @@ impl Tray {
         let pause = MenuItem::new("Pause", true, None);
         let fix = MenuItem::new("Fix last (Left Shift+PTT)", true, None);
         let dict = MenuItem::new("Open dictionary", true, None);
+        let snip = MenuItem::new("Open snippets", true, None);
         let cfg = MenuItem::new("Open config folder", true, None);
         let quit = MenuItem::new("Quit", true, None);
-        menu.append_items(&[&pause, &fix, &PredefinedMenuItem::separator(), &dict, &cfg, &PredefinedMenuItem::separator(), &quit])?;
+        menu.append_items(&[&pause, &fix, &PredefinedMenuItem::separator(), &dict, &snip, &cfg, &PredefinedMenuItem::separator(), &quit])?;
         let ids = [
             (pause.id().clone(), TrayEvent::TogglePause),
             (fix.id().clone(), TrayEvent::FixLast),
             (dict.id().clone(), TrayEvent::OpenDictionary),
+            (snip.id().clone(), TrayEvent::OpenSnippets),
             (cfg.id().clone(), TrayEvent::OpenConfigDir),
             (quit.id().clone(), TrayEvent::Quit),
         ];
