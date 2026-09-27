@@ -11,7 +11,7 @@ impl Recognizer {
     pub fn load(dir: &Path, threads: i32) -> Result<Recognizer> {
         for f in ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"] {
             if !dir.join(f).exists() {
-                return Err(anyhow!("model file missing: {} (run setup-model.cmd)", dir.join(f).display()));
+                return Err(anyhow!("model file missing: {}", dir.join(f).display()));
             }
         }
         let p = |f: &str| Some(dir.join(f).to_string_lossy().into_owned());

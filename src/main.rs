@@ -1,6 +1,6 @@
 #![windows_subsystem = "windows"]
 
-use murmur_lib::{audio, cleanup, config, dictionary, history, snippets, stt, vad};
+use murmur_lib::{audio, cleanup, config, dictionary, history, model_fetch, snippets, stt, vad};
 mod audio_out;
 mod caret;
 mod correction;
@@ -10,6 +10,7 @@ mod hotkey;
 mod inject;
 mod overlay;
 mod pipeline;
+mod setup_ui;
 mod tray;
 
 use anyhow::Result;
@@ -88,6 +89,19 @@ fn main() -> Result<()> {
         log::error!("{e:#}");
         startup_errors.push(format!("snippets: {e}"));
     }
+    // Before anything else starts: the pipeline loads the model as soon as it's spawned.
+    let model_dir = cfg.model_dir_path();
+    let mut model_missing = !model_fetch::is_installed(&model_dir);
+    if model_missing && cfg.model_dir == Config::default().model_dir {
+        let models = model_dir.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| model_dir.clone());
+        match setup_ui::run(models) {
+            setup_ui::SetupOutcome::Installed => model_missing = false,
+            setup_ui::SetupOutcome::Quit => {
+                log::info!("model setup not finished; exiting");
+                return Ok(());
+            }
+        }
+    }
     let mut history = History::new(25);
 
     let (hk_tx, hk_rx) = unbounded::<HotkeyEvent>();
@@ -115,10 +129,10 @@ fn main() -> Result<()> {
     let mut output_mute = audio_out::OutputMute::new();
     overlay.set(OverlayState::Idle);
 
-    let encoder = cfg.model_dir_path().join("encoder.int8.onnx");
-    if let Err(e) = std::fs::metadata(&encoder) {
-        log::error!("model check failed for {}: {e} (LOCALAPPDATA={:?})", encoder.display(), std::env::var("LOCALAPPDATA"));
-        tray.notify("Model missing", "run setup-model.cmd");
+    // only reachable with a custom model_dir: the default one is set up above
+    if model_missing {
+        log::error!("model missing at {} (LOCALAPPDATA={:?})", model_dir.display(), std::env::var("LOCALAPPDATA"));
+        tray.notify("Model missing", &format!("Model missing at {}", model_dir.display()));
     }
     for msg in &startup_errors {
         tray.notify("Startup", msg);
