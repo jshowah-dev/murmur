@@ -34,12 +34,8 @@ const SEED: &[(&str, &[&str])] = &[
     ("HAWB", &["hob", "hawb", "haub"]),
     ("MAWB", &["mob", "mawb", "maub"]),
     ("BOL", &["bee oh el"]),
-    ("Delgado", &[]),
-    ("Orion", &[]),
     ("WildFly", &["wild fly"]),
     ("Jira", &["jerry"]),
-    ("Hermes", &["hermes", "hermes'"]),
-    ("HFS", &["aitch eff ess"]),
     ("QA", &["queue ay"]),
     ("EAR", &["ear"]),
 ];
@@ -224,7 +220,7 @@ impl Dictionary {
                 let (n_stem, n_suf) = strip_suffix(n_core);
                 // Only strip the written (after) side's suffix when both sides share the
                 // same suffix (e.g. "hobs"->"HAWBs"); otherwise keep the written side verbatim
-                // (e.g. "hermez"->"Hermes" must not become "Brink").
+                // (e.g. "hermez"->"Hermes" must not become "Herme").
                 let (o_core, n_core) = if !o_suf.is_empty() && o_suf.eq_ignore_ascii_case(n_suf) {
                     (o_stem, n_stem)
                 } else {

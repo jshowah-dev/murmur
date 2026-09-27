@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn similarity_rules() {
         assert!(similar("hob", "HAWB"));        // metaphone equal
-        assert!(similar("delgato", "Delgado"));   // edit distance
+        assert!(similar("delgato", "Delgado")); // edit distance
         assert!(!similar("very good", "excellent"));
     }
 }
