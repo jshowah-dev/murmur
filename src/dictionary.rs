@@ -18,7 +18,7 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Dictionary {
     #[serde(rename = "term", default)]
     pub terms: Vec<Term>,
@@ -203,6 +203,11 @@ impl Dictionary {
         out.join(" ")
     }
 
+    /// What `learn` would add for this edit, without changing the dictionary.
+    pub fn preview_learn(&self, before: &str, after: &str) -> Vec<Term> {
+        self.clone().learn(before, after)
+    }
+
     /// Word-level diff of before/after; phonetically similar replace-hunks (<=3 words a side) become terms.
     pub fn learn(&mut self, before: &str, after: &str) -> Vec<Term> {
         let diff = TextDiff::from_words(before, after);
@@ -267,6 +272,15 @@ mod tests {
             Term { written: "BOL".into(), spoken: vec!["bee oh el".into()], phonetic: true },
             Term { written: "Delgado".into(), spoken: vec![], phonetic: true },
         ])
+    }
+
+    #[test]
+    fn preview_learn_reports_terms_without_mutating() {
+        let d = dict();
+        let before = d.terms.clone();
+        let l = d.preview_learn("load the hermez truck", "load the Hermes truck");
+        assert_eq!(l.iter().map(|t| t.written.as_str()).collect::<Vec<_>>(), ["Hermes"]);
+        assert_eq!(d.terms, before);
     }
 
     #[test]

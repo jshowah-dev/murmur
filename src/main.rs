@@ -2,7 +2,9 @@
 
 use murmur_lib::{audio, cleanup, config, dictionary, history, stt, vad};
 mod audio_out;
+mod caret;
 mod correction;
+mod correction_ui;
 mod hotkey;
 mod inject;
 mod overlay;
