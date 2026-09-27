@@ -82,6 +82,12 @@ fn install(models: &Path, cancel: &AtomicBool, tx: &Sender<Msg>, ctx: &egui::Con
     Ok(())
 }
 
+/// tar.exe can't be stopped, so a close while it runs would orphan it mid-unpack. Once
+/// installed, the close is the window's own and must go through.
+fn refuse_close(stage: &Stage, installed: bool) -> bool {
+    matches!(stage, Stage::Unpacking) && !installed
+}
+
 impl eframe::App for SetupApp {
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -99,8 +105,7 @@ impl eframe::App for SetupApp {
         }
         // the title bar's X counts as Cancel; the .part stays for next launch
         if ctx.input(|i| i.viewport().close_requested()) {
-            if matches!(self.stage, Stage::Unpacking) {
-                // tar.exe can't be stopped; closing now would orphan it mid-unpack
+            if refuse_close(&self.stage, self.installed.load(Ordering::SeqCst)) {
                 ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             } else {
                 self.cancel.store(true, Ordering::SeqCst);
@@ -187,5 +192,23 @@ pub fn run(models: PathBuf) -> SetupOutcome {
         SetupOutcome::Installed
     } else {
         SetupOutcome::Quit
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn close_refused_only_while_unpacking() {
+        assert!(refuse_close(&Stage::Unpacking, false));
+        assert!(!refuse_close(&Stage::Downloading(5), false));
+        assert!(!refuse_close(&Stage::Failed("x".into()), false));
+    }
+
+    #[test]
+    fn own_close_after_install_is_not_refused() {
+        // Done arrives while the stage still reads Unpacking; the window's own Close must go through
+        assert!(!refuse_close(&Stage::Unpacking, true));
     }
 }
