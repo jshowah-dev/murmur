@@ -3,7 +3,8 @@ use crate::phonetic;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use similar::{ChangeTag, TextDiff};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Term {
@@ -30,6 +31,20 @@ fn default_loaded_cleanly() -> bool {
     true
 }
 
+/// A file's modified time, `None` when it doesn't exist. Used to notice writes by another process.
+pub type Stamp = Option<SystemTime>;
+
+#[derive(Debug, PartialEq)]
+pub enum SaveOutcome {
+    Saved(Stamp),
+    /// The file changed since it was loaded; nothing was written.
+    Conflict,
+}
+
+pub fn file_stamp(p: &Path) -> Stamp {
+    std::fs::metadata(p).and_then(|m| m.modified()).ok()
+}
+
 const SEED: &[(&str, &[&str])] = &[
     ("HAWB", &["hob", "hawb", "haub"]),
     ("MAWB", &["mob", "mawb", "maub"]),
@@ -40,7 +55,7 @@ const SEED: &[(&str, &[&str])] = &[
     ("EAR", &["ear"]),
 ];
 
-fn path() -> PathBuf {
+pub fn path() -> PathBuf {
     config_dir().join("dictionary.toml")
 }
 
@@ -102,19 +117,44 @@ impl Dictionary {
     }
 
     pub fn save(&self) -> Result<()> {
+        self.save_to(&path())
+    }
+
+    pub fn save_to(&self, p: &Path) -> Result<()> {
         if !self.loaded_cleanly {
             return Err(anyhow!("dictionary was not loaded cleanly; fix dictionary.toml first"));
         }
-        std::fs::create_dir_all(config_dir())?;
-        let p = path();
+        if let Some(dir) = p.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
         if p.exists() {
-            if let Err(e) = std::fs::copy(&p, p.with_extension("toml.bak")) {
+            if let Err(e) = std::fs::copy(p, p.with_extension("toml.bak")) {
                 log::warn!("failed to back up dictionary.toml: {e}");
             }
         }
         let tmp = p.with_extension("toml.tmp");
         std::fs::write(&tmp, self.to_toml()?).context("write dictionary.toml.tmp")?;
-        std::fs::rename(&tmp, &p).context("rename dictionary.toml.tmp")
+        std::fs::rename(&tmp, p).context("rename dictionary.toml.tmp")
+    }
+
+    /// Load for editing. The stamp is read before the file, so a write landing mid-read shows
+    /// up later as a conflict rather than being silently overwritten.
+    pub fn load_stamped(p: &Path) -> Result<(Self, Stamp)> {
+        let stamp = file_stamp(p);
+        if stamp.is_none() {
+            return Ok((Self::from_terms(vec![]), None));
+        }
+        let d = Self::from_toml(&std::fs::read_to_string(p).context("read dictionary.toml")?)?;
+        Ok((d, stamp))
+    }
+
+    /// Save only if the file is still the version stamped at load (or at the last save).
+    pub fn save_if_unchanged(&self, p: &Path, stamp: Stamp) -> Result<SaveOutcome> {
+        if file_stamp(p) != stamp {
+            return Ok(SaveOutcome::Conflict);
+        }
+        self.save_to(p)?;
+        Ok(SaveOutcome::Saved(file_stamp(p)))
     }
 
     /// All (phrase, written) pairs, longest phrase first, lowercased phrase.
@@ -380,5 +420,55 @@ mod tests {
         let back = Dictionary::from_toml(&s).unwrap();
         assert_eq!(back.terms.len(), 3);
         assert_eq!(back.terms[0].written, "HAWB");
+    }
+
+    fn temp_path(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("murmur-dict-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("dictionary.toml")
+    }
+
+    #[test]
+    fn save_if_unchanged_saves_when_stamp_matches() {
+        let p = temp_path("match");
+        dict().save_to(&p).unwrap();
+        let (mut d, stamp) = Dictionary::load_stamped(&p).unwrap();
+        assert!(stamp.is_some());
+        d.terms.push(Term { written: "Kowalczyk".into(), spoken: vec![], phonetic: true });
+        let out = d.save_if_unchanged(&p, stamp).unwrap();
+        assert!(matches!(out, SaveOutcome::Saved(Some(_))));
+        let (back, _) = Dictionary::load_stamped(&p).unwrap();
+        assert_eq!(back.terms.len(), 4);
+        assert!(p.with_extension("toml.bak").exists());
+    }
+
+    #[test]
+    fn save_if_unchanged_reports_conflict_after_outside_write() {
+        let p = temp_path("conflict");
+        dict().save_to(&p).unwrap();
+        let (d, stamp) = Dictionary::load_stamped(&p).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&p, "[[term]]\nwritten = \"Outside\"\n").unwrap();
+        assert_eq!(d.save_if_unchanged(&p, stamp).unwrap(), SaveOutcome::Conflict);
+        let (back, _) = Dictionary::load_stamped(&p).unwrap();
+        assert_eq!(back.terms[0].written, "Outside");
+    }
+
+    #[test]
+    fn save_if_unchanged_refuses_when_not_loaded_cleanly() {
+        let p = temp_path("unloaded");
+        dict().save_to(&p).unwrap();
+        let stamp = file_stamp(&p);
+        assert!(Dictionary::empty_unloaded().save_if_unchanged(&p, stamp).is_err());
+        assert_eq!(Dictionary::load_stamped(&p).unwrap().0.terms.len(), 3);
+    }
+
+    #[test]
+    fn load_stamped_missing_file_is_empty_with_no_stamp() {
+        let p = temp_path("missing");
+        let (d, stamp) = Dictionary::load_stamped(&p).unwrap();
+        assert!(d.terms.is_empty());
+        assert_eq!(stamp, None);
     }
 }
