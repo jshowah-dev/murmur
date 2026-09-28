@@ -6,6 +6,8 @@ mod autostart;
 mod caret;
 mod correction;
 mod correction_ui;
+mod dictionary_editor;
+mod dictionary_panel;
 mod history_ui;
 mod hotkey;
 mod inject;
@@ -52,8 +54,18 @@ fn open_path(p: &std::path::Path) {
     let _ = std::process::Command::new("explorer.exe").arg(p).spawn();
 }
 
+const EDITOR_ARG: &str = "--dictionary";
+
+fn wants_editor(mut args: impl Iterator<Item = String>) -> bool {
+    args.nth(1).as_deref() == Some(EDITOR_ARG)
+}
+
 fn main() -> Result<()> {
     init_logging();
+    // the editor is its own process, so it must not take the app's single-instance mutex
+    if wants_editor(std::env::args()) {
+        return dictionary_editor::run();
+    }
     log::info!("murmur {} starting, cwd {:?}", env!("CARGO_PKG_VERSION"), std::env::current_dir().ok());
     // second instance would capture the same hotkey and paste every dictation twice
     let _instance = unsafe {
@@ -187,7 +199,14 @@ fn main() -> Result<()> {
                         while hk_rx.try_recv().is_ok() {}
                     }
                 }
-                TrayEvent::OpenDictionary => open_path(&config::config_dir().join("dictionary.toml")),
+                TrayEvent::EditDictionary => {
+                    // a separate process, so dictation keeps working while it's open
+                    let spawned = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg(EDITOR_ARG).spawn());
+                    if let Err(e) = spawned {
+                        log::error!("dictionary editor: {e}");
+                        tray.notify("Murmur", &format!("Couldn't open the dictionary editor: {e}"));
+                    }
+                }
                 TrayEvent::OpenSnippets => open_path(&snippets::path()),
                 TrayEvent::OpenConfigDir => open_path(&config::config_dir()),
                 TrayEvent::ToggleAutostart => {
@@ -311,4 +330,20 @@ fn open_mic(audio_tx: &crossbeam_channel::Sender<Vec<f32>>, tray: &Tray) -> Opti
 
 fn resting(paused: bool) -> OverlayState {
     if paused { OverlayState::Paused } else { OverlayState::Idle }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(a: &[&str]) -> impl Iterator<Item = String> {
+        a.iter().map(|s| s.to_string()).collect::<Vec<_>>().into_iter()
+    }
+
+    #[test]
+    fn dictionary_flag_selects_the_editor() {
+        assert!(wants_editor(args(&["murmur.exe", "--dictionary"])));
+        assert!(!wants_editor(args(&["murmur.exe"])));
+        assert!(!wants_editor(args(&["murmur.exe", "--other"])));
+    }
 }

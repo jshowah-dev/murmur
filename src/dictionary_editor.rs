@@ -1,0 +1,123 @@
+//! `murmur.exe --dictionary`: the dictionary editor as its own process, so dictation keeps
+//! working while it's open. One editor at a time; a second launch brings the first forward.
+
+use crate::correction_ui::{load_system_font, BG};
+use crate::dictionary_panel::DictionaryPanel;
+use anyhow::Result;
+use eframe::egui::{self, Frame, Id, Margin, Modal, ViewportCommand};
+use std::sync::Arc;
+use windows::core::{w, PCWSTR};
+use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, ShowWindow, SW_RESTORE};
+
+const TITLE: &str = "Murmur — Dictionary";
+
+enum CloseChoice {
+    Save,
+    Discard,
+    Cancel,
+}
+
+struct EditorApp {
+    panel: DictionaryPanel,
+    asking: bool,
+    closing: bool,
+}
+
+impl EditorApp {
+    fn close(&mut self, ctx: &egui::Context) {
+        self.closing = true;
+        ctx.send_viewport_cmd(ViewportCommand::Close);
+    }
+}
+
+impl eframe::App for EditorApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        if ctx.input(|i| i.viewport().close_requested()) && !self.closing && self.panel.is_dirty() {
+            ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+            self.asking = true;
+        }
+        Frame::new().fill(BG).inner_margin(Margin::same(12)).show(ui, |ui| {
+            ui.set_min_size(ui.available_size());
+            self.panel.ui(ui);
+        });
+        if self.asking {
+            let mut choice = None;
+            Modal::new(Id::new("unsaved-changes")).show(&ctx, |ui| {
+                ui.label("Save changes to the dictionary?");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() {
+                        choice = Some(CloseChoice::Save);
+                    }
+                    if ui.button("Discard").clicked() {
+                        choice = Some(CloseChoice::Discard);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        choice = Some(CloseChoice::Cancel);
+                    }
+                });
+            });
+            match choice {
+                Some(CloseChoice::Save) => {
+                    self.asking = false;
+                    // a failed save (invalid terms, conflict, I/O) keeps the window open with its banner
+                    if self.panel.save() {
+                        self.close(&ctx);
+                    }
+                }
+                Some(CloseChoice::Discard) => {
+                    self.asking = false;
+                    self.close(&ctx);
+                }
+                Some(CloseChoice::Cancel) => self.asking = false,
+                None => {}
+            }
+        }
+    }
+}
+
+/// Brings an already-open editor to the front. If its window isn't up yet, does nothing.
+fn focus_existing() {
+    unsafe {
+        if let Ok(hwnd) = FindWindowW(PCWSTR::null(), w!("Murmur — Dictionary")) {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+            crate::correction::bring_to_front(hwnd);
+        }
+    }
+}
+
+pub fn run() -> Result<()> {
+    log::info!("dictionary editor starting");
+    let _instance = unsafe {
+        let m = CreateMutexW(None, false, w!("Local\\Murmur.DictionaryEditor"))?;
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            focus_existing();
+            return Ok(());
+        }
+        m
+    };
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/murmur.png")).unwrap_or_default();
+    let opts = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title(TITLE)
+            .with_icon(Arc::new(icon))
+            .with_inner_size([760.0, 560.0])
+            .with_min_inner_size([560.0, 420.0]),
+        centered: true,
+        ..Default::default()
+    };
+    let panel = DictionaryPanel::new(murmur_lib::dictionary::path());
+    eframe::run_native(
+        "murmur-dictionary",
+        opts,
+        Box::new(move |cc| {
+            cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            load_system_font(&cc.egui_ctx);
+            Ok(Box::new(EditorApp { panel, asking: false, closing: false }))
+        }),
+    )
+    .map_err(|e| anyhow::anyhow!("dictionary editor window: {e}"))
+}
