@@ -318,12 +318,21 @@ impl DictionaryFile {
         if stamp == self.stamp {
             return None;
         }
-        self.stamp = stamp;
         // deleted: keep what we have; it comes back on the next save or restart
         if stamp.is_none() {
+            self.stamp = stamp;
             return None;
         }
-        match std::fs::read_to_string(&self.path).map_err(anyhow::Error::from).and_then(|s| Dictionary::from_toml(&s)) {
+        // briefly locked (a scanner, a rename in flight): keep the old stamp so the next dictation retries
+        let text = match std::fs::read_to_string(&self.path) {
+            Ok(t) => t,
+            Err(e) => {
+                log::warn!("dictionary.toml not readable yet: {e}");
+                return None;
+            }
+        };
+        self.stamp = stamp;
+        match Dictionary::from_toml(&text) {
             Ok(d) => {
                 log::info!("reloaded {} dictionary terms", d.terms.len());
                 *shared.lock().unwrap_or_else(|e| e.into_inner()) = d;
@@ -544,6 +553,24 @@ mod tests {
         assert_eq!(d.terms.len(), 3);
         // the reloaded copy is saveable again
         d.save_to(&p).unwrap();
+    }
+
+    #[test]
+    fn unreadable_file_is_retried_without_a_notice() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let p = temp_path("locked");
+        dict().save_to(&p).unwrap();
+        let shared = std::sync::Mutex::new(dict());
+        let mut f = DictionaryFile::new(p.clone());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&p, "[[term]]\nwritten = \"Kowalczyk\"\n").unwrap();
+        // another process (e.g. a virus scanner) holds the file with no sharing
+        let lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(&p).unwrap();
+        assert_eq!(f.refresh(&shared), None);
+        assert_eq!(shared.lock().unwrap().terms.len(), 3);
+        drop(lock);
+        assert_eq!(f.refresh(&shared), None);
+        assert_eq!(shared.lock().unwrap().terms[0].written, "Kowalczyk");
     }
 
     #[test]

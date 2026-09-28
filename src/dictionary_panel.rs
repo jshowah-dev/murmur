@@ -95,13 +95,25 @@ impl DictionaryPanel {
         self.banner = None;
     }
 
-    /// Saves if valid and the file is unchanged on disk. Returns true when written.
+    /// Blocks a write while any term has an error, and says why.
+    fn refuse_invalid(&mut self) -> bool {
+        if self.has_errors() {
+            self.banner = Some(Banner::Error("fix the items marked in red first".into()));
+            return true;
+        }
+        false
+    }
+
+    /// Saves if valid and the file is unchanged on disk. Returns true when the file holds the
+    /// editor's terms. With nothing changed it writes nothing, so `.bak` keeps the older version.
     pub fn save(&mut self) -> bool {
         if self.load_error.is_some() {
             return false;
         }
-        if self.has_errors() {
-            self.banner = Some(Banner::Error("fix the items marked in red first".into()));
+        if !self.is_dirty() {
+            return true;
+        }
+        if self.refuse_invalid() {
             return false;
         }
         let d = Dictionary::from_terms(edit::normalize(self.working.clone()));
@@ -123,6 +135,9 @@ impl DictionaryPanel {
     }
 
     fn overwrite(&mut self) {
+        if self.refuse_invalid() {
+            return;
+        }
         let d = Dictionary::from_terms(edit::normalize(self.working.clone()));
         match d.save_to(&self.path) {
             Ok(()) => {
@@ -415,6 +430,30 @@ mod tests {
         assert!(panel.save());
         assert!(panel.undo.is_none());
         assert_eq!(on_disk(&p).len(), 1);
+    }
+
+    #[test]
+    fn overwrite_refuses_invalid_terms() {
+        let p = temp_file("overwrite-invalid", TWO);
+        let mut panel = DictionaryPanel::new(p.clone());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&p, "[[term]]\nwritten = \"Outside\"\n").unwrap();
+        panel.working[0].written = "Mine".into();
+        assert!(!panel.save());
+        panel.new_term();
+        panel.overwrite();
+        assert!(matches!(panel.banner, Some(Banner::Error(_))));
+        assert_eq!(on_disk(&p)[0].written, "Outside");
+    }
+
+    #[test]
+    fn save_without_changes_leaves_file_and_backup_alone() {
+        let original = format!("# mine\n{TWO}");
+        let p = temp_file("clean-save", &original);
+        let mut panel = DictionaryPanel::new(p.clone());
+        assert!(panel.save());
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), original);
+        assert!(!p.with_extension("toml.bak").exists());
     }
 
     #[test]
