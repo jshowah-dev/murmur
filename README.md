@@ -27,6 +27,16 @@ Requires Windows 10 or 11 (x64). No GPU needed.
 
 To start Murmur with Windows, put a shortcut to `murmur.exe` in `shell:startup`.
 
+## Updating
+
+Murmur doesn't update itself. To get notified of new versions, click **Watch → Custom → Releases** on this repository.
+
+1. Quit Murmur (tray icon → Quit).
+2. Download the new zip from [Releases](../../releases) and unzip it over the old folder, replacing the files.
+3. Start `murmur.exe`.
+
+Your settings, dictionary and snippets live in `%APPDATA%\Murmur` and the model in `%LOCALAPPDATA%\Murmur\models`, so they are kept and nothing is downloaded again.
+
 ## Usage
 
 - **Dictate:** hold **Right Ctrl**, speak, release. The text appears at the cursor.
