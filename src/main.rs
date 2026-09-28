@@ -6,6 +6,7 @@ mod autostart;
 mod caret;
 mod correction;
 mod correction_ui;
+mod dictionary_panel;
 mod history_ui;
 mod hotkey;
 mod inject;
