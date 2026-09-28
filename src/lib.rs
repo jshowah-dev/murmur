@@ -2,6 +2,7 @@ pub mod audio;
 pub mod cleanup;
 pub mod config;
 pub mod dictionary;
+pub mod dictionary_edit;
 pub mod history;
 pub mod model_fetch;
 pub mod phonetic;
