@@ -59,13 +59,29 @@ const
 var
   TasksPrimed: Boolean;
 
-{ On an upgrade, show start-with-Windows as it is now (the tray may have changed it). }
+{ /TASKS= sets every task; /MERGETASKS= only the ones it names. }
+function AutostartOnCommandLine: Boolean;
+var
+  I: Integer;
+  S: String;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+  begin
+    S := Uppercase(ParamStr(I));
+    if (Pos('/TASKS=', S) = 1) or ((Pos('/MERGETASKS=', S) = 1) and (Pos('AUTOSTART', S) > 0)) then
+      Result := True;
+  end;
+end;
+
+{ On an upgrade, show start-with-Windows as it is now (the tray may have changed it),
+  unless the command line picked it. This also runs in silent installs. }
 procedure CurPageChanged(CurPageID: Integer);
 begin
   if (CurPageID = wpSelectTasks) and not TasksPrimed then
   begin
     TasksPrimed := True;
-    if WizardForm.PrevAppDir <> '' then
+    if (WizardForm.PrevAppDir <> '') and not AutostartOnCommandLine then
     begin
       if RegValueExists(HKCU, RunKey, 'Murmur') then
         WizardSelectTasks('autostart')
