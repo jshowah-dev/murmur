@@ -9,7 +9,7 @@ use std::sync::Arc;
 use windows::core::{w, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
 use windows::Win32::System::Threading::CreateMutexW;
-use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, ShowWindow, SW_RESTORE};
+use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, IsIconic, ShowWindow, SW_RESTORE};
 
 const TITLE: &str = "Murmur — Dictionary";
 
@@ -93,7 +93,10 @@ impl EditorApp {
 fn focus_existing() {
     unsafe {
         if let Ok(hwnd) = FindWindowW(PCWSTR::null(), &HSTRING::from(TITLE)) {
-            let _ = ShowWindow(hwnd, SW_RESTORE);
+            // SW_RESTORE would also un-maximize, so only use it on a minimized window
+            if IsIconic(hwnd).as_bool() {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+            }
             crate::correction::bring_to_front(hwnd);
         }
     }
