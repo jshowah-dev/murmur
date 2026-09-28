@@ -11,7 +11,7 @@ pub enum TrayEvent {
     TogglePause,
     FixLast,
     History,
-    OpenDictionary,
+    EditDictionary,
     OpenSnippets,
     OpenConfigDir,
     ToggleAutostart,
@@ -46,7 +46,7 @@ impl Tray {
         let pause = MenuItem::new("Pause", true, None);
         let fix = MenuItem::new("Fix last (Left Shift+PTT)", true, None);
         let hist = MenuItem::new("History…", true, None);
-        let dict = MenuItem::new("Open dictionary", true, None);
+        let dict = MenuItem::new("Dictionary…", true, None);
         let snip = MenuItem::new("Open snippets", true, None);
         let cfg = MenuItem::new("Open config folder", true, None);
         let autostart = CheckMenuItem::new("Start with Windows", true, crate::autostart::is_enabled(), None);
@@ -56,7 +56,7 @@ impl Tray {
             (pause.id().clone(), TrayEvent::TogglePause),
             (fix.id().clone(), TrayEvent::FixLast),
             (hist.id().clone(), TrayEvent::History),
-            (dict.id().clone(), TrayEvent::OpenDictionary),
+            (dict.id().clone(), TrayEvent::EditDictionary),
             (snip.id().clone(), TrayEvent::OpenSnippets),
             (cfg.id().clone(), TrayEvent::OpenConfigDir),
             (autostart.id().clone(), TrayEvent::ToggleAutostart),

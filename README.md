@@ -53,7 +53,7 @@ Murmur lives in the system tray (teal microphone; grey when paused). Right-click
 | Pause / Resume | Stop listening for the hotkey |
 | Fix last (Left Shift+PTT) | Edit the last dictation |
 | History… | Browse recent dictations |
-| Open dictionary | Edit `dictionary.toml` |
+| Dictionary… | Add, edit, delete and test dictionary terms |
 | Open snippets | Edit `snippets.toml` |
 | Open config folder | Open `%APPDATA%\Murmur` |
 | Start with Windows | Start Murmur when you sign in (on/off) |
@@ -79,7 +79,13 @@ Settings live in `%APPDATA%\Murmur\config.toml`, created with defaults on first 
 
 ### Dictionary
 
-`%APPDATA%\Murmur\dictionary.toml` maps what you say to what should be written. Fix-last adds entries automatically.
+The dictionary maps what you say to what should be written. Open it from the tray with **Dictionary…**: pick a term to edit it, **+ New term** to add one, and type or dictate into the test box to see what the dictionary does to a phrase. Changes apply to the next dictation once you save; dictation keeps working while the editor is open. Fix-last adds entries automatically.
+
+- **Written as:** the text Murmur writes.
+- **Heard as:** what the speech model tends to hear instead, e.g. `cooper netties` for Kubernetes.
+- **Also match sound-alikes:** also catch words that sound like the term. On by default.
+
+The terms live in `%APPDATA%\Murmur\dictionary.toml` (the editor's **Open dictionary file** link opens it). You can edit the file by hand; saving from the editor removes comments from it.
 
 ```toml
 [[term]]
