@@ -2,14 +2,13 @@
 //! any `egui::Ui`, so a future settings window can host it as a tab.
 
 use crate::correction_ui::{AMBER, GREEN, MUTED, TEXT};
-use eframe::egui::{self, Align, Button, Key, Layout, Modifiers, RichText, ScrollArea, TextEdit};
+use eframe::egui::{self, Align, Button, CentralPanel, Frame, Key, Layout, Margin, Modifiers, Panel, RichText, ScrollArea, TextEdit};
 use murmur_lib::dictionary::{file_stamp, Dictionary, SaveOutcome, Stamp, Term};
 use murmur_lib::dictionary_edit::{self as edit, Deleted, Issue};
 use std::path::{Path, PathBuf};
 
 const RED: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x6C, 0x6C);
 const LIST_W: f32 = 200.0;
-const FOOTER_H: f32 = 150.0;
 const SOUND_ALIKE_TIP: &str = "Also catch words that sound like this term, e.g. 'haub' for HAWB. \
 For all-caps acronyms only the single-word 'Heard as' forms are used.";
 
@@ -186,25 +185,43 @@ impl DictionaryPanel {
             self.save();
         }
         let issues = edit::validate(&self.working);
+        // Panels, not nested rows: each takes its own share of the window, so the footer can't be
+        // pushed off-screen by a long list. Order matters: top and bottom first, then the sides.
+        let bare = |bottom: i8| Frame::new().inner_margin(Margin { left: 0, right: 0, top: 4, bottom });
 
-        ui.horizontal(|ui| {
-            ui.add(TextEdit::singleline(&mut self.search).hint_text("Search…").desired_width(LIST_W));
-            if ui.button("+ New term").clicked() {
-                self.new_term();
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.link("Open dictionary file").clicked() {
-                    open_file(&self.path);
+        Panel::top("dict-toolbar").frame(bare(8)).resizable(false).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.add(TextEdit::singleline(&mut self.search).hint_text("Search…").desired_width(LIST_W));
+                if ui.button("+ New term").clicked() {
+                    self.new_term();
                 }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.link("Open dictionary file").clicked() {
+                        open_file(&self.path);
+                    }
+                });
             });
         });
-        ui.separator();
 
-        let list_h = (ui.available_height() - FOOTER_H).max(120.0);
-        ui.horizontal_top(|ui| {
-            ui.allocate_ui(egui::vec2(LIST_W, list_h), |ui| {
-                ScrollArea::vertical().id_salt("terms").max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
-                    ui.set_width(LIST_W);
+        Panel::bottom("dict-footer").frame(bare(0)).resizable(false).show(ui, |ui| {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Test (dictionary only)").size(12.0).color(MUTED));
+                ui.add(TextEdit::singleline(&mut self.test).hint_text("Type or dictate a phrase").desired_width(f32::INFINITY));
+            });
+            if !self.test.trim().is_empty() {
+                ui.label(RichText::new(format!("→ {}", edit::preview(&self.working, &self.test))).color(GREEN));
+            }
+            ui.add_space(6.0);
+            self.footer(ui);
+        });
+
+        Panel::left("dict-list")
+            .frame(Frame::new().inner_margin(Margin { left: 0, right: 8, top: 6, bottom: 6 }))
+            .default_size(LIST_W)
+            .size_range(140.0..=360.0)
+            .show(ui, |ui| {
+                ScrollArea::vertical().id_salt("terms").auto_shrink([false, false]).show(ui, |ui| {
                     for i in edit::visible(&self.working, &self.search) {
                         let t = &self.working[i];
                         let name = if t.written.trim().is_empty() { "(new term)".to_string() } else { t.written.clone() };
@@ -216,23 +233,14 @@ impl DictionaryPanel {
                     }
                 });
             });
-            ui.separator();
-            ui.vertical(|ui| {
-                ui.set_min_height(list_h);
-                self.term_editor(ui, &issues);
+
+        CentralPanel::no_frame().show(ui, |ui| {
+            Frame::new().inner_margin(Margin { left: 12, right: 0, top: 6, bottom: 6 }).show(ui, |ui| {
+                ScrollArea::vertical().id_salt("term").auto_shrink([false, false]).show(ui, |ui| {
+                    self.term_editor(ui, &issues);
+                });
             });
         });
-        ui.separator();
-
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Test (dictionary only)").size(12.0).color(MUTED));
-            ui.add(TextEdit::singleline(&mut self.test).hint_text("Type or dictate a phrase").desired_width(f32::INFINITY));
-        });
-        if !self.test.trim().is_empty() {
-            ui.label(RichText::new(format!("→ {}", edit::preview(&self.working, &self.test))).color(GREEN));
-        }
-        ui.add_space(6.0);
-        self.footer(ui);
     }
 
     fn term_editor(&mut self, ui: &mut egui::Ui, issues: &[Issue]) {
@@ -454,6 +462,49 @@ mod tests {
         assert!(panel.save());
         assert_eq!(std::fs::read_to_string(&p).unwrap(), original);
         assert!(!p.with_extension("toml.bak").exists());
+    }
+
+    /// Every piece of text the panel draws in one frame, with where it lands.
+    fn drawn_text(panel: &mut DictionaryPanel, size: egui::Vec2) -> Vec<(String, egui::Pos2)> {
+        fn walk(shape: &egui::epaint::Shape, out: &mut Vec<(String, egui::Pos2)>) {
+            match shape {
+                egui::epaint::Shape::Text(t) => out.push((t.galley.text().to_string(), t.pos)),
+                egui::epaint::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let ctx = egui::Context::default();
+        let input = || egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)), ..Default::default() };
+        let mut output = None;
+        // panels settle their sizes over the first frames
+        for _ in 0..3 {
+            output = Some(ctx.run_ui(input(), |ui| panel.ui(ui)));
+        }
+        let mut out = Vec::new();
+        output.unwrap().shapes.iter().for_each(|c| walk(&c.shape, &mut out));
+        out
+    }
+
+    #[test]
+    fn layout_fits_the_window_with_a_vertical_list() {
+        let many = (0..30).map(|i| format!("[[term]]\nwritten = \"Term{i:02}\"\n")).collect::<String>();
+        let p = temp_file("layout", &many);
+        let mut panel = DictionaryPanel::new(p);
+        panel.selected = Some(0);
+        panel.delete_selected();
+        panel.selected = Some(0);
+        panel.test = "a phrase".into();
+        // default window and the minimum window, less the editor's 12 px margin
+        for size in [egui::vec2(736.0, 536.0), egui::vec2(536.0, 396.0)] {
+            let text = drawn_text(&mut panel, size);
+            let at = |s: &str| text.iter().find(|(t, _)| t == s).map(|(_, p)| *p).unwrap_or_else(|| panic!("'{s}' not drawn at {size:?}"));
+            for s in ["Save", "Undo delete", "Test (dictionary only)", "→ a phrase", "Written as", "Also match sound-alikes"] {
+                let p = at(s);
+                assert!(p.x >= 0.0 && p.y >= 0.0 && p.x < size.x && p.y < size.y, "'{s}' off-screen at {p:?} in {size:?}");
+            }
+            let (a, b) = (at("Term01"), at("Term02"));
+            assert!(b.y > a.y && (b.x - a.x).abs() < 1.0, "list not vertical: {a:?} {b:?}");
+        }
     }
 
     #[test]
