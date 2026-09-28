@@ -1,9 +1,17 @@
 //! The dictionary editor's content: term list, term editor, test box and save bar. Draws into
 //! any `egui::Ui`, so a future settings window can host it as a tab.
 
+use crate::correction_ui::{AMBER, GREEN, MUTED, TEXT};
+use eframe::egui::{self, Align, Button, Key, Layout, Modifiers, RichText, ScrollArea, TextEdit};
 use murmur_lib::dictionary::{file_stamp, Dictionary, SaveOutcome, Stamp, Term};
-use murmur_lib::dictionary_edit::{self as edit, Deleted};
+use murmur_lib::dictionary_edit::{self as edit, Deleted, Issue};
 use std::path::{Path, PathBuf};
+
+const RED: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x6C, 0x6C);
+const LIST_W: f32 = 200.0;
+const FOOTER_H: f32 = 150.0;
+const SOUND_ALIKE_TIP: &str = "Also catch words that sound like this term, e.g. 'haub' for HAWB. \
+For all-caps acronyms only the single-word 'Heard as' forms are used.";
 
 #[derive(Debug, PartialEq)]
 enum Banner {
@@ -141,6 +149,162 @@ impl DictionaryPanel {
     fn undo_delete(&mut self) {
         if let Some(d) = self.undo.take() {
             self.selected = Some(edit::undo(&mut self.working, d));
+        }
+    }
+
+    pub fn ui(&mut self, ui: &mut egui::Ui) {
+        if let Some(err) = self.load_error.clone() {
+            ui.label(RichText::new("dictionary.toml couldn't be read").size(15.0).color(TEXT));
+            ui.label(RichText::new(err).color(RED));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Retry").clicked() {
+                    self.reload();
+                }
+                if ui.link("Open dictionary file").clicked() {
+                    open_file(&self.path);
+                }
+            });
+            return;
+        }
+        if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::S)) {
+            self.save();
+        }
+        let issues = edit::validate(&self.working);
+
+        ui.horizontal(|ui| {
+            ui.add(TextEdit::singleline(&mut self.search).hint_text("Search…").desired_width(LIST_W));
+            if ui.button("+ New term").clicked() {
+                self.new_term();
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.link("Open dictionary file").clicked() {
+                    open_file(&self.path);
+                }
+            });
+        });
+        ui.separator();
+
+        let list_h = (ui.available_height() - FOOTER_H).max(120.0);
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui(egui::vec2(LIST_W, list_h), |ui| {
+                ScrollArea::vertical().id_salt("terms").max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
+                    ui.set_width(LIST_W);
+                    for i in edit::visible(&self.working, &self.search) {
+                        let t = &self.working[i];
+                        let name = if t.written.trim().is_empty() { "(new term)".to_string() } else { t.written.clone() };
+                        let bad = issues.iter().any(|x| x.error && x.term == i);
+                        let text = RichText::new(name).color(if bad { RED } else { TEXT });
+                        if ui.selectable_label(self.selected == Some(i), text).clicked() {
+                            self.selected = Some(i);
+                        }
+                    }
+                });
+            });
+            ui.separator();
+            ui.vertical(|ui| {
+                ui.set_min_height(list_h);
+                self.term_editor(ui, &issues);
+            });
+        });
+        ui.separator();
+
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Test (dictionary only)").size(12.0).color(MUTED));
+            ui.add(TextEdit::singleline(&mut self.test).hint_text("Type or dictate a phrase").desired_width(f32::INFINITY));
+        });
+        if !self.test.trim().is_empty() {
+            ui.label(RichText::new(format!("→ {}", edit::preview(&self.working, &self.test))).color(GREEN));
+        }
+        ui.add_space(6.0);
+        self.footer(ui);
+    }
+
+    fn term_editor(&mut self, ui: &mut egui::Ui, issues: &[Issue]) {
+        let Some(i) = self.selected.filter(|&i| i < self.working.len()) else {
+            ui.label(RichText::new("Select a term, or add one with + New term.").color(MUTED));
+            return;
+        };
+        let show = |ui: &mut egui::Ui, x: &Issue| {
+            ui.label(RichText::new(&x.message).size(12.0).color(if x.error { RED } else { AMBER }));
+        };
+        let mut remove_spoken = None;
+        let mut delete = false;
+        let t = &mut self.working[i];
+
+        ui.label(RichText::new("Written as").size(12.0).color(MUTED));
+        ui.add(TextEdit::singleline(&mut t.written).desired_width(f32::INFINITY));
+        issues.iter().filter(|x| x.term == i && x.spoken.is_none()).for_each(|x| show(ui, x));
+        ui.add_space(6.0);
+
+        ui.label(RichText::new("Heard as").size(12.0).color(MUTED));
+        ui.horizontal_wrapped(|ui| {
+            for (k, s) in t.spoken.iter_mut().enumerate() {
+                ui.add(TextEdit::singleline(s).desired_width(110.0));
+                if ui.small_button("×").on_hover_text("Remove").clicked() {
+                    remove_spoken = Some(k);
+                }
+            }
+            if ui.small_button("+").on_hover_text("Add a spoken form").clicked() {
+                t.spoken.push(String::new());
+            }
+        });
+        issues.iter().filter(|x| x.term == i && x.spoken.is_some()).for_each(|x| show(ui, x));
+        ui.add_space(6.0);
+
+        ui.checkbox(&mut t.phonetic, "Also match sound-alikes").on_hover_text(SOUND_ALIKE_TIP);
+        ui.add_space(10.0);
+        ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+            if ui.button("Delete term").clicked() {
+                delete = true;
+            }
+        });
+
+        if let Some(k) = remove_spoken {
+            self.working[i].spoken.remove(k);
+        }
+        if delete {
+            self.delete_selected();
+        }
+    }
+
+    fn footer(&mut self, ui: &mut egui::Ui) {
+        let mut reload = false;
+        let mut overwrite = false;
+        match &self.banner {
+            Some(Banner::Conflict) => {
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(AMBER, "dictionary.toml changed outside the editor (Fix-last or a hand edit).");
+                    reload = ui.button("Reload").on_hover_text("Discard my edits").clicked();
+                    overwrite = ui.button("Overwrite").clicked();
+                });
+            }
+            Some(Banner::Error(e)) => {
+                ui.colored_label(RED, format!("Couldn't save: {e}"));
+            }
+            None => {}
+        }
+        if self.has_comments {
+            ui.label(RichText::new("Saving removes comments from dictionary.toml").size(12.0).color(MUTED));
+        }
+        let n = edit::changes(&self.loaded, &self.working);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let can = self.is_dirty() && !self.has_errors();
+            if ui.add_enabled(can, Button::new("Save")).on_hover_text("Ctrl+S").clicked() {
+                self.save();
+            }
+            if n > 0 {
+                ui.label(RichText::new(format!("{n} unsaved change{}", if n == 1 { "" } else { "s" })).color(MUTED));
+            }
+            if self.undo.is_some() && ui.button("Undo delete").clicked() {
+                self.undo_delete();
+            }
+        });
+        if reload {
+            self.reload();
+        }
+        if overwrite {
+            self.overwrite();
         }
     }
 }
