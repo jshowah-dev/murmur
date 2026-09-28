@@ -190,6 +190,14 @@ fn main() -> Result<()> {
                 TrayEvent::OpenDictionary => open_path(&config::config_dir().join("dictionary.toml")),
                 TrayEvent::OpenSnippets => open_path(&snippets::path()),
                 TrayEvent::OpenConfigDir => open_path(&config::config_dir()),
+                TrayEvent::ToggleAutostart => {
+                    // the registry, not the menu's own check state, says what's on
+                    if let Err(e) = autostart::set(!autostart::is_enabled()) {
+                        log::error!("autostart: {e:#}");
+                        tray.notify("Murmur", &format!("Couldn't change start with Windows: {e}"));
+                    }
+                    tray.set_autostart_checked(autostart::is_enabled());
+                }
                 TrayEvent::Quit => break,
             }
         }

@@ -25,7 +25,7 @@ Requires Windows 10 or 11 (x64). No GPU needed.
 2. Run `murmur.exe`. Murmur isn't code-signed yet, so Windows SmartScreen may say "Windows protected your PC". Click **More info → Run anyway**.
 3. On first launch Murmur downloads the speech model (about 460 MB, one time) to `%LOCALAPPDATA%\Murmur\models`, then shows a short "you're ready" screen.
 
-To start Murmur with Windows, put a shortcut to `murmur.exe` in `shell:startup`.
+To start Murmur with Windows, tick **Start with Windows** in the tray menu.
 
 ## Updating
 
@@ -53,6 +53,7 @@ Murmur lives in the system tray (teal microphone; grey when paused). Right-click
 | Open dictionary | Edit `dictionary.toml` |
 | Open snippets | Edit `snippets.toml` |
 | Open config folder | Open `%APPDATA%\Murmur` |
+| Start with Windows | Start Murmur when you sign in (on/off) |
 | Quit | Exit Murmur |
 
 ## Configuration
