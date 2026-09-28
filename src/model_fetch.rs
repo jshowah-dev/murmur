@@ -27,6 +27,9 @@ pub fn vad() -> Asset {
     }
 }
 
+/// Bytes the Parakeet archive unpacks to, for the unpack progress bar.
+pub const PARAKEET_UNPACKED: u64 = 661_428_477;
+
 pub fn parakeet() -> Asset {
     let file = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2";
     Asset {
@@ -237,36 +240,61 @@ pub fn tar_exe() -> PathBuf {
 
 /// Unpacks a .tar.bz2 holding one top-level folder into `dir` with Windows' own tar.exe, via
 /// `dir\.staging` so a crash mid-unpack leaves nothing that looks installed. The archive is
-/// deleted only on success.
-pub fn extract(archive: &Path, dir: &Path) -> Result<PathBuf, FetchError> {
+/// deleted only on success. `progress` gets the bytes unpacked so far, polled while tar runs.
+pub fn extract(archive: &Path, dir: &Path, progress: &mut dyn FnMut(u64)) -> Result<PathBuf, FetchError> {
     let staging = dir.join(".staging");
     if staging.exists() {
         fs::remove_dir_all(&staging)?;
     }
     fs::create_dir_all(&staging)?;
-    let result = untar(archive, &staging).and_then(|()| move_single_dir(&staging, dir));
+    let result = untar(archive, &staging, progress).and_then(|()| move_single_dir(&staging, dir));
     let _ = fs::remove_dir_all(&staging);
     let unpacked = result?;
     fs::remove_file(archive)?;
     Ok(unpacked)
 }
 
-fn untar(archive: &Path, into: &Path) -> Result<(), FetchError> {
+fn untar(archive: &Path, into: &Path, progress: &mut dyn FnMut(u64)) -> Result<(), FetchError> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let tar = tar_exe();
-    let status = std::process::Command::new(&tar)
+    let mut child = std::process::Command::new(&tar)
         .arg("-xjf")
         .arg(archive)
         .arg("-C")
         .arg(into)
         .creation_flags(CREATE_NO_WINDOW)
-        .status()
+        .spawn()
         .map_err(|e| FetchError::Unpack(format!("{}: {e}", tar.display())))?;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        progress(tree_size(into));
+        std::thread::sleep(Duration::from_millis(250));
+    };
     if !status.success() {
         return Err(FetchError::Unpack(format!("tar exit {}", status.code().unwrap_or(-1))));
     }
+    progress(tree_size(into));
     Ok(())
+}
+
+/// Total bytes of the files under `dir` (0 if missing). Sizes come from `fs::metadata` on each
+/// path: a directory listing's cached size reads 0 for a file tar is still writing.
+pub fn tree_size(dir: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(dir) else { return 0 };
+    entries
+        .filter_map(|e| e.ok())
+        .map(|e| {
+            let path = e.path();
+            match fs::metadata(&path) {
+                Ok(m) if m.is_dir() => tree_size(&path),
+                Ok(m) => m.len(),
+                Err(_) => 0,
+            }
+        })
+        .sum()
 }
 
 fn move_single_dir(staging: &Path, dir: &Path) -> Result<PathBuf, FetchError> {
@@ -597,7 +625,7 @@ mod tests {
     fn extract_moves_folder_and_deletes_archive() {
         let dir = tmp("extract ok");
         let archive = make_archive(&dir);
-        let got = extract(&archive, &dir).unwrap();
+        let got = extract(&archive, &dir, &mut |_| {}).unwrap();
         assert_eq!(got, dir.join("fixture-model"));
         assert!(is_installed(&got));
         assert!(!archive.exists());
@@ -611,9 +639,28 @@ mod tests {
         fs::create_dir_all(dir.join("fixture-model")).unwrap();
         fs::write(dir.join("fixture-model").join("stale.txt"), b"old").unwrap();
         fs::create_dir_all(dir.join(".staging").join("junk")).unwrap();
-        let got = extract(&archive, &dir).unwrap();
+        let got = extract(&archive, &dir, &mut |_| {}).unwrap();
         assert!(is_installed(&got));
         assert!(!got.join("stale.txt").exists());
+    }
+
+    #[test]
+    fn tree_size_counts_nested_files() {
+        let dir = tmp("tree size");
+        fs::create_dir_all(dir.join("a").join("b")).unwrap();
+        fs::write(dir.join("top.bin"), vec![0u8; 10]).unwrap();
+        fs::write(dir.join("a").join("b").join("deep.bin"), vec![0u8; 32]).unwrap();
+        assert_eq!(tree_size(&dir), 42);
+        assert_eq!(tree_size(&dir.join("missing")), 0);
+    }
+
+    #[test]
+    fn extract_reports_unpacked_bytes() {
+        let dir = tmp("extract progress");
+        let archive = make_archive(&dir);
+        let mut last = None;
+        extract(&archive, &dir, &mut |n| last = Some(n)).unwrap();
+        assert_eq!(last, Some(1), "the fixture's only file is 1 byte");
     }
 
     #[test]
@@ -621,7 +668,7 @@ mod tests {
         let dir = tmp("extract bad");
         let archive = dir.join("broken.tar.bz2");
         fs::write(&archive, b"not an archive").unwrap();
-        let r = extract(&archive, &dir);
+        let r = extract(&archive, &dir, &mut |_| {});
         assert!(matches!(r, Err(FetchError::Unpack(_))), "{r:?}");
         assert!(archive.exists());
         assert!(!dir.join(".staging").exists());

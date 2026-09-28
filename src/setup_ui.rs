@@ -51,14 +51,14 @@ const SIZE_READY: [f32; 2] = [480.0, 250.0];
 
 enum Msg {
     Progress(u64),
-    Unpacking,
+    Unpacking(u64),
     Done,
     Failed(String),
 }
 
 enum Stage {
     Downloading(u64),
-    Unpacking,
+    Unpacking(u64),
     Failed(String),
     Ready,
 }
@@ -112,9 +112,12 @@ fn install(models: &Path, cancel: &AtomicBool, tx: &Sender<Msg>, ctx: &egui::Con
     log::info!("model setup: downloading into {}", models.display());
     fetcher.download(&vad, models, &mut |n| report(n), cancel)?;
     fetcher.download(&parakeet, models, &mut |n| report(vad.size + n), cancel)?;
-    let _ = tx.send(Msg::Unpacking);
+    let _ = tx.send(Msg::Unpacking(0));
     ctx.request_repaint();
-    let dir = model_fetch::extract(&models.join(&parakeet.file), models)?;
+    let dir = model_fetch::extract(&models.join(&parakeet.file), models, &mut |n| {
+        let _ = tx.send(Msg::Unpacking(n));
+        ctx.request_repaint();
+    })?;
     log::info!("model setup: installed {}", dir.display());
     Ok(())
 }
@@ -122,7 +125,7 @@ fn install(models: &Path, cancel: &AtomicBool, tx: &Sender<Msg>, ctx: &egui::Con
 /// tar.exe can't be stopped, so a close while it runs would orphan it mid-unpack. Once
 /// installed, the close is the window's own and must go through.
 fn refuse_close(stage: &Stage, installed: bool) -> bool {
-    matches!(stage, Stage::Unpacking) && !installed
+    matches!(stage, Stage::Unpacking(_)) && !installed
 }
 
 impl eframe::App for SetupApp {
@@ -131,7 +134,7 @@ impl eframe::App for SetupApp {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 Msg::Progress(n) => self.stage = Stage::Downloading(n),
-                Msg::Unpacking => self.stage = Stage::Unpacking,
+                Msg::Unpacking(n) => self.stage = Stage::Unpacking(n),
                 Msg::Failed(e) => self.stage = Stage::Failed(e),
                 Msg::Done => {
                     self.installed.store(true, Ordering::SeqCst);
@@ -176,11 +179,16 @@ impl eframe::App for SetupApp {
                         ctx.send_viewport_cmd(ViewportCommand::Close);
                     }
                 }
-                Stage::Unpacking => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(egui::RichText::new("Unpacking…").size(15.0).color(TEXT));
-                    });
+                Stage::Unpacking(n) => {
+                    // held under 100% until tar exits: the last files land after the size estimate
+                    let frac = (*n as f32 / model_fetch::PARAKEET_UNPACKED as f32).min(0.99);
+                    ui.label(
+                        egui::RichText::new(format!("Unpacking speech model: {:.0}%", frac * 100.0))
+                            .size(15.0)
+                            .color(TEXT),
+                    );
+                    ui.add_space(6.0);
+                    ui.add(egui::ProgressBar::new(frac));
                 }
                 Stage::Failed(e) => {
                     ui.label(egui::RichText::new(e).size(15.0).color(TEXT));
@@ -285,7 +293,7 @@ mod tests {
 
     #[test]
     fn close_refused_only_while_unpacking() {
-        assert!(refuse_close(&Stage::Unpacking, false));
+        assert!(refuse_close(&Stage::Unpacking(0), false));
         assert!(!refuse_close(&Stage::Downloading(5), false));
         assert!(!refuse_close(&Stage::Failed("x".into()), false));
     }
@@ -306,6 +314,6 @@ mod tests {
     #[test]
     fn own_close_after_install_is_not_refused() {
         // Done arrives while the stage still reads Unpacking; the window's own Close must go through
-        assert!(!refuse_close(&Stage::Unpacking, true));
+        assert!(!refuse_close(&Stage::Unpacking(0), true));
     }
 }
