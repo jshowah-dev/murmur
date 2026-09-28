@@ -92,9 +92,11 @@ fn main() -> Result<()> {
     // Before anything else starts: the pipeline loads the model as soon as it's spawned.
     let model_dir = cfg.model_dir_path();
     let mut model_missing = !model_fetch::is_installed(&model_dir);
-    if model_missing && cfg.model_dir == Config::default().model_dir {
+    let default_dir = cfg.model_dir == Config::default().model_dir;
+    let plan = setup_ui::plan(model_missing, default_dir, setup_ui::welcome_marker().exists());
+    if plan != setup_ui::Plan::Skip {
         let models = model_dir.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| model_dir.clone());
-        match setup_ui::run(models) {
+        match setup_ui::run(models, plan, cfg.ptt_key_label()) {
             // re-checked: the unpacked folder must be the one model_dir names
             setup_ui::SetupOutcome::Installed => model_missing = !model_fetch::is_installed(&model_dir),
             setup_ui::SetupOutcome::Quit => {
