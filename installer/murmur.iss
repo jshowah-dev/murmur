@@ -89,9 +89,9 @@ begin
   end;
 end;
 
-// Restart Manager closes Murmur for setup but not for uninstall, so stop the installed copy here.
-// Only the one in the install folder: a zip copy or a dev build keeps running.
-function InitializeUninstall(): Boolean;
+// Restart Manager closes Murmur for setup but not for uninstall, so stop the installed copy
+// once the user has confirmed. Only the one in the install folder: a zip copy or a dev build keeps running.
+procedure StopInstalledMurmur;
 var
   Exe: String;
   Code: Integer;
@@ -101,13 +101,13 @@ begin
   Exec('powershell.exe',
        '-NoProfile -NonInteractive -Command "$p = Get-Process murmur -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq ''' + Exe + ''' }; $p | Stop-Process -Force; $p | Wait-Process -Timeout 5"',
        '', SW_HIDE, ewWaitUntilTerminated, Code);
-  Result := True;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
   begin
+    StopInstalledMurmur;
     RegDeleteValue(HKCU, RunKey, 'Murmur');
     RegDeleteValue(HKCU, ApprovedKey, 'Murmur');
   end;
