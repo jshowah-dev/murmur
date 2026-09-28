@@ -57,6 +57,8 @@ impl DictionaryPanel {
     }
 
     fn reload(&mut self) {
+        // an index can point at a different term in the reloaded file, so follow the name
+        let keep = self.selected.and_then(|i| self.working.get(i)).map(|t| t.written.clone());
         match Dictionary::load_stamped(&self.path) {
             Ok((d, stamp)) => {
                 self.loaded = d.terms.clone();
@@ -66,7 +68,7 @@ impl DictionaryPanel {
                 self.has_comments = std::fs::read_to_string(&self.path)
                     .map(|s| s.lines().any(|l| l.trim_start().starts_with('#')))
                     .unwrap_or(false);
-                self.selected = self.selected.filter(|&i| i < self.working.len());
+                self.selected = keep.and_then(|w| self.working.iter().position(|t| t.written == w));
                 self.undo = None;
                 self.banner = None;
             }
@@ -401,6 +403,26 @@ mod tests {
         assert_eq!(panel.working.len(), 1);
         assert_eq!(panel.working[0].written, "Outside");
         assert!(!panel.is_dirty());
+    }
+
+    #[test]
+    fn reload_keeps_the_selected_term_by_written_form() {
+        let p = temp_file("reselect", TWO);
+        let mut panel = DictionaryPanel::new(p.clone());
+        panel.selected = Some(1);
+        std::fs::write(&p, "[[term]]\nwritten = \"BOL\"\n\n[[term]]\nwritten = \"New\"\n").unwrap();
+        panel.reload();
+        assert_eq!(panel.selected, Some(0));
+    }
+
+    #[test]
+    fn reload_clears_the_selection_when_the_term_is_gone() {
+        let p = temp_file("unselect", TWO);
+        let mut panel = DictionaryPanel::new(p.clone());
+        panel.selected = Some(1);
+        std::fs::write(&p, "[[term]]\nwritten = \"A\"\n\n[[term]]\nwritten = \"B\"\n").unwrap();
+        panel.reload();
+        assert_eq!(panel.selected, None);
     }
 
     #[test]
