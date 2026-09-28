@@ -77,7 +77,7 @@ If `model_dir` has been pointed elsewhere in `config.toml`, only the default loc
 After **Package**, two new steps run. Nothing else changes.
 
 1. **Install Inno Setup:** `choco install innosetup -y --no-progress`. It isn't preinstalled on the windows-2025 runner image (actions/runner-images issues #11644, #12947).
-2. **Build installer:** `iscc /DAppVersion=<version> /O. installer\murmur.iss`, using the version the existing "Read version" step takes from `Cargo.toml`. That step also produces `murmur-vX.Y.Z-setup.exe.sha256` in the same LF format as the zip's.
+2. **Build installer:** `iscc /DAppVersion=<version> installer\murmur.iss` from the repo root (the script sets `SourceDir=..` and `OutputDir=.`, so the setup exe lands in the repo root), using the version the existing "Read version" step takes from `Cargo.toml`. That step also produces `murmur-vX.Y.Z-setup.exe.sha256` in the same LF format as the zip's.
 
 The artifact upload (`workflow_dispatch`) and `gh release create` (tag) include the setup exe and its `.sha256`, so a release carries 4 files.
 
