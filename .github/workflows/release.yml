@@ -27,11 +27,17 @@ jobs:
           }
 
       # sherpa-onnx-sys copies its DLLs into target/release only when its build script runs, and
-      # rust-cache drops loose files from target/release; cleaning just that crate forces the copy
+      # rust-cache drops loose files from target/release; cleaning just that crate forces the copy.
+      # Its build script also trusts any existing target/sherpa-onnx-prebuilt/<ver>/lib dir, which
+      # a restored cache can leave without its .lib files, so that goes too (logged first).
       - name: Build
         shell: pwsh
         run: |
           cargo clean --release -p sherpa-onnx-sys
+          if (Test-Path target/sherpa-onnx-prebuilt) {
+            Get-ChildItem target/sherpa-onnx-prebuilt -Recurse | ForEach-Object { $_.FullName }
+            Remove-Item -Recurse -Force target/sherpa-onnx-prebuilt
+          }
           cargo build --release --locked
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           foreach ($dll in 'onnxruntime.dll', 'onnxruntime_providers_shared.dll', 'sherpa-onnx-c-api.dll', 'sherpa-onnx-cxx-api.dll') {
