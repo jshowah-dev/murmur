@@ -22,7 +22,7 @@ Offline push-to-talk dictation for Windows. Hold a key, speak, let go — the te
 Requires Windows 10 or 11 (x64). No GPU needed.
 
 1. Download `murmur-vX.Y.Z-windows-x64.zip` from [Releases](../../releases) and unzip it anywhere. Keep the DLLs next to `murmur.exe`.
-2. Run `murmur.exe`.
+2. Run `murmur.exe`. Murmur isn't code-signed yet, so Windows SmartScreen may say "Windows protected your PC". Click **More info → Run anyway**.
 3. On first launch Murmur downloads the speech model (about 460 MB, one time) to `%LOCALAPPDATA%\Murmur\models`, then shows a short "you're ready" screen.
 
 To start Murmur with Windows, put a shortcut to `murmur.exe` in `shell:startup`.
