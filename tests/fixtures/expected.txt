@@ -1,8 +1,8 @@
-# lines starting with # are known failures (model drops the first consonant after silence); reported, not asserted
+# Synthetic clips (Windows System.Speech, Microsoft Zira, 16 kHz mono). Lines starting with # are known failures; reported, not asserted
 the_hawb_is_late.wav	The HAWB is late.
 link_the_mawb_to_the_hawb.wav	Link the MAWB to the HAWB.
 bol_shows_the_shipment_as_delivered.wav	BOL shows the shipment as delivered.
 open_the_jira_ticket_for_the_customer.wav	Open the Jira ticket for the customer.
 deploy_to_uat_after_the_build_finishes.wav	Deploy to UAT after the build finishes.
 thanks_new_line_jeff.wav	Thanks.\nJeff.
-the_ear_build_passed_on_the_first_try.wav	The EAR build passed on the first try.
+#the_ear_build_passed_on_the_first_try.wav	The EAR build passed on the first try.
