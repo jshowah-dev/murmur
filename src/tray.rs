@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use windows::Win32::Foundation::HWND;
+use windows::Win32::UI::HiDpi::GetDpiForSystem;
 use windows::Win32::UI::Shell::{Shell_NotifyIconW, NIF_INFO, NIIF_INFO, NIM_MODIFY, NOTIFYICONDATAW};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,24 +23,19 @@ pub struct Tray {
     ids: [(MenuId, TrayEvent); 7],
 }
 
+// Icon resource ids from build.rs (1 is the app icon)
+const ICON_LIVE: u16 = 2;
+const ICON_PAUSED: u16 = 3;
+
+/// The tray's small-icon size at `dpi`: 16 px at 100% scaling, 32 px at 200%.
+fn tray_px(dpi: u32) -> u32 {
+    (16 * dpi + 48) / 96
+}
+
 fn icon(paused: bool) -> Icon {
-    // 16x16 solid circle, grey when paused, green when live
-    let (r, g, b) = if paused { (120u8, 120u8, 120u8) } else { (80u8, 200u8, 120u8) };
-    let mut rgba = vec![0u8; 16 * 16 * 4];
-    for y in 0..16 {
-        for x in 0..16 {
-            let dx = x as f32 - 7.5;
-            let dy = y as f32 - 7.5;
-            if dx * dx + dy * dy <= 7.0 * 7.0 {
-                let i = (y * 16 + x) * 4;
-                rgba[i] = r;
-                rgba[i + 1] = g;
-                rgba[i + 2] = b;
-                rgba[i + 3] = 255;
-            }
-        }
-    }
-    Icon::from_rgba(rgba, 16, 16).expect("icon")
+    // Murmur is DPI-unaware, so it has to ask for the real DPI or it always gets 96
+    let px = tray_px(crate::caret::physical(|| unsafe { GetDpiForSystem() }));
+    Icon::from_resource(if paused { ICON_PAUSED } else { ICON_LIVE }, Some((px, px))).expect("icon")
 }
 
 impl Tray {
@@ -127,4 +123,17 @@ fn set_wide_field<const N: usize>(field: &mut [u16; N], s: &str) {
     let len = wide.len().min(max);
     field[..len].copy_from_slice(&wide[..len]);
     field[len] = 0;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tray_icon_size_follows_dpi() {
+        assert_eq!(tray_px(96), 16);
+        assert_eq!(tray_px(120), 20);
+        assert_eq!(tray_px(144), 24);
+        assert_eq!(tray_px(192), 32);
+    }
 }
