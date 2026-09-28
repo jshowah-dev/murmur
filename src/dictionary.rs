@@ -298,6 +298,45 @@ impl Dictionary {
     }
 }
 
+/// dictionary.toml as the pipeline sees it: reloaded into the shared dictionary when its
+/// modified time changes (the editor, Fix-last or a hand edit). A bad edit keeps the last good terms.
+pub struct DictionaryFile {
+    path: PathBuf,
+    stamp: Stamp,
+}
+
+impl DictionaryFile {
+    /// Starts from the file's current stamp: the shared dictionary was loaded from it at startup.
+    pub fn new(path: PathBuf) -> Self {
+        let stamp = file_stamp(&path);
+        DictionaryFile { path, stamp }
+    }
+
+    /// Reload if the file changed since the last check. Returns an error message once per bad edit.
+    pub fn refresh(&mut self, shared: &std::sync::Mutex<Dictionary>) -> Option<String> {
+        let stamp = file_stamp(&self.path);
+        if stamp == self.stamp {
+            return None;
+        }
+        self.stamp = stamp;
+        // deleted: keep what we have; it comes back on the next save or restart
+        if stamp.is_none() {
+            return None;
+        }
+        match std::fs::read_to_string(&self.path).map_err(anyhow::Error::from).and_then(|s| Dictionary::from_toml(&s)) {
+            Ok(d) => {
+                log::info!("reloaded {} dictionary terms", d.terms.len());
+                *shared.lock().unwrap_or_else(|e| e.into_inner()) = d;
+                None
+            }
+            Err(e) => {
+                log::error!("dictionary.toml: {e:#}");
+                Some(format!("dictionary.toml not loaded, keeping the previous terms: {e}"))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,5 +509,51 @@ mod tests {
         let (d, stamp) = Dictionary::load_stamped(&p).unwrap();
         assert!(d.terms.is_empty());
         assert_eq!(stamp, None);
+    }
+
+    #[test]
+    fn dictionary_file_reloads_on_change_and_keeps_last_good() {
+        let p = temp_path("reload");
+        dict().save_to(&p).unwrap();
+        let shared = std::sync::Mutex::new(dict());
+        let mut f = DictionaryFile::new(p.clone());
+        // unchanged since new(): not re-read
+        assert_eq!(f.refresh(&shared), None);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&p, "[[term]]\nwritten = \"Kowalczyk\"\nspoken = [\"kowalski\"]\n").unwrap();
+        assert_eq!(f.refresh(&shared), None);
+        assert_eq!(shared.lock().unwrap().apply("call kowalski"), "call Kowalczyk");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&p, "[[term]\nbroken").unwrap();
+        assert!(f.refresh(&shared).is_some());
+        // reported once per bad version
+        assert_eq!(f.refresh(&shared), None);
+        assert_eq!(shared.lock().unwrap().terms[0].written, "Kowalczyk");
+    }
+
+    #[test]
+    fn dictionary_file_revives_after_failed_startup() {
+        let p = temp_path("revive");
+        std::fs::write(&p, "[[term]\nbroken").unwrap();
+        let shared = std::sync::Mutex::new(Dictionary::empty_unloaded());
+        let mut f = DictionaryFile::new(p.clone());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        dict().save_to(&p).unwrap();
+        assert_eq!(f.refresh(&shared), None);
+        let d = shared.lock().unwrap();
+        assert_eq!(d.terms.len(), 3);
+        // the reloaded copy is saveable again
+        d.save_to(&p).unwrap();
+    }
+
+    #[test]
+    fn missing_file_keeps_current_terms() {
+        let p = temp_path("gone");
+        dict().save_to(&p).unwrap();
+        let shared = std::sync::Mutex::new(dict());
+        let mut f = DictionaryFile::new(p.clone());
+        std::fs::remove_file(&p).unwrap();
+        assert_eq!(f.refresh(&shared), None);
+        assert_eq!(shared.lock().unwrap().terms.len(), 3);
     }
 }
