@@ -119,6 +119,21 @@ impl Config {
         }
     }
 
+    /// The PTT key as a person would name it ("Right Ctrl"), for on-screen instructions.
+    pub fn ptt_key_label(&self) -> String {
+        match self.ptt_vk() {
+            0xA2 => "Left Ctrl".into(),
+            0xA5 => "Right Alt".into(),
+            0xA4 => "Left Alt".into(),
+            0xA1 => "Right Shift".into(),
+            0x14 => "Caps Lock".into(),
+            0x91 => "Scroll Lock".into(),
+            0x13 => "Pause".into(),
+            vk @ 0x70..=0x87 => format!("F{}", vk - 0x70 + 1),
+            _ => "Right Ctrl".into(),
+        }
+    }
+
     /// Length cap for a hands-free recording; at least one minute.
     pub fn hands_free_max(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.hands_free_max_minutes.max(1) * 60)
@@ -157,6 +172,21 @@ mod tests {
         assert_eq!(c.ptt_vk(), 0x7C);
         c.ptt_key = "CapsLock".into();
         assert_eq!(c.ptt_vk(), 0x14);
+    }
+
+    #[test]
+    fn ptt_key_labels_read_like_the_keyboard() {
+        let mut c = Config::default();
+        assert_eq!(c.ptt_key_label(), "Right Ctrl");
+        c.ptt_key = "lalt".into();
+        assert_eq!(c.ptt_key_label(), "Left Alt");
+        c.ptt_key = "F13".into();
+        assert_eq!(c.ptt_key_label(), "F13");
+        c.ptt_key = "CapsLock".into();
+        assert_eq!(c.ptt_key_label(), "Caps Lock");
+        // an unknown name falls back to Right Ctrl, the same key ptt_vk falls back to
+        c.ptt_key = "nonsense".into();
+        assert_eq!(c.ptt_key_label(), "Right Ctrl");
     }
 
     #[test]

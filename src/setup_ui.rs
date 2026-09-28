@@ -1,3 +1,4 @@
+use crate::config;
 use crate::correction_ui::{load_system_font, MUTED, TEXT};
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui::{self, Margin, ViewportCommand};
@@ -15,6 +16,39 @@ pub enum SetupOutcome {
     Quit,
 }
 
+/// What the setup window has to do on this launch.
+#[derive(Debug, PartialEq)]
+pub enum Plan {
+    Download { then_ready: bool },
+    ReadyOnly,
+    Skip,
+}
+
+/// The auto-download only runs for the default model_dir; a missing custom one gets the tray
+/// notice instead, and no "ready" screen that would be false.
+pub fn plan(model_missing: bool, default_dir: bool, welcomed: bool) -> Plan {
+    match (model_missing, default_dir, welcomed) {
+        (true, true, _) => Plan::Download { then_ready: !welcomed },
+        (true, false, _) | (false, _, true) => Plan::Skip,
+        (false, _, false) => Plan::ReadyOnly,
+    }
+}
+
+/// Written once the "you're ready" screen has been dismissed, so it shows on the first launch only.
+pub fn welcome_marker() -> PathBuf {
+    config::config_dir().join("welcomed")
+}
+
+fn mark_welcomed() {
+    let path = welcome_marker();
+    if let Err(e) = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&path, "")) {
+        log::error!("write {}: {e}", path.display());
+    }
+}
+
+const SIZE_DOWNLOAD: [f32; 2] = [480.0, 170.0];
+const SIZE_READY: [f32; 2] = [480.0, 250.0];
+
 enum Msg {
     Progress(u64),
     Unpacking,
@@ -26,6 +60,7 @@ enum Stage {
     Downloading(u64),
     Unpacking,
     Failed(String),
+    Ready,
 }
 
 struct SetupApp {
@@ -35,6 +70,8 @@ struct SetupApp {
     rx: Receiver<Msg>,
     cancel: Arc<AtomicBool>,
     installed: Arc<AtomicBool>,
+    then_ready: bool,
+    key: String,
 }
 
 impl SetupApp {
@@ -98,8 +135,13 @@ impl eframe::App for SetupApp {
                 Msg::Failed(e) => self.stage = Stage::Failed(e),
                 Msg::Done => {
                     self.installed.store(true, Ordering::SeqCst);
-                    ctx.send_viewport_cmd(ViewportCommand::Close);
-                    return;
+                    if self.then_ready {
+                        self.stage = Stage::Ready;
+                        ctx.send_viewport_cmd(ViewportCommand::InnerSize(SIZE_READY.into()));
+                    } else {
+                        ctx.send_viewport_cmd(ViewportCommand::Close);
+                        return;
+                    }
                 }
             }
         }
@@ -107,14 +149,18 @@ impl eframe::App for SetupApp {
         if ctx.input(|i| i.viewport().close_requested()) {
             if refuse_close(&self.stage, self.installed.load(Ordering::SeqCst)) {
                 ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+            } else if matches!(self.stage, Stage::Ready) {
+                mark_welcomed();
             } else {
                 self.cancel.store(true, Ordering::SeqCst);
             }
         }
         let mut retry = false;
         egui::Frame::new().inner_margin(Margin::same(18)).show(ui, |ui| {
-            ui.label(egui::RichText::new("Murmur needs its speech model (about 460 MB) before first use.").size(13.0).color(MUTED));
-            ui.add_space(12.0);
+            if !matches!(self.stage, Stage::Ready) {
+                ui.label(egui::RichText::new("Murmur needs its speech model (about 460 MB) before first use.").size(13.0).color(MUTED));
+                ui.add_space(12.0);
+            }
             match &self.stage {
                 Stage::Downloading(n) => {
                     ui.label(
@@ -146,6 +192,34 @@ impl eframe::App for SetupApp {
                         }
                     });
                 }
+                Stage::Ready => {
+                    ui.label(egui::RichText::new("You're ready").size(18.0).color(TEXT));
+                    ui.add_space(10.0);
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Hold {}, speak, then release. Murmur pastes the text where you're typing.",
+                            self.key
+                        ))
+                        .size(14.0)
+                        .color(TEXT),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Murmur lives in the system tray (bottom-right; click ^ if you don't see it). \
+                             Right-click its icon to pause, see history, or edit your dictionary.",
+                        )
+                        .size(13.0)
+                        .color(MUTED),
+                    );
+                    ui.add_space(14.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        if ui.button("Got it").clicked() {
+                            mark_welcomed();
+                            ctx.send_viewport_cmd(ViewportCommand::Close);
+                        }
+                    });
+                }
             }
         });
         if retry {
@@ -154,15 +228,21 @@ impl eframe::App for SetupApp {
     }
 }
 
-/// First-run model download. Blocks until the model is installed or the user cancels or quits.
-pub fn run(models: PathBuf) -> SetupOutcome {
-    let installed = Arc::new(AtomicBool::new(false));
+/// First-run window: the model download and/or the "you're ready" screen, per `plan`. Blocks
+/// until the model is installed (or already was) and the window is closed, or the user quits.
+pub fn run(models: PathBuf, plan: Plan, key: String) -> SetupOutcome {
+    let (download, then_ready) = match plan {
+        Plan::Download { then_ready } => (true, then_ready),
+        Plan::ReadyOnly => (false, true),
+        Plan::Skip => return SetupOutcome::Installed,
+    };
+    let installed = Arc::new(AtomicBool::new(!download));
     let done = installed.clone();
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Murmur setup")
             .with_resizable(false)
-            .with_inner_size([480.0, 170.0]),
+            .with_inner_size(if download { SIZE_DOWNLOAD } else { SIZE_READY }),
         centered: true,
         ..Default::default()
     };
@@ -176,12 +256,16 @@ pub fn run(models: PathBuf) -> SetupOutcome {
             let mut app = SetupApp {
                 models,
                 total: model_fetch::vad().size + model_fetch::parakeet().size,
-                stage: Stage::Downloading(0),
+                stage: if download { Stage::Downloading(0) } else { Stage::Ready },
                 rx,
                 cancel: Arc::new(AtomicBool::new(false)),
                 installed: done,
+                then_ready,
+                key,
             };
-            app.start(&cc.egui_ctx);
+            if download {
+                app.start(&cc.egui_ctx);
+            }
             Ok(Box::new(app))
         }),
     );
@@ -204,6 +288,19 @@ mod tests {
         assert!(refuse_close(&Stage::Unpacking, false));
         assert!(!refuse_close(&Stage::Downloading(5), false));
         assert!(!refuse_close(&Stage::Failed("x".into()), false));
+    }
+
+    #[test]
+    fn plan_covers_first_run_cases() {
+        // (model_missing, default_dir, welcomed)
+        assert_eq!(plan(true, true, false), Plan::Download { then_ready: true });
+        assert_eq!(plan(true, true, true), Plan::Download { then_ready: false });
+        assert_eq!(plan(false, true, false), Plan::ReadyOnly);
+        assert_eq!(plan(false, false, false), Plan::ReadyOnly);
+        assert_eq!(plan(false, true, true), Plan::Skip);
+        // a custom model_dir that's missing gets the tray notice, and no Ready claim
+        assert_eq!(plan(true, false, false), Plan::Skip);
+        assert_eq!(plan(true, false, true), Plan::Skip);
     }
 
     #[test]
