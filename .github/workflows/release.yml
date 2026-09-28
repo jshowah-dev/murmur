@@ -64,7 +64,8 @@ jobs:
           }
           Compress-Archive -Path $files -DestinationPath "$name.zip"
           $hash = (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower()
-          "$hash  $name.zip" | Out-File -Encoding ascii "$name.zip.sha256"
+          # LF, not Out-File's CRLF, so `sha256sum -c` works on Linux and Git Bash
+          [IO.File]::WriteAllText("$PWD/$name.zip.sha256", "$hash  $name.zip`n")
           "name=$name" >> $env:GITHUB_OUTPUT
 
       - name: Upload artifact
