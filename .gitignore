@@ -2,3 +2,4 @@
 /probe/target
 *.wav
 !tests/fixtures/*.wav
+/murmur-v*-setup.exe

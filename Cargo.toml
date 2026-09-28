@@ -1,6 +1,6 @@
 [package]
 name = "murmur"
-version = "0.1.0"
+version = "0.2.0"
 license = "MIT"
 edition = "2021"
 build = "build.rs"
@@ -23,6 +23,7 @@ windows = { version = "0.62", features = [
   "Win32_System_DataExchange",
   "Win32_System_Memory",
   "Win32_System_Threading",
+  "Win32_System_Registry",
   "Win32_Security",
   "Win32_Graphics_Gdi",
   "Win32_UI_Shell",

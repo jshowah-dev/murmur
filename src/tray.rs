@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::sync::atomic::{AtomicU32, Ordering};
-use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
@@ -14,13 +14,15 @@ pub enum TrayEvent {
     OpenDictionary,
     OpenSnippets,
     OpenConfigDir,
+    ToggleAutostart,
     Quit,
 }
 
 pub struct Tray {
     _icon: TrayIcon,
     pause: MenuItem,
-    ids: [(MenuId, TrayEvent); 7],
+    autostart: CheckMenuItem,
+    ids: [(MenuId, TrayEvent); 8],
 }
 
 // Icon resource ids from build.rs (1 is the app icon)
@@ -47,8 +49,9 @@ impl Tray {
         let dict = MenuItem::new("Open dictionary", true, None);
         let snip = MenuItem::new("Open snippets", true, None);
         let cfg = MenuItem::new("Open config folder", true, None);
+        let autostart = CheckMenuItem::new("Start with Windows", true, crate::autostart::is_enabled(), None);
         let quit = MenuItem::new("Quit", true, None);
-        menu.append_items(&[&pause, &fix, &hist, &PredefinedMenuItem::separator(), &dict, &snip, &cfg, &PredefinedMenuItem::separator(), &quit])?;
+        menu.append_items(&[&pause, &fix, &hist, &PredefinedMenuItem::separator(), &dict, &snip, &cfg, &autostart, &PredefinedMenuItem::separator(), &quit])?;
         let ids = [
             (pause.id().clone(), TrayEvent::TogglePause),
             (fix.id().clone(), TrayEvent::FixLast),
@@ -56,10 +59,11 @@ impl Tray {
             (dict.id().clone(), TrayEvent::OpenDictionary),
             (snip.id().clone(), TrayEvent::OpenSnippets),
             (cfg.id().clone(), TrayEvent::OpenConfigDir),
+            (autostart.id().clone(), TrayEvent::ToggleAutostart),
             (quit.id().clone(), TrayEvent::Quit),
         ];
         let _icon = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("Murmur").with_icon(icon(false)).build()?;
-        Ok(Tray { _icon, pause, ids })
+        Ok(Tray { _icon, pause, autostart, ids })
     }
 
     pub fn poll(&self) -> Option<TrayEvent> {
@@ -70,6 +74,11 @@ impl Tray {
     pub fn set_paused(&self, paused: bool) {
         self.pause.set_text(if paused { "Resume" } else { "Pause" });
         let _ = self._icon.set_icon(Some(icon(paused)));
+    }
+
+    /// muda flips a CheckMenuItem on click; the caller sets it back from the registry.
+    pub fn set_autostart_checked(&self, on: bool) {
+        self.autostart.set_checked(on);
     }
 
     pub fn notify(&self, title: &str, body: &str) {

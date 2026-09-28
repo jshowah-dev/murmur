@@ -21,19 +21,22 @@ Offline push-to-talk dictation for Windows. Hold a key, speak, let go — the te
 
 Requires Windows 10 or 11 (x64). No GPU needed.
 
-1. Download `murmur-vX.Y.Z-windows-x64.zip` from [Releases](../../releases) and unzip it anywhere. Keep the DLLs next to `murmur.exe`.
-2. Run `murmur.exe`. Murmur isn't code-signed yet, so Windows SmartScreen may say "Windows protected your PC". Click **More info → Run anyway**.
+1. Download `murmur-vX.Y.Z-setup.exe` from [Releases](../../releases) and run it. It installs for your user only (no admin prompt), adds Murmur to the Start menu and, if you leave the box ticked, starts it with Windows. Prefer no installer? Download `murmur-vX.Y.Z-windows-x64.zip` instead and unzip it anywhere, keeping the DLLs next to `murmur.exe`.
+2. Murmur isn't code-signed yet, so Windows SmartScreen may say "Windows protected your PC". Click **More info → Run anyway**.
 3. On first launch Murmur downloads the speech model (about 460 MB, one time) to `%LOCALAPPDATA%\Murmur\models`, then shows a short "you're ready" screen.
 
-To start Murmur with Windows, put a shortcut to `murmur.exe` in `shell:startup`.
+To start Murmur with Windows, tick **Start with Windows** in the tray menu.
+
+### Uninstall
+
+Settings → Apps → Murmur → Uninstall. It asks whether to also delete the speech model and your settings, dictionary and snippets; both default to keeping them. If you used the zip, quit Murmur, untick **Start with Windows** first, then delete the folder.
 
 ## Updating
 
 Murmur doesn't update itself. To get notified of new versions, click **Watch → Custom → Releases** on this repository.
 
-1. Quit Murmur (tray icon → Quit).
-2. Download the new zip from [Releases](../../releases) and unzip it over the old folder, replacing the files.
-3. Start `murmur.exe`.
+1. Download the new `murmur-vX.Y.Z-setup.exe` from [Releases](../../releases) and run it. It closes Murmur, updates it in place and keeps your start-with-Windows choice.
+2. Zip users: quit Murmur (tray icon → Quit), unzip the new zip over the old folder, replacing the files, and start `murmur.exe`.
 
 Your settings, dictionary and snippets live in `%APPDATA%\Murmur` and the model in `%LOCALAPPDATA%\Murmur\models`, so they are kept and nothing is downloaded again.
 
@@ -53,6 +56,7 @@ Murmur lives in the system tray (teal microphone; grey when paused). Right-click
 | Open dictionary | Edit `dictionary.toml` |
 | Open snippets | Edit `snippets.toml` |
 | Open config folder | Open `%APPDATA%\Murmur` |
+| Start with Windows | Start Murmur when you sign in (on/off) |
 | Quit | Exit Murmur |
 
 ## Configuration
@@ -111,6 +115,12 @@ cargo build --release
 ```
 
 The sherpa-onnx prebuilt libraries are downloaded during the build. `target/release/` then holds `murmur.exe` plus the four DLLs it needs. The C runtime is linked statically (see `.cargo/config.toml`), so no Visual C++ redistributable is required.
+
+To build the installer, install [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`) and run, from the repo root after `cargo build --release`:
+
+```bash
+ISCC.exe /DAppVersion=X.Y.Z installer\murmur.iss
+```
 
 Tests:
 
