@@ -280,7 +280,6 @@ fn main() -> Result<()> {
         }
         while let Ok(m) = msg_rx.try_recv() {
             match m {
-                PipelineMsg::Partial(text) => overlay.set_text(&text),
                 PipelineMsg::Processing => overlay.set(OverlayState::Processing),
                 PipelineMsg::Done(e) => {
                     overlay.set(resting(paused));
