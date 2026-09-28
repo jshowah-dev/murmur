@@ -6,7 +6,7 @@ use crate::dictionary_panel::DictionaryPanel;
 use anyhow::Result;
 use eframe::egui::{self, Frame, Id, Margin, Modal, ViewportCommand};
 use std::sync::Arc;
-use windows::core::{w, PCWSTR};
+use windows::core::{w, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, ShowWindow, SW_RESTORE};
@@ -92,7 +92,7 @@ impl EditorApp {
 /// Brings an already-open editor to the front. If its window isn't up yet, does nothing.
 fn focus_existing() {
     unsafe {
-        if let Ok(hwnd) = FindWindowW(PCWSTR::null(), w!("Murmur — Dictionary")) {
+        if let Ok(hwnd) = FindWindowW(PCWSTR::null(), &HSTRING::from(TITLE)) {
             let _ = ShowWindow(hwnd, SW_RESTORE);
             crate::correction::bring_to_front(hwnd);
         }
