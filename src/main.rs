@@ -2,6 +2,7 @@
 
 use murmur_lib::{audio, cleanup, config, dictionary, history, model_fetch, snippets, stt, vad};
 mod audio_out;
+mod autostart;
 mod caret;
 mod correction;
 mod correction_ui;
