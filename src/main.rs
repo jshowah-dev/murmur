@@ -31,11 +31,9 @@ use tray::{Tray, TrayEvent};
 
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
 
-fn init_logging() {
-    let dir = config::config_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join("murmur.log");
-    let truncate = std::fs::metadata(&path).map(|m| m.len() > MAX_LOG_BYTES).unwrap_or(false);
+/// `may_truncate` is false for the editor process: the running app may be writing to this log.
+fn open_log(path: &std::path::Path, may_truncate: bool) -> std::io::Result<std::fs::File> {
+    let truncate = may_truncate && std::fs::metadata(path).map(|m| m.len() > MAX_LOG_BYTES).unwrap_or(false);
     let mut opts = std::fs::OpenOptions::new();
     opts.create(true);
     if truncate {
@@ -43,7 +41,13 @@ fn init_logging() {
     } else {
         opts.append(true);
     }
-    if let Ok(f) = opts.open(&path) {
+    opts.open(path)
+}
+
+fn init_logging(may_truncate: bool) {
+    let dir = config::config_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(f) = open_log(&dir.join("murmur.log"), may_truncate) {
         // the logger accepts DEBUG; the global max level decides, raised once config says debug_log
         let _ = simplelog::WriteLogger::init(log::LevelFilter::Debug, simplelog::Config::default(), f);
     }
@@ -61,9 +65,10 @@ fn wants_editor(mut args: impl Iterator<Item = String>) -> bool {
 }
 
 fn main() -> Result<()> {
-    init_logging();
+    let editor = wants_editor(std::env::args());
+    init_logging(!editor);
     // the editor is its own process, so it must not take the app's single-instance mutex
-    if wants_editor(std::env::args()) {
+    if editor {
         return dictionary_editor::run();
     }
     log::info!("murmur {} starting, cwd {:?}", env!("CARGO_PKG_VERSION"), std::env::current_dir().ok());
@@ -344,5 +349,28 @@ mod tests {
         assert!(wants_editor(args(&["murmur.exe", "--dictionary"])));
         assert!(!wants_editor(args(&["murmur.exe"])));
         assert!(!wants_editor(args(&["murmur.exe", "--other"])));
+    }
+
+    fn big_log(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("murmur-log-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("murmur.log");
+        std::fs::write(&p, vec![b'x'; MAX_LOG_BYTES as usize + 1]).unwrap();
+        p
+    }
+
+    #[test]
+    fn oversized_log_is_truncated_when_allowed() {
+        let p = big_log("truncate");
+        drop(open_log(&p, true).unwrap());
+        assert_eq!(std::fs::metadata(&p).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn oversized_log_is_kept_when_truncation_is_not_allowed() {
+        let p = big_log("keep");
+        drop(open_log(&p, false).unwrap());
+        assert_eq!(std::fs::metadata(&p).unwrap().len(), MAX_LOG_BYTES + 1);
     }
 }

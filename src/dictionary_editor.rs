@@ -6,10 +6,10 @@ use crate::dictionary_panel::DictionaryPanel;
 use anyhow::Result;
 use eframe::egui::{self, Frame, Id, Margin, Modal, ViewportCommand};
 use std::sync::Arc;
-use windows::core::{w, PCWSTR};
+use windows::core::{w, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
 use windows::Win32::System::Threading::CreateMutexW;
-use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, ShowWindow, SW_RESTORE};
+use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, IsIconic, ShowWindow, SW_RESTORE};
 
 const TITLE: &str = "Murmur — Dictionary";
 
@@ -25,13 +25,6 @@ struct EditorApp {
     closing: bool,
 }
 
-impl EditorApp {
-    fn close(&mut self, ctx: &egui::Context) {
-        self.closing = true;
-        ctx.send_viewport_cmd(ViewportCommand::Close);
-    }
-}
-
 impl eframe::App for EditorApp {
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -43,38 +36,55 @@ impl eframe::App for EditorApp {
             ui.set_min_size(ui.available_size());
             self.panel.ui(ui);
         });
-        if self.asking {
-            let mut choice = None;
-            Modal::new(Id::new("unsaved-changes")).show(&ctx, |ui| {
-                ui.label("Save changes to the dictionary?");
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Save").clicked() {
-                        choice = Some(CloseChoice::Save);
-                    }
-                    if ui.button("Discard").clicked() {
-                        choice = Some(CloseChoice::Discard);
-                    }
-                    if ui.button("Cancel").clicked() {
-                        choice = Some(CloseChoice::Cancel);
-                    }
-                });
+        self.prompt(&ctx);
+    }
+}
+
+impl EditorApp {
+    fn close(&mut self, ctx: &egui::Context) {
+        self.closing = true;
+        ctx.send_viewport_cmd(ViewportCommand::Close);
+    }
+
+    /// The unsaved-changes prompt, shown while `asking`.
+    fn prompt(&mut self, ctx: &egui::Context) {
+        if !self.asking {
+            return;
+        }
+        let mut choice = None;
+        let modal = Modal::new(Id::new("unsaved-changes")).show(ctx, |ui| {
+            ui.label("Save changes to the dictionary?");
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    choice = Some(CloseChoice::Save);
+                }
+                if ui.button("Discard").clicked() {
+                    choice = Some(CloseChoice::Discard);
+                }
+                if ui.button("Cancel").clicked() {
+                    choice = Some(CloseChoice::Cancel);
+                }
             });
-            match choice {
-                Some(CloseChoice::Save) => {
-                    self.asking = false;
-                    // a failed save (invalid terms, conflict, I/O) keeps the window open with its banner
-                    if self.panel.save() {
-                        self.close(&ctx);
-                    }
+        });
+        // Esc or a click outside the prompt
+        if choice.is_none() && modal.should_close() {
+            choice = Some(CloseChoice::Cancel);
+        }
+        match choice {
+            Some(CloseChoice::Save) => {
+                self.asking = false;
+                // a failed save (invalid terms, conflict, I/O) keeps the window open with its banner
+                if self.panel.save() {
+                    self.close(ctx);
                 }
-                Some(CloseChoice::Discard) => {
-                    self.asking = false;
-                    self.close(&ctx);
-                }
-                Some(CloseChoice::Cancel) => self.asking = false,
-                None => {}
             }
+            Some(CloseChoice::Discard) => {
+                self.asking = false;
+                self.close(ctx);
+            }
+            Some(CloseChoice::Cancel) => self.asking = false,
+            None => {}
         }
     }
 }
@@ -82,8 +92,11 @@ impl eframe::App for EditorApp {
 /// Brings an already-open editor to the front. If its window isn't up yet, does nothing.
 fn focus_existing() {
     unsafe {
-        if let Ok(hwnd) = FindWindowW(PCWSTR::null(), w!("Murmur — Dictionary")) {
-            let _ = ShowWindow(hwnd, SW_RESTORE);
+        if let Ok(hwnd) = FindWindowW(PCWSTR::null(), &HSTRING::from(TITLE)) {
+            // SW_RESTORE would also un-maximize, so only use it on a minimized window
+            if IsIconic(hwnd).as_bool() {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+            }
             crate::correction::bring_to_front(hwnd);
         }
     }
@@ -120,4 +133,34 @@ pub fn run() -> Result<()> {
         }),
     )
     .map_err(|e| anyhow::anyhow!("dictionary editor window: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn asking_app() -> EditorApp {
+        let path = std::env::temp_dir().join(format!("murmur-editor-{}", std::process::id())).join("dictionary.toml");
+        EditorApp { panel: DictionaryPanel::new(path), asking: true, closing: false }
+    }
+
+    fn frame(ctx: &egui::Context, app: &mut EditorApp, events: Vec<egui::Event>) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(760.0, 560.0))),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(input, |ui| app.prompt(ui.ctx()));
+    }
+
+    #[test]
+    fn escape_dismisses_the_prompt_like_cancel() {
+        let ctx = egui::Context::default();
+        let mut app = asking_app();
+        frame(&ctx, &mut app, vec![]);
+        let esc = egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        frame(&ctx, &mut app, vec![esc]);
+        assert!(!app.asking);
+        assert!(!app.closing);
+    }
 }
