@@ -78,6 +78,11 @@ impl Vad {
         self.drain()
     }
 
+    /// True while the detector is inside a speech segment.
+    pub fn detected(&self) -> bool {
+        self.inner.detected()
+    }
+
     pub fn reset(&mut self) {
         self.pending.clear();
         self.fed.clear();
