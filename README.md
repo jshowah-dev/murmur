@@ -7,7 +7,6 @@ Offline push-to-talk dictation for Windows. Hold a key, speak, let go — the te
 ## Features
 
 - **Push-to-talk** — hold Right Ctrl (configurable), speak, release. Works in any app that accepts typing.
-- **Live text** — the words appear above the pill as you speak, then are typed when you let go.
 - **Hands-free** — double-tap the key to keep recording without holding it. Tap again to finish, Esc to cancel. Stops on its own after 5 minutes.
 - **Spoken commands** — say "new line" or "new paragraph".
 - **Filler removal** — drops "um", "uh", "er" and friends.
