@@ -4,13 +4,14 @@ use crate::model_fetch::{Asset, FetchError, Fetcher};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const RELEASES_PAGE: &str = "https://github.com/jshowah-dev/murmur/releases/latest";
 const LATEST_API: &str = "https://api.github.com/repos/jshowah-dev/murmur/releases/latest";
 const FIRST_CHECK: Duration = Duration::from_secs(60);
 const CHECK_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+const TICK: Duration = Duration::from_secs(15 * 60);
 
 /// Inno Setup switches for an unattended update. `/RELAUNCH` is ours: `murmur.iss` starts Murmur
 /// again after a successful install only when it's present.
@@ -168,18 +169,28 @@ pub fn check() -> Result<Option<Release>, String> {
     check_at(&latest_url(), VERSION)
 }
 
+/// Whether a day has passed since `last` by the wall clock. A clock set back counts as due.
+pub fn check_due(last: Option<SystemTime>, now: SystemTime) -> bool {
+    last.is_none_or(|t| now.duration_since(t).map_or(true, |d| d >= CHECK_EVERY))
+}
+
 /// Checks a minute after launch, then daily, calling `found` for each newer release seen.
 /// Failures are only logged: the next check retries.
 pub fn spawn_checker(found: impl Fn(Release) + Send + 'static) {
     std::thread::spawn(move || {
         std::thread::sleep(FIRST_CHECK);
+        let mut last = None;
         loop {
-            match check() {
-                Ok(Some(r)) => found(r),
-                Ok(None) => log::info!("update check: up to date"),
-                Err(e) => log::info!("update check: {e}"),
+            // sleep doesn't count time the PC spends asleep, so wake often and ask the clock
+            if check_due(last, SystemTime::now()) {
+                last = Some(SystemTime::now());
+                match check() {
+                    Ok(Some(r)) => found(r),
+                    Ok(None) => log::info!("update check: up to date"),
+                    Err(e) => log::info!("update check: {e}"),
+                }
             }
-            std::thread::sleep(CHECK_EVERY);
+            std::thread::sleep(TICK);
         }
     });
 }
@@ -405,6 +416,19 @@ mod tests {
             assert!(!t.contains("k2-fsa") && !t.contains("Model"), "{t}");
         }
         assert_eq!(failure_text(&FetchError::Http(404)), "GitHub answered HTTP 404");
+    }
+
+    #[test]
+    fn a_check_is_due_by_the_wall_clock() {
+        use std::time::{Duration, SystemTime};
+        let now = SystemTime::now();
+        let hours = |h: u64| Duration::from_secs(h * 60 * 60);
+        assert!(check_due(None, now));
+        assert!(!check_due(Some(now - hours(23)), now));
+        // a laptop asleep overnight: its thread slept only minutes, but a day has passed
+        assert!(check_due(Some(now - hours(24)), now));
+        // the clock went back: check rather than wait for it to catch up
+        assert!(check_due(Some(now + hours(1)), now));
     }
 
     #[test]
