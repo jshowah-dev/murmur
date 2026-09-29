@@ -11,6 +11,8 @@ mod dictionary_panel;
 mod history_ui;
 mod hotkey;
 mod inject;
+#[allow(dead_code)] // generated tokens; not all are used yet
+mod motion;
 mod overlay;
 mod pipeline;
 mod setup_ui;
