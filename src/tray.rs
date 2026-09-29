@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::cell::Cell;
 use std::sync::atomic::{AtomicU32, Ordering};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
@@ -15,15 +16,32 @@ pub enum TrayEvent {
     OpenSnippets,
     OpenConfigDir,
     ToggleAutostart,
+    Update,
+    DownloadModel,
     About,
     Quit,
 }
 
 pub struct Tray {
     _icon: TrayIcon,
+    menu: Menu,
     pause: MenuItem,
     autostart: CheckMenuItem,
-    ids: [(MenuId, TrayEvent); 9],
+    update: MenuItem,
+    model: MenuItem,
+    /// whether (model, update) are in the menu
+    shown: Cell<(bool, bool)>,
+    ids: [(MenuId, TrayEvent); 11],
+}
+
+/// Menu position of "About Murmur" before any optional item is added.
+const ABOUT_AT: usize = 9;
+
+/// Where the model and update items go when shown: above About, model first.
+fn extras_positions(model: bool, update: bool) -> (Option<usize>, Option<usize>) {
+    let m = model.then_some(ABOUT_AT);
+    let u = update.then_some(ABOUT_AT + model as usize);
+    (m, u)
 }
 
 // Icon resource ids from build.rs (1 is the app icon)
@@ -53,6 +71,9 @@ impl Tray {
         let autostart = CheckMenuItem::new("Start with Windows", true, crate::autostart::is_enabled(), None);
         let about = MenuItem::new("About Murmur", true, None);
         let quit = MenuItem::new("Quit", true, None);
+        // not in the menu until there's something to offer
+        let update = MenuItem::new("Update", true, None);
+        let model = MenuItem::new("Download new speech model", true, None);
         menu.append_items(&[&pause, &fix, &hist, &PredefinedMenuItem::separator(), &dict, &snip, &cfg, &autostart, &PredefinedMenuItem::separator(), &about, &quit])?;
         let ids = [
             (pause.id().clone(), TrayEvent::TogglePause),
@@ -62,11 +83,13 @@ impl Tray {
             (snip.id().clone(), TrayEvent::OpenSnippets),
             (cfg.id().clone(), TrayEvent::OpenConfigDir),
             (autostart.id().clone(), TrayEvent::ToggleAutostart),
+            (update.id().clone(), TrayEvent::Update),
+            (model.id().clone(), TrayEvent::DownloadModel),
             (about.id().clone(), TrayEvent::About),
             (quit.id().clone(), TrayEvent::Quit),
         ];
-        let _icon = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("Murmur").with_icon(icon(false)).build()?;
-        Ok(Tray { _icon, pause, autostart, ids })
+        let _icon = TrayIconBuilder::new().with_menu(Box::new(menu.clone())).with_tooltip("Murmur").with_icon(icon(false)).build()?;
+        Ok(Tray { _icon, menu, pause, autostart, update, model, shown: Cell::new((false, false)), ids })
     }
 
     pub fn poll(&self) -> Option<TrayEvent> {
@@ -84,6 +107,37 @@ impl Tray {
         self.autostart.set_checked(on);
     }
 
+    /// Shows the update item with `label`, or takes it out of the menu with None.
+    pub fn set_update(&self, label: Option<&str>, enabled: bool) {
+        let (model, _) = self.shown.get();
+        self.show_extras(model, relabel(&self.update, label, enabled));
+    }
+
+    /// Shows the model-download item with `label`, or takes it out of the menu with None.
+    pub fn set_model(&self, label: Option<&str>, enabled: bool) {
+        let (_, update) = self.shown.get();
+        self.show_extras(relabel(&self.model, label, enabled), update);
+    }
+
+    /// muda has no hidden items, so the optional ones are taken out and put back in order.
+    fn show_extras(&self, model: bool, update: bool) {
+        let (had_model, had_update) = self.shown.get();
+        if had_model {
+            let _ = self.menu.remove(&self.model);
+        }
+        if had_update {
+            let _ = self.menu.remove(&self.update);
+        }
+        let (m, u) = extras_positions(model, update);
+        if let Some(at) = m {
+            let _ = self.menu.insert(&self.model, at);
+        }
+        if let Some(at) = u {
+            let _ = self.menu.insert(&self.update, at);
+        }
+        self.shown.set((model, update));
+    }
+
     pub fn notify(&self, title: &str, body: &str) {
         let ok = balloon(&self._icon, title, body);
         log::info!("notify: {title}: {body} (balloon accepted: {ok})");
@@ -92,6 +146,14 @@ impl Tray {
             let _ = self._icon.set_tooltip(Some(format!("Murmur — {title}: {body}")));
         }
     }
+}
+
+fn relabel(item: &MenuItem, label: Option<&str>, enabled: bool) -> bool {
+    if let Some(text) = label {
+        item.set_text(text);
+        item.set_enabled(enabled);
+    }
+    label.is_some()
 }
 
 /// tray-icon has no balloon API, but it registers the icon with Shell_NotifyIconW using an
@@ -147,5 +209,14 @@ mod tests {
         assert_eq!(tray_px(120), 20);
         assert_eq!(tray_px(144), 24);
         assert_eq!(tray_px(192), 32);
+    }
+
+    #[test]
+    fn optional_items_sit_above_about() {
+        // Pause, Fix last, History, ─, Dictionary, Snippets, Config, Start with Windows, ─, [model], [update], About, Quit
+        assert_eq!(extras_positions(false, false), (None, None));
+        assert_eq!(extras_positions(false, true), (None, Some(9)));
+        assert_eq!(extras_positions(true, false), (Some(9), None));
+        assert_eq!(extras_positions(true, true), (Some(9), Some(10)));
     }
 }

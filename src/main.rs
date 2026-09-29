@@ -1,6 +1,6 @@
 #![windows_subsystem = "windows"]
 
-use murmur_lib::{audio, cleanup, config, dictionary, history, model_fetch, snippets, stt, vad};
+use murmur_lib::{audio, cleanup, config, dictionary, history, model_fetch, snippets, stt, update, vad};
 mod about_ui;
 mod audio_out;
 mod autostart;
@@ -29,6 +29,7 @@ use overlay::{Overlay, OverlayState};
 use pipeline::{PipelineCmd, PipelineMsg};
 use std::sync::{Arc, Mutex};
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tray::{Tray, TrayEvent};
 
@@ -65,6 +66,17 @@ const EDITOR_ARG: &str = "--dictionary";
 
 fn wants_editor(mut args: impl Iterator<Item = String>) -> bool {
     args.nth(1).as_deref() == Some(EDITOR_ARG)
+}
+
+/// Results from the update checker and download threads.
+enum UpdateMsg {
+    Available(update::Release),
+    Downloaded(PathBuf),
+    Failed(String),
+}
+
+fn update_label(tag: &str, installed: bool) -> String {
+    if installed { format!("Update to v{tag}…") } else { format!("Get v{tag}…") }
 }
 
 fn main() -> Result<()> {
@@ -138,6 +150,16 @@ fn main() -> Result<()> {
 
     let mut overlay = Overlay::create()?;
     let tray = Tray::create()?;
+    let (up_tx, up_rx) = unbounded::<UpdateMsg>();
+    let checker_tx = up_tx.clone();
+    update::spawn_checker(move |r| {
+        let _ = checker_tx.send(UpdateMsg::Available(r));
+    });
+    let installed_copy = match (std::env::current_exe(), std::env::var_os("LOCALAPPDATA")) {
+        (Ok(exe), Some(lad)) => update::is_installed_copy(&exe, std::path::Path::new(&lad)),
+        _ => false,
+    };
+    let mut offer = update::Offer::default();
     // The mic stays open while not paused: a rolling buffer of the last PRE_ROLL_SAMPLES is
     // fed to the pipeline ahead of the live audio on key-down, so the first consonant is not
     // lost to device start-up latency.
@@ -162,7 +184,7 @@ fn main() -> Result<()> {
         tray.notify("Startup", msg);
     }
 
-    loop {
+    'main: loop {
         if !overlay.pump_once() {
             break;
         }
@@ -225,12 +247,31 @@ fn main() -> Result<()> {
                     }
                     tray.set_autostart_checked(autostart::is_enabled());
                 }
+                TrayEvent::Update if !installed_copy => {
+                    if offer.release().is_some() {
+                        open_path(std::path::Path::new(update::RELEASES_PAGE));
+                    }
+                }
+                TrayEvent::Update => {
+                    if let Some(r) = offer.start() {
+                        tray.set_update(Some("Downloading update…"), false);
+                        let tx = up_tx.clone();
+                        std::thread::spawn(move || {
+                            let msg = match update::download(&r, &update::download_dir()) {
+                                Ok(path) => UpdateMsg::Downloaded(path),
+                                Err(e) => UpdateMsg::Failed(update::failure_text(&e)),
+                            };
+                            let _ = tx.send(msg);
+                        });
+                    }
+                }
+                TrayEvent::DownloadModel => {}
                 TrayEvent::About => {
                     let terms = dict.lock().map(|d| d.terms.len()).unwrap_or(0);
                     about_ui::show(about_ui::model_label(&model_dir), terms);
                     while hk_rx.try_recv().is_ok() {}
                 }
-                TrayEvent::Quit => break,
+                TrayEvent::Quit => break 'main,
             }
         }
         while let Ok(ev) = hk_rx.try_recv() {
@@ -310,6 +351,39 @@ fn main() -> Result<()> {
                 }
             }
         }
+        while let Ok(m) = up_rx.try_recv() {
+            match m {
+                UpdateMsg::Available(r) => {
+                    let tag = r.tag.clone();
+                    if offer.available(r) {
+                        log::info!("update available: v{tag}");
+                        tray.set_update(Some(&update_label(&tag, installed_copy)), true);
+                        if update::should_alert(&tag, update::read_alerted().as_deref()) {
+                            tray.notify(&format!("Murmur v{tag} is available"), "Update from the tray menu.");
+                            update::write_alerted(&tag);
+                        }
+                    }
+                }
+                UpdateMsg::Downloaded(path) => match update::install(&path) {
+                    Ok(()) => {
+                        log::info!("installing {}; quitting", path.display());
+                        break 'main;
+                    }
+                    Err(e) => {
+                        log::error!("start installer: {e}");
+                        offer.failed();
+                        restore_update_item(&tray, &offer, installed_copy);
+                        tray.notify("Update failed", &format!("Couldn't start the installer: {e}"));
+                    }
+                },
+                UpdateMsg::Failed(why) => {
+                    log::error!("update download: {why}");
+                    offer.failed();
+                    restore_update_item(&tray, &offer, installed_copy);
+                    tray.notify("Update failed", &why);
+                }
+            }
+        }
         resting_tick = resting_tick.wrapping_add(1);
         if resting_tick % 64 == 0 {
             overlay.refresh_resting();
@@ -344,12 +418,24 @@ fn resting(paused: bool) -> OverlayState {
     if paused { OverlayState::Paused } else { OverlayState::Idle }
 }
 
+fn restore_update_item(tray: &Tray, offer: &update::Offer, installed: bool) {
+    if let Some(r) = offer.release() {
+        tray.set_update(Some(&update_label(&r.tag, installed)), true);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn args(a: &[&str]) -> impl Iterator<Item = String> {
         a.iter().map(|s| s.to_string()).collect::<Vec<_>>().into_iter()
+    }
+
+    #[test]
+    fn update_label_depends_on_the_copy() {
+        assert_eq!(update_label("0.4.5", true), "Update to v0.4.5…");
+        assert_eq!(update_label("0.4.5", false), "Get v0.4.5…");
     }
 
     #[test]
