@@ -406,4 +406,14 @@ mod tests {
         }
         assert_eq!(failure_text(&FetchError::Http(404)), "GitHub answered HTTP 404");
     }
+
+    #[test]
+    fn installer_relaunches_only_when_asked() {
+        let iss = include_str!("../installer/murmur.iss");
+        let line = iss.lines().find(|l| l.contains("Check: RelaunchRequested")).expect("a [Run] entry for /RELAUNCH");
+        assert!(line.contains(r#"Filename: "{app}\murmur.exe""#), "{line}");
+        assert!(!line.contains("skipifsilent") && !line.contains("postinstall"), "{line}");
+        assert!(iss.contains("CompareText(ParamStr(I), '/RELAUNCH') = 0"));
+        assert!(INSTALL_ARGS.contains(&"/RELAUNCH"));
+    }
 }

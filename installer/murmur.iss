@@ -49,6 +49,7 @@ Name: "{autoprograms}\Murmur"; Filename: "{app}\murmur.exe"
 Name: "{autodesktop}\Murmur"; Filename: "{app}\murmur.exe"; Tasks: desktopicon
 
 [Run]
+Filename: "{app}\murmur.exe"; Flags: nowait; Check: RelaunchRequested
 Filename: "{app}\murmur.exe"; Description: "{cm:LaunchProgram,Murmur}"; Flags: nowait postinstall skipifsilent
 
 [Code]
@@ -72,6 +73,18 @@ begin
     if (Pos('/TASKS=', S) = 1) or ((Pos('/MERGETASKS=', S) = 1) and (Pos('AUTOSTART', S) > 0)) then
       Result := True;
   end;
+end;
+
+{ The in-app updater installs silently and passes /RELAUNCH, so Murmur comes back afterwards.
+  A silent install without it (winget, scripts) still doesn't start Murmur. }
+function RelaunchRequested: Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), '/RELAUNCH') = 0 then
+      Result := True;
 end;
 
 { On an upgrade, show start-with-Windows as it is now (the tray may have changed it),
