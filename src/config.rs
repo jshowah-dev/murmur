@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -38,6 +38,42 @@ impl Default for Config {
             hands_free_max_minutes: 5,
             debug_log: false,
         }
+    }
+}
+
+/// `model_dir` defaults of earlier releases, newest first. When a release pins a new model, the
+/// default it replaces goes here, so installs still on it are offered the new one.
+pub const PREVIOUS_DEFAULTS: &[&str] = &[];
+
+#[derive(Debug, PartialEq)]
+pub enum ModelState {
+    Current,
+    /// The new default model is installed; `old` is the previous default's folder, now unused.
+    Switched { old: PathBuf },
+    /// Still on a previous default; the current default can be downloaded.
+    UpgradeAvailable,
+}
+
+/// Moves a config on a previous default model to the current default once that's installed.
+/// Only `cfg` in memory changes: config.toml keeps its comments and hand edits.
+pub fn resolve_model(cfg: &mut Config, installed: impl Fn(&Path) -> bool) -> ModelState {
+    resolve_with(cfg, PREVIOUS_DEFAULTS, installed)
+}
+
+fn resolve_with(cfg: &mut Config, previous: &[&str], installed: impl Fn(&Path) -> bool) -> ModelState {
+    if !previous.contains(&cfg.model_dir.as_str()) {
+        return ModelState::Current;
+    }
+    let old = cfg.model_dir_path();
+    let current = Config::default();
+    if installed(&current.model_dir_path()) {
+        cfg.model_dir = current.model_dir;
+        ModelState::Switched { old }
+    } else if installed(&old) {
+        ModelState::UpgradeAvailable
+    } else {
+        cfg.model_dir = current.model_dir;
+        ModelState::Current
     }
 }
 
@@ -187,6 +223,50 @@ mod tests {
         // an unknown name falls back to Right Ctrl, the same key ptt_vk falls back to
         c.ptt_key = "nonsense".into();
         assert_eq!(c.ptt_key_label(), "Right Ctrl");
+    }
+
+    const OLD: &str = "%LOCALAPPDATA%\\Murmur\\models\\old-model";
+
+    fn cfg_with(dir: &str) -> Config {
+        Config { model_dir: dir.into(), ..Config::default() }
+    }
+
+    #[test]
+    fn a_custom_or_current_model_dir_is_left_alone() {
+        for dir in ["D:\\models\\mine", &Config::default().model_dir] {
+            let mut c = cfg_with(dir);
+            assert_eq!(resolve_with(&mut c, &[OLD], |_| true), ModelState::Current);
+            assert_eq!(c.model_dir, dir);
+        }
+    }
+
+    #[test]
+    fn an_old_default_switches_once_the_new_model_is_installed() {
+        let current = Config::default().model_dir_path();
+        let mut c = cfg_with(OLD);
+        let state = resolve_with(&mut c, &[OLD], |p| p == current.as_path());
+        assert_eq!(state, ModelState::Switched { old: PathBuf::from(expand_env(OLD)) });
+        assert_eq!(c.model_dir, Config::default().model_dir);
+    }
+
+    #[test]
+    fn an_old_default_is_offered_the_new_model() {
+        let old = PathBuf::from(expand_env(OLD));
+        let mut c = cfg_with(OLD);
+        assert_eq!(resolve_with(&mut c, &[OLD], |p| p == old.as_path()), ModelState::UpgradeAvailable);
+        assert_eq!(c.model_dir, OLD);
+    }
+
+    #[test]
+    fn an_old_default_that_is_gone_gets_the_new_default() {
+        let mut c = cfg_with(OLD);
+        assert_eq!(resolve_with(&mut c, &[OLD], |_| false), ModelState::Current);
+        assert_eq!(c.model_dir, Config::default().model_dir);
+    }
+
+    #[test]
+    fn no_previous_defaults_ship_yet() {
+        assert!(PREVIOUS_DEFAULTS.is_empty());
     }
 
     #[test]
