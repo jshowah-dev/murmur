@@ -15,6 +15,7 @@ pub enum TrayEvent {
     OpenSnippets,
     OpenConfigDir,
     ToggleAutostart,
+    About,
     Quit,
 }
 
@@ -22,7 +23,7 @@ pub struct Tray {
     _icon: TrayIcon,
     pause: MenuItem,
     autostart: CheckMenuItem,
-    ids: [(MenuId, TrayEvent); 8],
+    ids: [(MenuId, TrayEvent); 9],
 }
 
 // Icon resource ids from build.rs (1 is the app icon)
@@ -50,8 +51,9 @@ impl Tray {
         let snip = MenuItem::new("Open snippets", true, None);
         let cfg = MenuItem::new("Open config folder", true, None);
         let autostart = CheckMenuItem::new("Start with Windows", true, crate::autostart::is_enabled(), None);
+        let about = MenuItem::new("About Murmur", true, None);
         let quit = MenuItem::new("Quit", true, None);
-        menu.append_items(&[&pause, &fix, &hist, &PredefinedMenuItem::separator(), &dict, &snip, &cfg, &autostart, &PredefinedMenuItem::separator(), &quit])?;
+        menu.append_items(&[&pause, &fix, &hist, &PredefinedMenuItem::separator(), &dict, &snip, &cfg, &autostart, &PredefinedMenuItem::separator(), &about, &quit])?;
         let ids = [
             (pause.id().clone(), TrayEvent::TogglePause),
             (fix.id().clone(), TrayEvent::FixLast),
@@ -60,6 +62,7 @@ impl Tray {
             (snip.id().clone(), TrayEvent::OpenSnippets),
             (cfg.id().clone(), TrayEvent::OpenConfigDir),
             (autostart.id().clone(), TrayEvent::ToggleAutostart),
+            (about.id().clone(), TrayEvent::About),
             (quit.id().clone(), TrayEvent::Quit),
         ];
         let _icon = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("Murmur").with_icon(icon(false)).build()?;
