@@ -73,10 +73,48 @@ enum UpdateMsg {
     Available(update::Release),
     Downloaded(PathBuf),
     Failed(String),
+    ModelProgress(u8),
+    ModelUnpacking,
+    ModelReady,
+    ModelFailed(String),
 }
 
 fn update_label(tag: &str, installed: bool) -> String {
     if installed { format!("Update to v{tag}…") } else { format!("Get v{tag}…") }
+}
+
+fn model_offer_label() -> String {
+    format!("Download new speech model ({} MB)…", model_fetch::parakeet().size / 1_000_000)
+}
+
+fn percent(done: u64, total: u64) -> u8 {
+    (done.min(total) * 100).checked_div(total).map_or(100, |p| p as u8)
+}
+
+/// Downloads and unpacks the current default model next to the old one, reporting on `tx`.
+/// A cancelled run (Murmur quit) keeps the `.part`, and the next attempt resumes it.
+fn download_model(models: PathBuf, tx: crossbeam_channel::Sender<UpdateMsg>) {
+    let asset = model_fetch::parakeet();
+    let mut last = u8::MAX;
+    let result = model_fetch::Fetcher::standard()
+        .download(&asset, &models, &mut |n| {
+            let p = percent(n, asset.size);
+            if p != last {
+                last = p;
+                let _ = tx.send(UpdateMsg::ModelProgress(p));
+            }
+        }, &std::sync::atomic::AtomicBool::new(false))
+        .and_then(|archive| {
+            let _ = tx.send(UpdateMsg::ModelUnpacking);
+            model_fetch::extract(&archive, &models, &mut |_| {})
+        });
+    let _ = tx.send(match result {
+        Ok(dir) => {
+            log::info!("model upgrade: installed {}", dir.display());
+            UpdateMsg::ModelReady
+        }
+        Err(e) => UpdateMsg::ModelFailed(e.to_string()),
+    });
 }
 
 fn main() -> Result<()> {
@@ -99,7 +137,7 @@ fn main() -> Result<()> {
         m
     };
     let mut startup_errors: Vec<String> = Vec::new();
-    let cfg = match Config::load_or_create() {
+    let mut cfg = match Config::load_or_create() {
         Ok(c) => c,
         Err(e) => {
             log::error!("{e:#}");
@@ -123,6 +161,14 @@ fn main() -> Result<()> {
         startup_errors.push(format!("snippets: {e}"));
     }
     // Before anything else starts: the pipeline loads the model as soon as it's spawned.
+    let model_state = config::resolve_model(&mut cfg, model_fetch::is_installed);
+    if let config::ModelState::Switched { old } = &model_state {
+        // not loaded yet, so nothing holds its files open
+        log::info!("model upgrade: now on {}; removing {}", cfg.model_dir, old.display());
+        if let Err(e) = std::fs::remove_dir_all(old) {
+            log::warn!("remove old model: {e}");
+        }
+    }
     let model_dir = cfg.model_dir_path();
     let mut model_missing = !model_fetch::is_installed(&model_dir);
     let default_dir = cfg.model_dir == Config::default().model_dir;
@@ -182,6 +228,13 @@ fn main() -> Result<()> {
     }
     for msg in &startup_errors {
         tray.notify("Startup", msg);
+    }
+    if model_state == config::ModelState::UpgradeAvailable {
+        tray.notify(
+            &format!("A new speech model is available ({} MB)", model_fetch::parakeet().size / 1_000_000),
+            "Download from the tray menu.",
+        );
+        tray.set_model(Some(&model_offer_label()), true);
     }
 
     'main: loop {
@@ -265,7 +318,12 @@ fn main() -> Result<()> {
                         });
                     }
                 }
-                TrayEvent::DownloadModel => {}
+                TrayEvent::DownloadModel => {
+                    tray.set_model(Some("Downloading speech model… 0%"), false);
+                    let models = Config::default().model_dir_path().parent().map(PathBuf::from).unwrap_or_default();
+                    let tx = up_tx.clone();
+                    std::thread::spawn(move || download_model(models, tx));
+                }
                 TrayEvent::About => {
                     let terms = dict.lock().map(|d| d.terms.len()).unwrap_or(0);
                     about_ui::show(about_ui::model_label(&model_dir), terms);
@@ -382,6 +440,17 @@ fn main() -> Result<()> {
                     restore_update_item(&tray, &offer, installed_copy);
                     tray.notify("Update failed", &why);
                 }
+                UpdateMsg::ModelProgress(p) => tray.set_model(Some(&format!("Downloading speech model… {p}%")), false),
+                UpdateMsg::ModelUnpacking => tray.set_model(Some("Unpacking speech model…"), false),
+                UpdateMsg::ModelReady => {
+                    tray.set_model(None, false);
+                    tray.notify("New speech model ready", "It's used from the next start.");
+                }
+                UpdateMsg::ModelFailed(why) => {
+                    log::error!("model upgrade: {why}");
+                    tray.set_model(Some(&model_offer_label()), true);
+                    tray.notify("Speech model download failed", &why);
+                }
             }
         }
         resting_tick = resting_tick.wrapping_add(1);
@@ -430,6 +499,19 @@ mod tests {
 
     fn args(a: &[&str]) -> impl Iterator<Item = String> {
         a.iter().map(|s| s.to_string()).collect::<Vec<_>>().into_iter()
+    }
+
+    #[test]
+    fn model_offer_names_the_download_size() {
+        assert_eq!(model_offer_label(), "Download new speech model (482 MB)…");
+    }
+
+    #[test]
+    fn percent_is_whole_and_capped() {
+        assert_eq!(percent(0, 482_468_385), 0);
+        assert_eq!(percent(241_234_192, 482_468_385), 49);
+        assert_eq!(percent(482_468_385, 482_468_385), 100);
+        assert_eq!(percent(10, 0), 100);
     }
 
     #[test]
