@@ -422,6 +422,12 @@ fn main() -> Result<()> {
                         }
                     }
                 }
+                // the installer would force-close the editor and lose unsaved edits
+                UpdateMsg::Downloaded(_) if dictionary_editor::is_open() => {
+                    offer.failed();
+                    restore_update_item(&tray, &offer, installed_copy);
+                    tray.notify("Close the dictionary editor to update", "Then choose Update again.");
+                }
                 UpdateMsg::Downloaded(path) => match update::install(&path) {
                     Ok(()) => {
                         log::info!("installing {}; quitting", path.display());
