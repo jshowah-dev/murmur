@@ -2,18 +2,15 @@
 //! Murmur has learned, and the parts that do the hearing, with their licenses.
 
 use crate::correction_ui::{hwnd_of, keycap, load_system_font, BG, BORDER, GREEN, MUTED, TEXT};
-use murmur_lib::update::{is_newer, latest_tag};
 use eframe::egui::{self, CornerRadius, Frame, Key, Margin, Modifiers, RichText, Stroke, ViewportCommand};
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver};
-use std::time::Duration;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
 
 const WIDTH: f32 = 420.0;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const REPO: &str = "https://github.com/jshowah-dev/murmur";
-const LATEST_API: &str = "https://api.github.com/repos/jshowah-dev/murmur/releases/latest";
 
 /// (component, license and holder)
 const LICENSES: [(&str, &str); 5] = [
@@ -53,12 +50,9 @@ fn learned(terms: usize) -> String {
 fn check(ctx: egui::Context) -> Receiver<Update> {
     let (tx, rx) = channel();
     std::thread::spawn(move || {
-        let agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(8))).build().new_agent();
-        let body = agent.get(LATEST_API).header("User-Agent", "murmur").call().and_then(|mut r| r.body_mut().read_to_string());
-        let update = match body.map(|b| latest_tag(&b)) {
-            Ok(Some(tag)) if is_newer(&tag, VERSION) => Update::Available(tag),
-            Ok(Some(_)) => Update::UpToDate,
-            Ok(None) => Update::Failed,
+        let update = match murmur_lib::update::check() {
+            Ok(Some(r)) => Update::Available(r.tag),
+            Ok(None) => Update::UpToDate,
             Err(e) => {
                 log::info!("update check: {e}");
                 Update::Failed
@@ -140,7 +134,7 @@ impl eframe::App for AboutApp {
                         }
                         Update::Available(v) => {
                             if ui.link(RichText::new(format!("v{v} available →")).color(GREEN)).clicked() {
-                                open_url(&format!("{REPO}/releases/latest"));
+                                open_url(murmur_lib::update::RELEASES_PAGE);
                             }
                         }
                         Update::Failed => {

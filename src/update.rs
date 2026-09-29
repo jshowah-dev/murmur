@@ -1,7 +1,20 @@
 //! Update checks against the latest GitHub release, and the parts of click-to-update that don't need a UI.
 
+use crate::model_fetch::{Asset, FetchError, Fetcher};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
+
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const RELEASES_PAGE: &str = "https://github.com/jshowah-dev/murmur/releases/latest";
+const LATEST_API: &str = "https://api.github.com/repos/jshowah-dev/murmur/releases/latest";
+const FIRST_CHECK: Duration = Duration::from_secs(60);
+const CHECK_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Inno Setup switches for an unattended update. `/RELAUNCH` is ours: `murmur.iss` starts Murmur
+/// again after a successful install only when it's present.
+pub const INSTALL_ARGS: [&str; 5] = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/FORCECLOSEAPPLICATIONS", "/RELAUNCH"];
 
 /// A GitHub release with a setup exe and its `.sha256`. `tag` has no leading "v".
 #[derive(Debug, Clone, PartialEq)]
@@ -129,6 +142,78 @@ impl Offer {
     }
 }
 
+fn latest_url() -> String {
+    // lets a debug build test an update against a locally served release
+    #[cfg(debug_assertions)]
+    if let Ok(url) = std::env::var("MURMUR_UPDATE_URL") {
+        return url;
+    }
+    LATEST_API.into()
+}
+
+fn get_text(url: &str) -> Result<String, ureq::Error> {
+    let agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(8))).build().new_agent();
+    agent.get(url).header("User-Agent", "murmur").call()?.body_mut().read_to_string()
+}
+
+/// The latest release at `url` if it's newer than `current`. Err covers any failure to ask or to
+/// read the answer, including a release without a setup asset.
+pub fn check_at(url: &str, current: &str) -> Result<Option<Release>, String> {
+    let body = get_text(url).map_err(|e| e.to_string())?;
+    let release = parse_release(&body).ok_or("no setup asset in the latest release")?;
+    Ok(is_newer(&release.tag, current).then_some(release))
+}
+
+pub fn check() -> Result<Option<Release>, String> {
+    check_at(&latest_url(), VERSION)
+}
+
+/// Checks a minute after launch, then daily, calling `found` for each newer release seen.
+/// Failures are only logged: the next check retries.
+pub fn spawn_checker(found: impl Fn(Release) + Send + 'static) {
+    std::thread::spawn(move || {
+        std::thread::sleep(FIRST_CHECK);
+        loop {
+            match check() {
+                Ok(Some(r)) => found(r),
+                Ok(None) => log::info!("update check: up to date"),
+                Err(e) => log::info!("update check: {e}"),
+            }
+            std::thread::sleep(CHECK_EVERY);
+        }
+    });
+}
+
+pub fn download_dir() -> PathBuf {
+    std::env::temp_dir().join("Murmur")
+}
+
+/// Downloads the setup exe into `dir`, checked against the release's `.sha256` file.
+pub fn download(r: &Release, dir: &Path) -> Result<PathBuf, FetchError> {
+    let text = get_text(&r.sha_url).map_err(|e| match e {
+        ureq::Error::StatusCode(n) => FetchError::Http(n),
+        e => FetchError::Interrupted(e.to_string()),
+    })?;
+    let sha256 = parse_sha256_file(&text).ok_or(FetchError::ChecksumMismatch)?;
+    let asset = Asset { url: r.setup_url.clone(), file: format!("murmur-v{}-setup.exe", r.tag), sha256, size: r.setup_size };
+    Fetcher::standard().download(&asset, dir, &mut |_| {}, &AtomicBool::new(false))
+}
+
+/// Starts the installer and returns; the caller quits Murmur so the files are free.
+pub fn install(setup: &Path) -> std::io::Result<()> {
+    std::process::Command::new(setup).args(INSTALL_ARGS).spawn().map(drop)
+}
+
+/// A failed update download, for a balloon. `FetchError`'s own text is about the model.
+pub fn failure_text(e: &FetchError) -> String {
+    match e {
+        FetchError::Http(n) => format!("GitHub answered HTTP {n}"),
+        FetchError::ChecksumMismatch => "The download didn't match its checksum".into(),
+        FetchError::Interrupted(why) => format!("The download was interrupted ({why})"),
+        other => other.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,5 +316,94 @@ mod tests {
         o.start();
         assert!(!o.available(release("0.4.7")));
         assert_eq!(o.release().map(|r| r.tag.as_str()), Some("0.4.6"));
+    }
+
+    use crate::model_fetch::{hex, FetchError};
+    use sha2::{Digest, Sha256};
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+
+    /// Serves each `(path, body)` with 200 and anything else with 404, on 127.0.0.1. Range headers
+    /// are ignored, so the Fetcher takes its whole-file path.
+    fn serve(routes: Vec<(&'static str, Vec<u8>)>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { return };
+                let mut reader = BufReader::new(s.try_clone().unwrap());
+                let (mut path, mut line) = (String::new(), String::new());
+                loop {
+                    line.clear();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim_end().is_empty() {
+                        break;
+                    }
+                    if path.is_empty() {
+                        path = line.split(' ').nth(1).unwrap_or("").to_string();
+                    }
+                }
+                let body = routes.iter().find(|(p, _)| *p == path).map(|(_, b)| b.clone());
+                let status = if body.is_some() { "200 OK" } else { "404 Not Found" };
+                let body = body.unwrap_or_default();
+                let _ = write!(s, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                let _ = s.write_all(&body);
+            }
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("murmur update {name} {}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn served_release(setup: &[u8], sha_line: String) -> Release {
+        let base = serve(vec![("/setup.exe", setup.to_vec()), ("/setup.exe.sha256", sha_line.into_bytes())]);
+        Release { tag: "9.9.9".into(), setup_url: format!("{base}/setup.exe"), setup_size: setup.len() as u64, sha_url: format!("{base}/setup.exe.sha256") }
+    }
+
+    #[test]
+    fn check_at_reports_only_a_newer_release() {
+        let base = serve(vec![("/latest", FIXTURE.as_bytes().to_vec())]);
+        let url = format!("{base}/latest");
+        assert_eq!(check_at(&url, "0.4.3").unwrap().map(|r| r.tag), Some("0.4.4".into()));
+        assert_eq!(check_at(&url, "0.4.4").unwrap(), None);
+        assert!(check_at(&format!("{base}/missing"), "0.4.3").is_err());
+    }
+
+    #[test]
+    fn download_verifies_against_the_sha256_file() {
+        let setup = b"pretend installer".repeat(1000);
+        let r = served_release(&setup, format!("{}  murmur-v9.9.9-setup.exe\n", hex(Sha256::digest(&setup).as_slice())));
+        let dir = tmp("ok");
+        let got = download(&r, &dir).unwrap();
+        assert_eq!(got, dir.join("murmur-v9.9.9-setup.exe"));
+        assert_eq!(std::fs::read(&got).unwrap(), setup);
+    }
+
+    #[test]
+    fn download_refuses_a_setup_that_does_not_match() {
+        let setup = b"pretend installer".to_vec();
+        let r = served_release(&setup, format!("{}  murmur-v9.9.9-setup.exe\n", hex(Sha256::digest(b"something else").as_slice())));
+        let dir = tmp("mismatch");
+        assert!(matches!(download(&r, &dir), Err(FetchError::ChecksumMismatch)));
+        assert!(!dir.join("murmur-v9.9.9-setup.exe").exists());
+    }
+
+    #[test]
+    fn download_refuses_an_unreadable_sha256_file() {
+        let r = served_release(b"x", "not a hash".into());
+        assert!(matches!(download(&r, &tmp("badsha")), Err(FetchError::ChecksumMismatch)));
+    }
+
+    #[test]
+    fn failure_text_is_about_the_update() {
+        for e in [FetchError::Http(404), FetchError::ChecksumMismatch, FetchError::Interrupted("timed out".into())] {
+            let t = failure_text(&e);
+            assert!(!t.contains("k2-fsa") && !t.contains("Model"), "{t}");
+        }
+        assert_eq!(failure_text(&FetchError::Http(404)), "GitHub answered HTTP 404");
     }
 }
