@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 use murmur_lib::{audio, cleanup, config, dictionary, history, model_fetch, snippets, stt, vad};
+mod about_ui;
 mod audio_out;
 mod autostart;
 mod caret;
@@ -223,6 +224,11 @@ fn main() -> Result<()> {
                         tray.notify("Murmur", &format!("Couldn't change start with Windows: {e}"));
                     }
                     tray.set_autostart_checked(autostart::is_enabled());
+                }
+                TrayEvent::About => {
+                    let terms = dict.lock().map(|d| d.terms.len()).unwrap_or(0);
+                    about_ui::show(about_ui::model_label(&model_dir), terms);
+                    while hk_rx.try_recv().is_ok() {}
                 }
                 TrayEvent::Quit => break,
             }
