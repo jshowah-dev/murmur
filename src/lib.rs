@@ -8,4 +8,5 @@ pub mod model_fetch;
 pub mod phonetic;
 pub mod snippets;
 pub mod stt;
+pub mod update;
 pub mod vad;

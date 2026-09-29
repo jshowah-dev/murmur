@@ -2,6 +2,7 @@
 //! Murmur has learned, and the parts that do the hearing, with their licenses.
 
 use crate::correction_ui::{hwnd_of, keycap, load_system_font, BG, BORDER, GREEN, MUTED, TEXT};
+use murmur_lib::update::{is_newer, latest_tag};
 use eframe::egui::{self, CornerRadius, Frame, Key, Margin, Modifiers, RichText, Stroke, ViewportCommand};
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver};
@@ -46,18 +47,6 @@ fn learned(terms: usize) -> String {
         0 => "Hasn't learned any of your words yet".into(),
         n => format!("Knows {n} of your words"),
     }
-}
-
-/// `tag_name` from a GitHub release as JSON, without its leading "v".
-fn latest_tag(json: &str) -> Option<String> {
-    let rest = &json[json.find("\"tag_name\"")? + "\"tag_name\"".len()..];
-    let rest = &rest[rest.find('"')? + 1..];
-    Some(rest[..rest.find('"')?].trim_start_matches('v').to_string())
-}
-
-fn is_newer(latest: &str, current: &str) -> bool {
-    let parts = |v: &str| v.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
-    parts(latest) > parts(current)
 }
 
 /// Asks GitHub for the latest release once, off the UI thread, and wakes the window with the answer.
@@ -222,21 +211,6 @@ pub fn show(model: String, terms: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn latest_tag_reads_the_release_json() {
-        let json = r#"{"url":"x","tag_name": "v0.4.3","name":"Murmur v0.4.3"}"#;
-        assert_eq!(latest_tag(json).as_deref(), Some("0.4.3"));
-        assert_eq!(latest_tag(r#"{"message":"Not Found"}"#), None);
-    }
-
-    #[test]
-    fn versions_compare_by_number() {
-        assert!(is_newer("0.4.10", "0.4.3"));
-        assert!(is_newer("1.0.0", "0.9.9"));
-        assert!(!is_newer("0.4.3", "0.4.3"));
-        assert!(!is_newer("0.4.2", "0.4.3"));
-    }
 
     #[test]
     fn model_label_names_parakeet_and_falls_back_to_the_folder() {
