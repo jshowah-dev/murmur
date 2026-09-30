@@ -16,6 +16,7 @@ mod hotkey;
 mod inject;
 #[allow(dead_code)] // generated tokens; not all are used yet
 mod motion;
+mod mote;
 mod overlay;
 mod pipeline;
 mod setup_ui;
