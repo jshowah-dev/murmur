@@ -1,9 +1,13 @@
-//! The About window: version (checked against the latest GitHub release while it's open), what
-//! Murmur has learned, and the parts that do the hearing, with their licenses.
+//! The About window: version (checked against the latest GitHub release while it's open, with a
+//! link that starts the same update as the tray's), what Murmur has learned, and the parts that
+//! do the hearing, with their licenses.
 
 use crate::correction_ui::{hwnd_of, keycap, load_system_font, BG, BORDER, GREEN, MUTED, TEXT};
 use eframe::egui::{self, CornerRadius, Frame, Key, Margin, Modifiers, RichText, Stroke, ViewportCommand};
+use murmur_lib::update::Release;
+use std::cell::Cell;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
@@ -25,7 +29,7 @@ const LICENSES: [(&str, &str); 5] = [
 enum Update {
     Checking,
     UpToDate,
-    Available(String),
+    Available(Release),
     Failed,
 }
 
@@ -51,7 +55,7 @@ fn check(ctx: egui::Context) -> Receiver<Update> {
     let (tx, rx) = channel();
     std::thread::spawn(move || {
         let update = match murmur_lib::update::check() {
-            Ok(Some(r)) => Update::Available(r.tag),
+            Ok(Some(r)) => Update::Available(r),
             Ok(None) => Update::UpToDate,
             Err(e) => {
                 log::info!("update check: {e}");
@@ -73,6 +77,9 @@ struct AboutApp {
     terms: usize,
     update: Update,
     rx: Option<Receiver<Update>>,
+    /// The installed copy updates itself; any other copy links to the release page.
+    installed: bool,
+    chosen: Rc<Cell<Option<Release>>>,
     hwnd: HWND,
     frame: u32,
     was_focused: bool,
@@ -132,8 +139,14 @@ impl eframe::App for AboutApp {
                         Update::UpToDate => {
                             ui.label(RichText::new("up to date").color(MUTED));
                         }
-                        Update::Available(v) => {
-                            if ui.link(RichText::new(format!("v{v} available →")).color(GREEN)).clicked() {
+                        Update::Available(r) if self.installed => {
+                            if ui.link(RichText::new(format!("update to v{} →", r.tag)).color(GREEN)).clicked() {
+                                self.chosen.set(Some(r.clone()));
+                                ctx.send_viewport_cmd(ViewportCommand::Close);
+                            }
+                        }
+                        Update::Available(r) => {
+                            if ui.link(RichText::new(format!("v{} available →", r.tag)).color(GREEN)).clicked() {
                                 open_url(murmur_lib::update::RELEASES_PAGE);
                             }
                         }
@@ -173,8 +186,11 @@ impl eframe::App for AboutApp {
     }
 }
 
-/// Shows the About window, centred on screen. Blocks until closed.
-pub fn show(model: String, terms: usize) {
+/// Shows the About window, centred on screen. Blocks until closed, returning the release to update
+/// to if its update link was clicked.
+pub fn show(model: String, terms: usize, installed: bool) -> Option<Release> {
+    let chosen = Rc::new(Cell::new(None));
+    let app_chosen = chosen.clone();
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Murmur — about")
@@ -194,12 +210,13 @@ pub fn show(model: String, terms: usize) {
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
             load_system_font(&cc.egui_ctx);
             let hwnd = hwnd_of(cc).unwrap_or_default();
-            Ok(Box::new(AboutApp { model, terms, update: Update::Checking, rx: None, hwnd, frame: 0, was_focused: false, height: 0.0 }))
+            Ok(Box::new(AboutApp { model, terms, update: Update::Checking, rx: None, installed, chosen: app_chosen, hwnd, frame: 0, was_focused: false, height: 0.0 }))
         }),
     );
     if let Err(e) = r {
         log::error!("about window: {e}");
     }
+    chosen.take()
 }
 
 #[cfg(test)]

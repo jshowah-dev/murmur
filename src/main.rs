@@ -313,17 +313,7 @@ fn main() -> Result<()> {
                     }
                 }
                 TrayEvent::Update => {
-                    if let Some(r) = offer.start() {
-                        tray.set_update(Some("Downloading update…"), false);
-                        let tx = up_tx.clone();
-                        std::thread::spawn(move || {
-                            let msg = match update::download(&r, &update::download_dir()) {
-                                Ok(path) => UpdateMsg::Downloaded(path),
-                                Err(e) => UpdateMsg::Failed(update::failure_text(&e)),
-                            };
-                            let _ = tx.send(msg);
-                        });
-                    }
+                    start_update(&mut offer, &tray, &up_tx);
                 }
                 TrayEvent::DownloadModel => {
                     tray.set_model(Some("Downloading speech model… 0%"), false);
@@ -333,7 +323,14 @@ fn main() -> Result<()> {
                 }
                 TrayEvent::About => {
                     let terms = dict.lock().map(|d| d.terms.len()).unwrap_or(0);
-                    about_ui::show(about_ui::model_label(&model_dir), terms);
+                    if let Some(r) = about_ui::show(about_ui::model_label(&model_dir), terms, installed_copy) {
+                        let tag = r.tag.clone();
+                        offer.available(r);
+                        if start_update(&mut offer, &tray, &up_tx) {
+                            // the window is gone and the tray menu is closed: say something's happening
+                            tray.notify(&format!("Updating to Murmur v{tag}"), "Murmur restarts when it's installed.");
+                        }
+                    }
                     while hk_rx.try_recv().is_ok() {}
                 }
                 TrayEvent::Quit => break 'main,
@@ -498,6 +495,22 @@ fn open_mic(audio_tx: &crossbeam_channel::Sender<Vec<f32>>, tray: &Tray) -> Opti
 
 fn resting(paused: bool) -> OverlayState {
     if paused { OverlayState::Paused } else { OverlayState::Idle }
+}
+
+/// Downloads the release on offer, unless a download already runs; `Downloaded` then installs it.
+/// True when a download started.
+fn start_update(offer: &mut update::Offer, tray: &Tray, tx: &crossbeam_channel::Sender<UpdateMsg>) -> bool {
+    let Some(r) = offer.start() else { return false };
+    tray.set_update(Some("Downloading update…"), false);
+    let tx = tx.clone();
+    std::thread::spawn(move || {
+        let msg = match update::download(&r, &update::download_dir()) {
+            Ok(path) => UpdateMsg::Downloaded(path),
+            Err(e) => UpdateMsg::Failed(update::failure_text(&e)),
+        };
+        let _ = tx.send(msg);
+    });
+    true
 }
 
 fn restore_update_item(tray: &Tray, offer: &update::Offer, installed: bool) {
