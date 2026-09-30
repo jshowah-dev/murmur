@@ -7,6 +7,7 @@ pub mod history;
 pub mod model_fetch;
 pub mod phonetic;
 pub mod snippets;
+pub mod snippets_edit;
 pub mod stt;
 pub mod update;
 pub mod vad;
