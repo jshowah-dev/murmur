@@ -1,18 +1,18 @@
-use crate::config::config_dir;
+use crate::config::{config_dir, file_stamp, SaveOutcome, Stamp};
 use anyhow::{Context, Result};
-use serde::Deserialize;
-use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Snippet {
     pub trigger: String,
     pub text: String,
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Snippets {
-    #[serde(rename = "snippet", default)]
+    #[serde(rename = "snippet", default, skip_serializing_if = "Vec::is_empty")]
     pub snippets: Vec<Snippet>,
 }
 
@@ -46,13 +46,37 @@ impl Snippets {
         Ok(toml::from_str(s).context("parse snippets.toml")?)
     }
 
+    pub fn to_toml(&self) -> Result<String> {
+        Ok(toml::to_string_pretty(self)?)
+    }
+
+    /// Load for editing. The stamp is read before the file, so a write landing mid-read shows
+    /// up later as a conflict rather than being silently overwritten.
+    pub fn load_stamped(p: &Path) -> Result<(Self, Stamp)> {
+        let stamp = file_stamp(p);
+        if stamp.is_none() {
+            return Ok((Self::default(), None));
+        }
+        let s = Self::from_toml(&std::fs::read_to_string(p).context("read snippets.toml")?)?;
+        Ok((s, stamp))
+    }
+
+    pub fn save_to(&self, p: &Path) -> Result<()> {
+        crate::config::write_with_backup(p, &self.to_toml()?)
+    }
+
+    /// Save only if the file is still the version stamped at load (or at the last save).
+    pub fn save_if_unchanged(&self, p: &Path, stamp: Stamp) -> Result<SaveOutcome> {
+        crate::config::write_if_unchanged(p, stamp, &self.to_toml()?)
+    }
+
     /// Replace trigger phrases with placeholder characters that later cleanup steps leave alone.
     /// Returns the marked text and the expansion for each placeholder, for `restore`.
     pub fn mark(&self, text: &str) -> (String, Vec<String>) {
         let mut triggers: Vec<(Vec<String>, &str)> = self
             .snippets
             .iter()
-            .map(|s| (s.trigger.split_whitespace().map(bare).filter(|w| !w.is_empty()).collect::<Vec<_>>(), s.text.as_str()))
+            .map(|s| (words(&s.trigger), s.text.as_str()))
             .filter(|(words, _)| !words.is_empty())
             .collect();
         triggers.sort_by_key(|(words, _)| std::cmp::Reverse(words.len()));
@@ -93,6 +117,11 @@ const PLACEHOLDER: u32 = 0xE000;
 /// Lowercased word with punctuation stripped, so "Address." matches "address".
 fn bare(tok: &str) -> String {
     tok.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()
+}
+
+/// The words a trigger matches: lower-cased, punctuation stripped, empties dropped.
+pub fn words(trigger: &str) -> Vec<String> {
+    trigger.split_whitespace().map(bare).filter(|w| !w.is_empty()).collect()
 }
 
 /// Swap each placeholder left by `Snippets::mark` for its expansion.
@@ -211,5 +240,54 @@ mod tests {
         assert_eq!(f.refresh(), None);
         assert_eq!(f.current.snippets.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn temp_path(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("murmur-snip-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("snippets.toml")
+    }
+
+    #[test]
+    fn multi_line_text_round_trips_exactly() {
+        let s = set(&[("my signature", "\nBest,\n\nJeff\n"), ("quote", "say \"\"\" then 'x'"), ("sig", "one line")]);
+        let toml = s.to_toml().unwrap();
+        assert!(toml.contains("\"\"\""), "multi-line text should be a \"\"\" block:\n{toml}");
+        assert_eq!(Snippets::from_toml(&toml).unwrap().snippets, s.snippets);
+    }
+
+    #[test]
+    fn empty_set_saves_as_an_empty_file_that_loads() {
+        let toml = Snippets::default().to_toml().unwrap();
+        assert!(Snippets::from_toml(&toml).unwrap().snippets.is_empty());
+    }
+
+    #[test]
+    fn words_match_what_mark_matches() {
+        assert_eq!(words("  My email, address. "), vec!["my", "email", "address"]);
+        assert!(words(" !? ").is_empty());
+    }
+
+    #[test]
+    fn load_stamped_missing_file_is_empty_with_no_stamp() {
+        let p = temp_path("missing");
+        let (s, stamp) = Snippets::load_stamped(&p).unwrap();
+        assert!(s.snippets.is_empty());
+        assert_eq!(stamp, None);
+    }
+
+    #[test]
+    fn save_if_unchanged_saves_then_conflicts_after_an_outside_write() {
+        let p = temp_path("conflict");
+        let s = set(&[("sig", "A\nB")]);
+        let SaveOutcome::Saved(stamp) = s.save_if_unchanged(&p, None).unwrap() else { panic!("first save conflicted") };
+        let (back, loaded) = Snippets::load_stamped(&p).unwrap();
+        assert_eq!(back.snippets, s.snippets);
+        assert_eq!(loaded, stamp);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&p, "[[snippet]]\ntrigger = \"outside\"\ntext = \"x\"\n").unwrap();
+        assert_eq!(s.save_if_unchanged(&p, stamp).unwrap(), SaveOutcome::Conflict);
+        assert_eq!(Snippets::load_stamped(&p).unwrap().0.snippets[0].trigger, "outside");
     }
 }
