@@ -1,19 +1,13 @@
 use anyhow::{anyhow, Result};
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{
-    COLORREF, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
-};
-use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject, BITMAPINFO,
-    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP,
-};
+use windows::Win32::Foundation::{ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::Foundation::GetLastError;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos, GetForegroundWindow, GetWindowRect, LoadCursorW, PeekMessageW,
-    RegisterClassW, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, UpdateLayeredWindow, GWL_EXSTYLE,
+    RegisterClassW, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, GWL_EXSTYLE,
     HWND_TOPMOST, IDC_ARROW, MSG,
-    PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE, ULW_ALPHA, WINDOW_EX_STYLE, WM_QUIT,
+    PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WM_QUIT,
     WM_MOUSEMOVE, WM_RBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
@@ -21,10 +15,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use crate::editor_kit::{ease, reduced_motion};
 use crate::motion;
-use crate::canvas::Canvas;
+use crate::canvas::{self, Canvas};
 use windows::Win32::Graphics::Gdi::{MonitorFromWindow, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST};
-use windows::Win32::Graphics::Gdi::AC_SRC_ALPHA;
-use windows::Win32::Graphics::Gdi::BLENDFUNCTION;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OverlayState {
@@ -225,53 +217,19 @@ impl Overlay {
         }
     }
 
-    /// Paint the pill into a 32-bit DIB and push it with UpdateLayeredWindow.
     fn paint(&mut self) {
         let (w, h, pixels) = render(self.state, self.tick, self.look);
-        unsafe {
-            let screen = GetDC(None);
-            let mem = CreateCompatibleDC(Some(screen));
-            let bmi = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: w,
-                    biHeight: -h,
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    biCompression: BI_RGB.0,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-            let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
-            let bmp: HBITMAP = CreateDIBSection(Some(mem), &bmi, DIB_RGB_COLORS, &mut bits, None, 0).unwrap_or_default();
-            if bmp.is_invalid() || bits.is_null() {
-                let _ = DeleteDC(mem);
-                ReleaseDC(None, screen);
-                return;
-            }
-            let old = SelectObject(mem, bmp.into());
+        let (x, y) = self.target_position(w, h);
+        canvas::push(self.hwnd, x, y, w, h, &pixels);
+    }
 
-            std::slice::from_raw_parts_mut(bits as *mut u32, pixels.len()).copy_from_slice(&pixels);
-
-            let (x, y) = self.target_position(w, h);
-            let blend = BLENDFUNCTION { BlendOp: 0, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
-            let _ = UpdateLayeredWindow(
-                self.hwnd,
-                Some(screen),
-                Some(&POINT { x, y }),
-                Some(&SIZE { cx: w, cy: h }),
-                Some(mem),
-                Some(&POINT { x: 0, y: 0 }),
-                COLORREF(0),
-                Some(&blend),
-                ULW_ALPHA,
-            );
-            let _ = SelectObject(mem, old);
-            let _ = DeleteObject(bmp.into());
-            let _ = DeleteDC(mem);
-            ReleaseDC(None, screen);
-        }
+    /// The pill's centre in physical pixels, where the mote takes off.
+    pub fn centre_physical(&self) -> (f32, f32) {
+        crate::caret::physical(|| unsafe {
+            let mut r = RECT::default();
+            let _ = GetWindowRect(self.hwnd, &mut r);
+            ((r.left + r.right) as f32 / 2.0, (r.top + r.bottom) as f32 / 2.0)
+        })
     }
 
     pub fn hwnd(&self) -> HWND {

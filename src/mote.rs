@@ -1,9 +1,19 @@
 //! The carved moment: when you let go of the key, a mote flies from the pill to your caret,
 //! waits there while the speech is transcribed, and dissolves into your words.
 
-use crate::editor_kit::ease;
+use crate::canvas::{self, Canvas};
+use crate::editor_kit::{ease, reduced_motion};
 use crate::motion;
+use anyhow::{anyhow, Result};
 use std::time::{Duration, Instant};
+use windows::core::PCWSTR;
+use windows::Win32::Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DefWindowProcW, RegisterClassW, SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_POPUP,
+};
 
 pub(crate) type Pt = (f32, f32);
 
@@ -118,6 +128,93 @@ impl Flight {
     }
 }
 
+/// The mote window's side, in physical pixels.
+const S: i32 = 40;
+
+fn render(s: &Sprite) -> Vec<u32> {
+    let mut c = Canvas::new(S, S);
+    let m = S as f32 / 2.0;
+    c.halo(m, m, 12.0 * s.radius, 0x60D060, 0.5 * s.alpha);
+    let core = 5.0 * s.radius;
+    c.capsule(m - core / 2.0, m - core / 2.0, core, core, 0xE8FFE8, s.alpha);
+    c.into_bgra()
+}
+
+unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+}
+
+/// The mote's own click-through window. It's created and moved in physical pixels, the space
+/// `caret::find` reports in, while the rest of Murmur is DPI-unaware.
+pub(crate) struct Mote {
+    hwnd: HWND,
+    flight: Flight,
+    shown: bool,
+}
+
+impl Mote {
+    pub(crate) fn create() -> Result<Mote> {
+        let hwnd = crate::caret::physical(|| unsafe {
+            let hinst = GetModuleHandleW(None)?;
+            let class: Vec<u16> = "MurmurMote\0".encode_utf16().collect();
+            let wc = WNDCLASSW { lpfnWndProc: Some(wndproc), hInstance: hinst.into(), lpszClassName: PCWSTR(class.as_ptr()), ..Default::default() };
+            if RegisterClassW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
+                return Err(anyhow!("RegisterClassW"));
+            }
+            Ok(CreateWindowExW(
+                WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                PCWSTR(class.as_ptr()),
+                PCWSTR(class.as_ptr()),
+                WS_POPUP,
+                0, 0, S, S,
+                None, None, Some(hinst.into()), None,
+            )?)
+        })?;
+        Ok(Mote { hwnd, flight: Flight::new(reduced_motion()), shown: false })
+    }
+
+    pub(crate) fn launch(&mut self, from: Pt, to: Pt) {
+        self.flight.launch(from, to, Instant::now());
+    }
+
+    pub(crate) fn dissolve(&mut self) {
+        self.flight.dissolve(Instant::now());
+    }
+
+    pub(crate) fn fade(&mut self) {
+        self.flight.fade(Instant::now());
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.flight.is_active()
+    }
+
+    /// Draws this frame of the flight, or hides the window once it's over.
+    pub(crate) fn animate(&mut self) {
+        match self.flight.sprite(Instant::now()) {
+            Some(s) => {
+                let px = render(&s);
+                let (x, y) = ((s.at.0 - S as f32 / 2.0).round() as i32, (s.at.1 - S as f32 / 2.0).round() as i32);
+                crate::caret::physical(|| canvas::push(self.hwnd, x, y, S, S, &px));
+                if !self.shown {
+                    unsafe {
+                        let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
+                        let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+                    }
+                    self.shown = true;
+                }
+            }
+            None if self.shown => {
+                unsafe {
+                    let _ = ShowWindow(self.hwnd, SW_HIDE);
+                }
+                self.shown = false;
+            }
+            None => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,6 +292,19 @@ mod tests {
         assert_eq!(f.sprite(t0).unwrap().at, CARET, "a still dot at the caret");
         f.dissolve(t0 + ms(5));
         assert!(f.sprite(t0 + ms(6)).is_none());
+    }
+
+    #[test]
+    fn mote_is_a_bright_core_in_a_soft_halo() {
+        let px = render(&Sprite { at: (0.0, 0.0), alpha: 1.0, radius: 1.0 });
+        let mid = (S / 2 * S + S / 2) as usize;
+        assert!(px[mid] >> 24 > 0xE0, "core opaque: {:08X}", px[mid]);
+        assert_eq!(px[0], 0, "corner clear");
+        let dim = render(&Sprite { at: (0.0, 0.0), alpha: 0.5, radius: 1.0 });
+        assert!(dim[mid] >> 24 < px[mid] >> 24);
+        let big = render(&Sprite { at: (0.0, 0.0), alpha: 1.0, radius: 1.6 });
+        let ring = (S / 2 * S + S / 2 + 9) as usize;
+        assert!(big[ring] >> 24 > px[ring] >> 24, "dissolving spreads out");
     }
 
     #[test]
