@@ -11,10 +11,11 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::Foundation::GetLastError;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow, GetWindowRect, PeekMessageW, RegisterClassW,
-    SetWindowPos, ShowWindow, TranslateMessage, UpdateLayeredWindow, HWND_TOPMOST, MSG, PM_REMOVE, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE, ULW_ALPHA, WM_QUIT, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, UpdateLayeredWindow, GWL_EXSTYLE, HWND_TOPMOST, MSG,
+    PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE, ULW_ALPHA, WINDOW_EX_STYLE, WM_QUIT,
+    WM_RBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
 use windows::Win32::Graphics::Gdi::{MonitorFromWindow, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST};
 use windows::Win32::Graphics::Gdi::AC_SRC_ALPHA;
 use windows::Win32::Graphics::Gdi::BLENDFUNCTION;
@@ -46,6 +47,16 @@ const H: i32 = 36;
 const IDLE_W: i32 = 56;
 const IDLE_H: i32 = 14;
 
+/// The resting pill takes clicks so it can be right-clicked; the live pill is bigger and only
+/// shows while you dictate, so it lets every click through to the app underneath.
+fn ex_style(state: OverlayState) -> WINDOW_EX_STYLE {
+    let base = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
+    if state.is_resting() { base } else { base | WS_EX_TRANSPARENT }
+}
+
+/// Set by the window procedure, taken by the main loop, which shows the menu.
+static RIGHT_CLICKED: AtomicBool = AtomicBool::new(false);
+
 pub struct Overlay {
     hwnd: HWND,
     state: OverlayState,
@@ -53,6 +64,10 @@ pub struct Overlay {
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if msg == WM_RBUTTONUP {
+        RIGHT_CLICKED.store(true, Ordering::Relaxed);
+        return LRESULT(0);
+    }
     unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
 }
 
@@ -75,7 +90,7 @@ impl Overlay {
                 return Err(anyhow!("RegisterClassW"));
             }
             let hwnd = CreateWindowExW(
-                WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
+                ex_style(OverlayState::Idle),
                 PCWSTR(class.as_ptr()),
                 PCWSTR(wide("Murmur").as_ptr()),
                 WS_POPUP,
@@ -148,11 +163,19 @@ impl Overlay {
         }
     }
 
+    pub fn hwnd(&self) -> HWND {
+        self.hwnd
+    }
+
     pub fn set(&mut self, state: OverlayState) {
+        let was_resting = self.state.is_resting();
         self.state = state;
         self.tick = self.tick.wrapping_add(1);
         self.paint();
         unsafe {
+            if was_resting != state.is_resting() {
+                SetWindowLongPtrW(self.hwnd, GWL_EXSTYLE, ex_style(state).0 as isize);
+            }
             // re-assert topmost on every state change so a fullscreen app cannot bury the pill
             let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
             let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
@@ -164,6 +187,11 @@ impl Overlay {
         if self.state.is_resting() {
             self.paint();
         }
+    }
+
+    /// True once per right-click on the pill.
+    pub fn take_right_click(&self) -> bool {
+        RIGHT_CLICKED.swap(false, Ordering::Relaxed)
     }
 
     /// Drain pending messages for this thread. Returns false on WM_QUIT.
@@ -293,6 +321,19 @@ mod tests {
                 let a = alpha(p);
                 assert!((p >> 16) & 0xFF <= a && (p >> 8) & 0xFF <= a && p & 0xFF <= a, "{state:?}: {p:08X}");
             }
+        }
+    }
+
+    #[test]
+    fn only_the_resting_pill_takes_clicks() {
+        for state in [OverlayState::Idle, OverlayState::Paused] {
+            assert!(!ex_style(state).contains(WS_EX_TRANSPARENT), "{state:?} should take the right-click");
+        }
+        for state in [OverlayState::Listening(0.5), OverlayState::Locked(0.5), OverlayState::Processing] {
+            assert!(ex_style(state).contains(WS_EX_TRANSPARENT), "{state:?} should be click-through");
+        }
+        for state in [OverlayState::Idle, OverlayState::Processing] {
+            assert!(ex_style(state).contains(WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW));
         }
     }
 

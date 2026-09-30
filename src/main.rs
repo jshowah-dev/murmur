@@ -266,6 +266,9 @@ fn main() -> Result<()> {
                 }
             }
         }
+        if overlay.take_right_click() {
+            tray.show_menu(overlay.hwnd());
+        }
         if let Some(ev) = tray.poll() {
             match ev {
                 TrayEvent::TogglePause => {
