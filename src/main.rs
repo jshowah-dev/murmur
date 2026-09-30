@@ -7,8 +7,9 @@ mod autostart;
 mod caret;
 mod correction;
 mod correction_ui;
-mod dictionary_editor;
 mod dictionary_panel;
+mod editor;
+mod editor_kit;
 mod history_ui;
 mod hotkey;
 mod inject;
@@ -17,6 +18,7 @@ mod motion;
 mod overlay;
 mod pipeline;
 mod setup_ui;
+mod snippets_panel;
 mod tray;
 
 use anyhow::Result;
@@ -62,10 +64,18 @@ fn open_path(p: &std::path::Path) {
     let _ = std::process::Command::new("explorer.exe").arg(p).spawn();
 }
 
-const EDITOR_ARG: &str = "--dictionary";
+/// The editor tab asked for on the command line, or `None` for the app itself.
+fn wants_editor(mut args: impl Iterator<Item = String>) -> Option<editor::Tab> {
+    args.nth(1).as_deref().and_then(editor::Tab::from_flag)
+}
 
-fn wants_editor(mut args: impl Iterator<Item = String>) -> bool {
-    args.nth(1).as_deref() == Some(EDITOR_ARG)
+/// Opens the editor on `tab` as a separate process, so dictation keeps working while it's open.
+fn open_editor(tray: &Tray, tab: editor::Tab) {
+    let spawned = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg(tab.flag()).spawn());
+    if let Err(e) = spawned {
+        log::error!("editor: {e}");
+        tray.notify("Murmur", &format!("Couldn't open the editor: {e}"));
+    }
 }
 
 /// Results from the update checker and download threads.
@@ -118,11 +128,11 @@ fn download_model(models: PathBuf, tx: crossbeam_channel::Sender<UpdateMsg>) {
 }
 
 fn main() -> Result<()> {
-    let editor = wants_editor(std::env::args());
-    init_logging(!editor);
+    let editor_tab = wants_editor(std::env::args());
+    init_logging(editor_tab.is_none());
     // the editor is its own process, so it must not take the app's single-instance mutex
-    if editor {
-        return dictionary_editor::run();
+    if let Some(tab) = editor_tab {
+        return editor::run(tab);
     }
     log::info!("murmur {} starting, cwd {:?}", env!("CARGO_PKG_VERSION"), std::env::current_dir().ok());
     // second instance would capture the same hotkey and paste every dictation twice
@@ -282,15 +292,8 @@ fn main() -> Result<()> {
                         while hk_rx.try_recv().is_ok() {}
                     }
                 }
-                TrayEvent::EditDictionary => {
-                    // a separate process, so dictation keeps working while it's open
-                    let spawned = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg(EDITOR_ARG).spawn());
-                    if let Err(e) = spawned {
-                        log::error!("dictionary editor: {e}");
-                        tray.notify("Murmur", &format!("Couldn't open the dictionary editor: {e}"));
-                    }
-                }
-                TrayEvent::OpenSnippets => open_path(&snippets::path()),
+                TrayEvent::EditDictionary => open_editor(&tray, editor::Tab::Dictionary),
+                TrayEvent::EditSnippets => open_editor(&tray, editor::Tab::Snippets),
                 TrayEvent::OpenConfigDir => open_path(&config::config_dir()),
                 TrayEvent::ToggleAutostart => {
                     // the registry, not the menu's own check state, says what's on
@@ -423,10 +426,10 @@ fn main() -> Result<()> {
                     }
                 }
                 // the installer would force-close the editor and lose unsaved edits
-                UpdateMsg::Downloaded(_) if dictionary_editor::is_open() => {
+                UpdateMsg::Downloaded(_) if editor::is_open() => {
                     offer.failed();
                     restore_update_item(&tray, &offer, installed_copy);
-                    tray.notify("Close the dictionary editor to update", "Then choose Update again.");
+                    tray.notify("Close the Dictionary & Snippets window to update", "Then choose Update again.");
                 }
                 UpdateMsg::Downloaded(path) => match update::install(&path) {
                     Ok(()) => {
@@ -527,10 +530,11 @@ mod tests {
     }
 
     #[test]
-    fn dictionary_flag_selects_the_editor() {
-        assert!(wants_editor(args(&["murmur.exe", "--dictionary"])));
-        assert!(!wants_editor(args(&["murmur.exe"])));
-        assert!(!wants_editor(args(&["murmur.exe", "--other"])));
+    fn editor_flags_select_the_tab() {
+        assert_eq!(wants_editor(args(&["murmur.exe", "--dictionary"])), Some(editor::Tab::Dictionary));
+        assert_eq!(wants_editor(args(&["murmur.exe", "--snippets"])), Some(editor::Tab::Snippets));
+        assert_eq!(wants_editor(args(&["murmur.exe"])), None);
+        assert_eq!(wants_editor(args(&["murmur.exe", "--other"])), None);
     }
 
     fn big_log(name: &str) -> std::path::PathBuf {

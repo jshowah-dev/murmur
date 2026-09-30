@@ -2,6 +2,7 @@
 //! any `egui::Ui`, so a future settings window can host it as a tab.
 
 use crate::correction_ui::{AMBER, GREEN, MUTED, TEXT};
+use crate::editor_kit::{has_comments, open_file, progress, reduced_motion, RED};
 use crate::motion;
 use eframe::egui::{
     self, Align, Button, CentralPanel, Frame, Key, Layout, Margin, Modifiers, Panel, RichText, ScrollArea, Sense, TextEdit, TextStyle,
@@ -10,10 +11,8 @@ use eframe::egui::{
 use murmur_lib::dictionary::{file_stamp, Dictionary, SaveOutcome, Stamp, Term};
 use murmur_lib::dictionary_edit::{self as edit, Deleted, Issue};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::path::PathBuf;
 
-const RED: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x6C, 0x6C);
 const LIST_W: f32 = 200.0;
 const SOUND_ALIKE_TIP: &str = "Also catch words that sound like this term, e.g. 'haub' for HAWB. \
 For all-caps acronyms only the single-word 'Heard as' forms are used.";
@@ -60,44 +59,6 @@ pub struct DictionaryPanel {
     reduced_motion: bool,
 }
 
-fn open_file(p: &Path) {
-    let _ = std::process::Command::new("explorer.exe").arg(p).spawn();
-}
-
-/// Windows' "Show animations in Windows" setting, off meaning reduced motion.
-fn reduced_motion() -> bool {
-    use windows::core::BOOL;
-    use windows::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS};
-    let mut on = BOOL(1);
-    let ok = unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, Some(&mut on as *mut BOOL as *mut _), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0)) };
-    ok.is_ok() && !on.as_bool()
-}
-
-/// A cubic-bezier easing token evaluated at `x` in 0..=1.
-fn ease([x1, y1, x2, y2]: [f32; 4], x: f32) -> f32 {
-    let at = |a: f32, b: f32, t: f32| 3.0 * a * t * (1.0 - t).powi(2) + 3.0 * b * t * t * (1.0 - t) + t.powi(3);
-    // x(t) rises monotonically for easing curves, so bisect for the t that gives x
-    let (mut lo, mut hi) = (0.0, 1.0);
-    for _ in 0..20 {
-        let m = (lo + hi) / 2.0;
-        if at(x1, x2, m) < x {
-            lo = m;
-        } else {
-            hi = m;
-        }
-    }
-    at(y1, y2, (lo + hi) / 2.0)
-}
-
-/// How far (0..=1, eased) a motion that began at `since` has run; repaints until it's done.
-fn progress(ctx: &egui::Context, since: f64, d: Duration, curve: [f32; 4]) -> f32 {
-    let x = ((ctx.input(|i| i.time) - since) as f32 / motion::scaled(d).as_secs_f32()).clamp(0.0, 1.0);
-    if x < 1.0 {
-        ctx.request_repaint();
-    }
-    ease(curve, x)
-}
-
 impl DictionaryPanel {
     pub fn new(path: PathBuf) -> Self {
         let mut p = DictionaryPanel {
@@ -134,9 +95,7 @@ impl DictionaryPanel {
                 self.working = d.terms;
                 self.stamp = stamp;
                 self.load_error = None;
-                self.has_comments = std::fs::read_to_string(&self.path)
-                    .map(|s| s.lines().any(|l| l.trim_start().starts_with('#')))
-                    .unwrap_or(false);
+                self.has_comments = has_comments(&self.path);
                 self.selected = keep.and_then(|w| self.working.iter().position(|t| t.written == w));
                 self.undo = None;
                 self.banner = None;
@@ -151,6 +110,12 @@ impl DictionaryPanel {
 
     pub fn is_dirty(&self) -> bool {
         self.load_error.is_none() && self.working != self.loaded
+    }
+
+    /// The working copy, for the editor window's tests.
+    #[cfg(test)]
+    pub(crate) fn edit(&mut self) -> &mut Vec<Term> {
+        &mut self.working
     }
 
     fn has_errors(&self) -> bool {
@@ -595,6 +560,7 @@ impl DictionaryPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn temp_file(name: &str, contents: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("murmur-panel-{name}-{}", std::process::id()));
