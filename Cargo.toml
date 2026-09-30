@@ -37,7 +37,7 @@ windows = { version = "0.62", features = [
   "Win32_UI_Accessibility",
   "Win32_UI_HiDpi",
 ] }
-tray-icon = "0.24"
+tray-icon = "0.25"
 rphonetic = "4"
 similar = "3"
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts"] }
