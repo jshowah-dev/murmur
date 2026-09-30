@@ -1,11 +1,12 @@
 use anyhow::Result;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU32, Ordering};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{CheckMenuItem, ContextMenu, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
 use windows::Win32::UI::Shell::{Shell_NotifyIconW, NIF_INFO, NIIF_INFO, NIM_MODIFY, NOTIFYICONDATAW};
+use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayEvent {
@@ -95,6 +96,19 @@ impl Tray {
     pub fn poll(&self) -> Option<TrayEvent> {
         let ev = MenuEvent::receiver().try_recv().ok()?;
         self.ids.iter().find(|(id, _)| *id == ev.id).map(|(_, e)| *e)
+    }
+
+    /// Shows the tray menu at the cursor, owned by `hwnd`. The pick arrives through `poll` like a
+    /// tray pick. Showing the menu makes `hwnd` the foreground window, so the app you were in gets
+    /// focus back afterwards, ready for the next dictation.
+    pub fn show_menu(&self, hwnd: HWND) {
+        unsafe {
+            let prev = GetForegroundWindow();
+            self.menu.show_context_menu_for_hwnd(hwnd.0 as isize, None);
+            if !prev.is_invalid() {
+                let _ = SetForegroundWindow(prev);
+            }
+        }
     }
 
     pub fn set_paused(&self, paused: bool) {
