@@ -2,7 +2,7 @@
 //! any `egui::Ui`, so a future settings window can host it as a tab.
 
 use crate::correction_ui::{AMBER, GREEN, MUTED, TEXT};
-use crate::editor_kit::{has_comments, open_file, RED};
+use crate::editor_kit::{has_comments, open_file, progress, reduced_motion, RED};
 use crate::motion;
 use eframe::egui::{
     self, Align, Button, CentralPanel, Frame, Key, Layout, Margin, Modifiers, Panel, RichText, ScrollArea, Sense, TextEdit, TextStyle,
@@ -12,7 +12,6 @@ use murmur_lib::dictionary::{file_stamp, Dictionary, SaveOutcome, Stamp, Term};
 use murmur_lib::dictionary_edit::{self as edit, Deleted, Issue};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Duration;
 
 const LIST_W: f32 = 200.0;
 const SOUND_ALIKE_TIP: &str = "Also catch words that sound like this term, e.g. 'haub' for HAWB. \
@@ -58,40 +57,6 @@ pub struct DictionaryPanel {
     /// The rewrite last shown there, and when it first appeared.
     proof_shown: Option<(String, f64)>,
     reduced_motion: bool,
-}
-
-/// Windows' "Show animations in Windows" setting, off meaning reduced motion.
-fn reduced_motion() -> bool {
-    use windows::core::BOOL;
-    use windows::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS};
-    let mut on = BOOL(1);
-    let ok = unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, Some(&mut on as *mut BOOL as *mut _), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0)) };
-    ok.is_ok() && !on.as_bool()
-}
-
-/// A cubic-bezier easing token evaluated at `x` in 0..=1.
-fn ease([x1, y1, x2, y2]: [f32; 4], x: f32) -> f32 {
-    let at = |a: f32, b: f32, t: f32| 3.0 * a * t * (1.0 - t).powi(2) + 3.0 * b * t * t * (1.0 - t) + t.powi(3);
-    // x(t) rises monotonically for easing curves, so bisect for the t that gives x
-    let (mut lo, mut hi) = (0.0, 1.0);
-    for _ in 0..20 {
-        let m = (lo + hi) / 2.0;
-        if at(x1, x2, m) < x {
-            lo = m;
-        } else {
-            hi = m;
-        }
-    }
-    at(y1, y2, (lo + hi) / 2.0)
-}
-
-/// How far (0..=1, eased) a motion that began at `since` has run; repaints until it's done.
-fn progress(ctx: &egui::Context, since: f64, d: Duration, curve: [f32; 4]) -> f32 {
-    let x = ((ctx.input(|i| i.time) - since) as f32 / motion::scaled(d).as_secs_f32()).clamp(0.0, 1.0);
-    if x < 1.0 {
-        ctx.request_repaint();
-    }
-    ease(curve, x)
 }
 
 impl DictionaryPanel {

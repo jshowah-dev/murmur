@@ -14,7 +14,7 @@ Adding and editing snippets no longer means hand-editing `snippets.toml`. The di
 | Tray | "Open snippets" becomes **"Snippets…"**. "Dictionary…" and "Snippets…" open the window on that tab; if it's already open, either one just brings it to the front (no tab switch). |
 | v1 features | Search, Delete with one-step Undo, Test a phrase, conflict detection (Reload / Overwrite), common-word warning. |
 | Validation | Errors block Save: empty trigger, empty text, duplicate trigger. A one-word common trigger is a warning only. |
-| List order | **File order**, new snippets appended at the bottom. No A–Z sort, so none of the dictionary's freeze-and-slide re-sort machinery. |
+| List order | **A–Z by trigger**, with the dictionary's freeze-and-slide: the list holds still while a trigger is typed (a new snippet waits at the bottom), then re-sorts with each row sliding to its new place; no slide when Windows animations are off. Saving keeps the file's own order, new snippets appended. (Revised 2026-09-30 after the smoke test; was file order.) |
 | Save | Explicit Save (button or Ctrl+S), per tab. |
 
 Out of scope: a settings window, snippet variables (date, clipboard), the version bump and release.
@@ -27,7 +27,7 @@ Out of scope: a settings window, snippet variables (date, clipboard), the versio
 | Editor process shell | `src/editor.rs` (renamed from `src/dictionary_editor.rs`) | Title `Murmur — Dictionary & Snippets`, mutex `Local\Murmur.DictionaryEditor` (unchanged, so an editor from the previous version is still detected). Hosts both panels, draws the tab strip, owns the active tab. `run(tab)` opens on that tab. `is_open()` unchanged. |
 | Dictionary panel | `src/dictionary_panel.rs` | Unchanged behaviour. `RED` and `open_file` move to `src/editor_kit.rs`. |
 | Snippets panel | `src/snippets_panel.rs` (new) | `SnippetsPanel` (working copy, selection, search, test text, undo slot, stamp, banner) with `ui`, `is_dirty`, `save`. Knows nothing about windows. |
-| Shared UI helpers | `src/editor_kit.rs` (new) | `RED` and `open_file` moved from `dictionary_panel.rs`, plus `has_comments(path)`. The motion helpers stay in `dictionary_panel.rs` (the snippets panel has no motion). The banner and save bar stay in each panel (their wording differs). |
+| Shared UI helpers | `src/editor_kit.rs` (new) | `RED`, `open_file`, `reduced_motion` and `progress` moved from `dictionary_panel.rs`, plus `has_comments(path)`. The banner and save bar stay in each panel (their wording differs). |
 | Snippet editing logic | `src/snippets_edit.rs` (new, lib, egui-free) | `validate`, `normalize`, `visible`, `delete`/`undo`, `changes`, `preview`. Unit-tested without a UI. |
 | Stamped load/save | `src/config.rs` + `src/dictionary.rs` + `src/snippets.rs` | `Stamp`, `SaveOutcome`, `file_stamp` move from `dictionary.rs` to `config.rs` (re-exported from `dictionary` so existing callers compile). New `config::write_with_backup(path, contents)` does the `.bak` / `.tmp` / rename; `Dictionary::save_to` calls it after its loaded-cleanly check. `Snippets` gains `Serialize`, `to_toml`, `load_stamped(path)` and `save_if_unchanged(path, stamp)`, shaped like the dictionary's. |
 | Styling | `src/correction_ui.rs` | Reuse `BG`, `GREEN`, `AMBER`, `MUTED`, `TEXT`, `load_system_font`. |
@@ -120,7 +120,7 @@ Normalise: trim the trigger; the text is kept exactly as typed. Then `save_if_un
 
 Unit tests (`cargo test --release --locked`):
 - `snippets_edit::validate`: no-word trigger; punctuation-only trigger; empty and whitespace-only text; duplicate triggers ignoring case and punctuation flag both; a common one-word trigger is a warning, not an error; a common word inside a longer trigger is not warned.
-- `normalize` trims triggers and leaves text untouched; `visible` filters by trigger and text ignoring case, in file order; delete then undo restores the position and clamps; `changes` counts added, removed and edited; `preview` uses unsaved snippets and skips invalid ones.
+- `normalize` trims triggers and leaves text untouched; `visible` filters by trigger and text ignoring case, A–Z by trigger words; delete then undo restores the position and clamps; `changes` counts added, removed and edited; `preview` uses unsaved snippets and skips invalid ones.
 - `Snippets` round-trip: multi-line text with leading/trailing newlines survives `to_toml` → `from_toml`, and the output contains `"""`.
 - `save_if_unchanged` in a temp directory: `Saved` when the stamp matches; `Conflict` after an outside write; a missing file saves.
 - `config::write_with_backup`: writes, keeps `.bak` of the previous version, leaves no `.tmp`. The existing dictionary save tests still pass.

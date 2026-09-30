@@ -56,10 +56,14 @@ pub fn normalize(list: Vec<Snippet>) -> Vec<Snippet> {
     list.into_iter().map(|s| Snippet { trigger: s.trigger.trim().to_string(), text: s.text }).collect()
 }
 
-/// Indices of the snippets to list: matching `query` (trigger or text, ignoring case), in file order.
+/// Indices of the snippets to list: matching `query` (trigger or text, ignoring case), A–Z by
+/// trigger words, so case and punctuation don't move a row.
 pub fn visible(list: &[Snippet], query: &str) -> Vec<usize> {
     let q = fold(query);
-    (0..list.len()).filter(|&i| q.is_empty() || fold(&list[i].trigger).contains(&q) || fold(&list[i].text).contains(&q)).collect()
+    let mut v: Vec<usize> =
+        (0..list.len()).filter(|&i| q.is_empty() || fold(&list[i].trigger).contains(&q) || fold(&list[i].text).contains(&q)).collect();
+    v.sort_by_key(|&i| (snippets::words(&list[i].trigger).join(" "), i));
+    v
 }
 
 pub fn delete(list: &mut Vec<Snippet>, index: usize) -> Deleted {
@@ -132,9 +136,9 @@ mod tests {
     }
 
     #[test]
-    fn visible_keeps_file_order_and_filters_trigger_and_text() {
-        let list = [s("zeta", "Best, Jeff"), s("alpha", "me@example.com"), s("", "")];
-        assert_eq!(visible(&list, ""), vec![0, 1, 2]);
+    fn visible_sorts_by_trigger_and_filters_trigger_and_text() {
+        let list = [s("zeta", "Best, Jeff"), s("Alpha", "me@example.com"), s("", ""), s("(beta)", "x")];
+        assert_eq!(visible(&list, ""), vec![2, 1, 3, 0], "A–Z ignoring case and punctuation, an empty trigger first");
         assert_eq!(visible(&list, "BEST"), vec![0]);
         assert_eq!(visible(&list, " alp "), vec![1]);
         assert!(visible(&list, "zzz").is_empty());

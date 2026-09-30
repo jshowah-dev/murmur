@@ -2,11 +2,15 @@
 //! into any `egui::Ui`; the editor window hosts it as a tab beside the dictionary.
 
 use crate::correction_ui::{AMBER, GREEN, MUTED, TEXT};
-use crate::editor_kit::{has_comments, open_file, RED};
-use eframe::egui::{self, Align, Button, CentralPanel, Frame, Key, Layout, Margin, Modifiers, Panel, RichText, ScrollArea, TextEdit};
+use crate::editor_kit::{has_comments, open_file, progress, reduced_motion, RED};
+use crate::motion;
+use eframe::egui::{
+    self, Align, Button, CentralPanel, Frame, Key, Layout, Margin, Modifiers, Panel, RichText, ScrollArea, Sense, TextEdit, UiBuilder,
+};
 use murmur_lib::config::{file_stamp, SaveOutcome, Stamp};
 use murmur_lib::snippets::{Snippet, Snippets};
 use murmur_lib::snippets_edit::{self as edit, Deleted, Field, Issue};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 const LIST_W: f32 = 200.0;
@@ -41,8 +45,13 @@ pub struct SnippetsPanel {
     /// A snippet just added: its errors wait until the user leaves Paste, picks another
     /// snippet, or tries to save.
     fresh: Option<usize>,
+    /// The list order, held still while a trigger is typed so its row doesn't jump.
+    frozen: Option<Vec<usize>>,
+    /// The re-sort after typing: each snippet's row before it, and when the slide began.
+    settle: Option<(HashMap<usize, usize>, f64)>,
     /// Scroll the selected row into view on the next draw.
     reveal: bool,
+    reduced_motion: bool,
 }
 
 impl SnippetsPanel {
@@ -61,7 +70,10 @@ impl SnippetsPanel {
             banner: None,
             focus: None,
             fresh: None,
+            frozen: None,
+            settle: None,
             reveal: false,
+            reduced_motion: reduced_motion(),
         };
         p.reload();
         p
@@ -80,7 +92,7 @@ impl SnippetsPanel {
                 self.selected = keep.and_then(|t| self.working.iter().position(|s| s.trigger == t));
                 self.undo = None;
                 self.banner = None;
-                self.fresh = None;
+                self.forget_indices();
             }
             Err(e) => {
                 log::error!("snippets editor: {e:#}");
@@ -168,13 +180,18 @@ impl SnippetsPanel {
         }
     }
 
-    /// Adds a snippet at the bottom and puts the cursor in its trigger. A search that found
-    /// nothing becomes the trigger, so the phrase isn't typed twice.
+    /// Adds a snippet and puts the cursor in its trigger. A search that found nothing becomes the
+    /// trigger, so the phrase isn't typed twice. The new row waits at the bottom of the list
+    /// until its trigger is typed.
     fn new_snippet(&mut self) {
         let query = self.search.trim();
         let trigger = if edit::visible(&self.working, query).is_empty() { query.to_string() } else { String::new() };
+        let mut order = edit::visible(&self.working, "");
         self.working.push(Snippet { trigger, text: String::new() });
         let i = self.working.len() - 1;
+        order.push(i);
+        self.frozen = Some(order);
+        self.settle = None;
         self.selected = Some(i);
         self.fresh = Some(i);
         self.focus = Some(Focus::Trigger);
@@ -182,8 +199,18 @@ impl SnippetsPanel {
         self.search.clear();
     }
 
-    fn select(&mut self, i: usize) {
+    /// Drops state that holds snippet indices, for when the indices shift.
+    fn forget_indices(&mut self) {
+        self.fresh = None;
+        self.frozen = None;
+        self.settle = None;
+    }
+
+    /// Selects snippet `i`. The old snippet's trigger field isn't drawn again, so it never
+    /// reports losing focus: settle its row here.
+    fn select(&mut self, i: usize, now: f64) {
         if self.selected != Some(i) {
+            self.unfreeze(now);
             self.selected = Some(i);
             self.fresh = None;
         }
@@ -193,15 +220,33 @@ impl SnippetsPanel {
         if let Some(i) = self.selected.filter(|&i| i < self.working.len()) {
             self.undo = Some(edit::delete(&mut self.working, i));
             self.selected = None;
-            self.fresh = None;
+            self.forget_indices();
         }
     }
 
     fn undo_delete(&mut self) {
         if let Some(d) = self.undo.take() {
-            self.fresh = None;
+            self.forget_indices();
             self.selected = Some(edit::undo(&mut self.working, d));
             self.reveal = true;
+        }
+    }
+
+    /// The trigger stopped being edited: re-sort the list, sliding each row from where it was
+    /// so the user sees where their snippet went.
+    fn unfreeze(&mut self, now: f64) {
+        if let Some(before) = self.frozen.take() {
+            let before: HashMap<usize, usize> = before.into_iter().enumerate().map(|(row, i)| (i, row)).collect();
+            self.settle = (!self.reduced_motion).then_some((before, now));
+            self.reveal = true;
+        }
+    }
+
+    /// The list rows, in order: held still while a trigger is typed, else A–Z and filtered.
+    fn rows(&self) -> Vec<usize> {
+        match &self.frozen {
+            Some(o) => o.iter().copied().filter(|&i| i < self.working.len()).collect(),
+            None => edit::visible(&self.working, &self.search),
         }
     }
 
@@ -231,6 +276,10 @@ impl SnippetsPanel {
         Panel::top("snip-toolbar").frame(bare(8)).resizable(false).show(ui, |ui| {
             ui.horizontal(|ui| {
                 let search = ui.add(TextEdit::singleline(&mut self.search).hint_text("Search…").desired_width(LIST_W));
+                if search.changed() {
+                    self.frozen = None;
+                    self.settle = None;
+                }
                 let enter = search.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                 let nothing_found = !self.search.trim().is_empty() && edit::visible(&self.working, &self.search).is_empty();
                 if ui.button("+ New snippet").clicked() || (enter && nothing_found) {
@@ -278,7 +327,7 @@ impl SnippetsPanel {
     }
 
     fn snippet_list(&mut self, ui: &mut egui::Ui, issues: &[Issue]) {
-        let rows = edit::visible(&self.working, &self.search);
+        let rows = self.rows();
         if rows.is_empty() && !self.search.trim().is_empty() {
             ui.label(RichText::new("No snippet matches.").color(MUTED));
             if ui.button(format!("+ Add '{}'", self.search.trim())).on_hover_text("Or press Enter in Search").clicked() {
@@ -286,8 +335,23 @@ impl SnippetsPanel {
             }
             return;
         }
+        let h = ui.spacing().interact_size.y;
+        let pitch = h + ui.spacing().item_spacing.y;
+        let t = self.settle.as_ref().map(|(_, since)| progress(ui.ctx(), *since, motion::duration::EMPHASIS, motion::easing::STANDARD));
+        if t == Some(1.0) {
+            self.settle = None;
+        }
         let mut clicked = None;
-        for i in rows {
+        for (row, &i) in rows.iter().enumerate() {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), Sense::hover());
+            if self.reveal && self.selected == Some(i) {
+                ui.scroll_to_rect(rect, None);
+            }
+            // during the re-sort each row travels from its old row to its new one
+            let from = match (&self.settle, t) {
+                (Some((before, _)), Some(t)) => before.get(&i).map_or(0.0, |&b| (b as f32 - row as f32) * pitch * (1.0 - t)),
+                _ => 0.0,
+            };
             let s = &self.working[i];
             let bad = issues.iter().any(|x| x.error && x.snippet == i);
             let text = if s.trigger.trim().is_empty() {
@@ -295,17 +359,15 @@ impl SnippetsPanel {
             } else {
                 RichText::new(s.trigger.trim()).color(if bad { RED } else { TEXT })
             };
-            let r = ui.selectable_label(self.selected == Some(i), text);
-            if self.reveal && self.selected == Some(i) {
-                r.scroll_to_me(None);
-            }
-            if r.clicked() {
+            // a child Ui, so the shifted row doesn't move the list's own layout cursor
+            let mut row_ui = ui.new_child(UiBuilder::new().max_rect(rect.translate(egui::vec2(0.0, from))).layout(*ui.layout()));
+            if row_ui.selectable_label(self.selected == Some(i), text).clicked() {
                 clicked = Some(i);
             }
         }
         self.reveal = false;
         if let Some(i) = clicked {
-            self.select(i);
+            self.select(i, ui.input(|x| x.time));
         }
     }
 
@@ -318,7 +380,7 @@ impl SnippetsPanel {
             ui.label(RichText::new(&x.message).size(12.0).color(if x.error { RED } else { AMBER }));
         };
         let focus = self.focus.take();
-        let enter = ui.input(|x| x.key_pressed(Key::Enter));
+        let (enter, now) = ui.input(|x| (x.key_pressed(Key::Enter), x.time));
         let mut delete = false;
         let s = &mut self.working[i];
 
@@ -345,6 +407,12 @@ impl SnippetsPanel {
             }
         });
 
+        if trigger.gained_focus() && self.frozen.is_none() {
+            self.frozen = Some(self.rows());
+        }
+        if trigger.lost_focus() {
+            self.unfreeze(now);
+        }
         if trigger.lost_focus() && enter {
             // Enter after the trigger moves on to the text
             self.focus = Some(Focus::Text);
@@ -587,6 +655,58 @@ mod tests {
         panel.search = "email".into();
         panel.new_snippet();
         assert_eq!(panel.working[3].trigger, "");
+    }
+
+    #[test]
+    fn new_snippet_waits_at_the_bottom_then_settles_into_place() {
+        let p = temp_file("settle", TWO);
+        let mut panel = SnippetsPanel::new(p);
+        panel.reduced_motion = false;
+        panel.new_snippet();
+        panel.working[2].trigger = "aaa".into();
+        assert_eq!(panel.rows(), vec![1, 0, 2], "row moved while typing");
+        panel.unfreeze(0.0);
+        assert_eq!(panel.rows(), vec![2, 1, 0]);
+        assert_eq!(panel.settle.as_ref().unwrap().0[&2], 2, "slide starts from the old row");
+    }
+
+    #[test]
+    fn the_slide_starts_with_every_row_where_it_was() {
+        let p = temp_file("slide-start", TWO);
+        let mut panel = SnippetsPanel::new(p);
+        panel.reduced_motion = false;
+        panel.new_snippet();
+        panel.working[2].trigger = "aaa".into();
+        // a start time in the future holds the slide at its first frame
+        panel.unfreeze(f64::INFINITY);
+        let text = settled(&mut panel, WINDOW);
+        let y = |s: &str| text.iter().find(|(t, _)| t == s).unwrap_or_else(|| panic!("'{s}' not drawn")).1.y;
+        let (email, signature, aaa) = (y("my email"), y("my signature"), y("aaa"));
+        assert!(email < signature && signature < aaa, "rows out of their old order: {email} {signature} {aaa}");
+        assert!(((signature - email) - (aaa - signature)).abs() < 0.5, "rows not evenly spaced: {email} {signature} {aaa}");
+    }
+
+    #[test]
+    fn reduced_motion_resorts_without_a_slide() {
+        let p = temp_file("reduced", TWO);
+        let mut panel = SnippetsPanel::new(p);
+        panel.reduced_motion = true;
+        panel.new_snippet();
+        panel.working[2].trigger = "aaa".into();
+        panel.unfreeze(0.0);
+        assert!(panel.settle.is_none());
+        assert_eq!(panel.rows(), vec![2, 1, 0]);
+    }
+
+    #[test]
+    fn selecting_another_snippet_ends_the_freeze() {
+        let p = temp_file("select-unfreeze", TWO);
+        let mut panel = SnippetsPanel::new(p);
+        panel.new_snippet();
+        panel.working[2].trigger = "aaa".into();
+        panel.select(0, 0.0);
+        assert!(panel.frozen.is_none());
+        assert_eq!(panel.rows()[0], 2);
     }
 
     #[test]
