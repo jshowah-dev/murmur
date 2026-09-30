@@ -413,7 +413,10 @@ fn main() -> Result<()> {
                         let tx = caret_tx.clone();
                         // UIA can take tens of ms; the loop mustn't wait for it
                         std::thread::spawn(move || {
-                            let caret = match caret::find(HWND(target as *mut _)) {
+                            let t0 = Instant::now();
+                            let found = caret::find(HWND(target as *mut _));
+                            log::info!("caret lookup: {found:?} in {} ms", t0.elapsed().as_millis());
+                            let caret = match found {
                                 Some(caret::Anchor::Caret(r)) => Some(r),
                                 _ => None,
                             };
