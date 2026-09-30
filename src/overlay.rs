@@ -87,6 +87,8 @@ struct Look {
     /// cursor proximity, 0..=1, and where along the pill it is
     near: f32,
     near_x: f32,
+    /// landing pulse progress, 0 = none
+    pulse: f32,
 }
 
 /// How far out the resting pill notices the cursor.
@@ -155,6 +157,7 @@ pub struct Overlay {
     state: OverlayState,
     tick: u32,
     look: Look,
+    pulse_at: Option<Instant>,
     stepped_at: Instant,
     reduced: bool,
 }
@@ -205,7 +208,7 @@ impl Overlay {
                 0, 0, W, H,
                 None, None, Some(hinst.into()), None,
             )?;
-            Ok(Overlay { hwnd, state: OverlayState::Idle, tick: 0, look: Look::default(), stepped_at: Instant::now(), reduced: reduced_motion() })
+            Ok(Overlay { hwnd, state: OverlayState::Idle, tick: 0, look: Look::default(), pulse_at: None, stepped_at: Instant::now(), reduced: reduced_motion() })
         }
     }
 
@@ -325,10 +328,30 @@ impl Overlay {
         // quantized so a still cursor or a far one causes no repaints
         look.near = (near * 64.0).round() / 64.0;
         look.near_x = (near_x * 64.0).round() / 64.0;
+        look.pulse = match self.pulse_at {
+            Some(t0) => {
+                let p = (now - t0).as_secs_f32() / motion::scaled(motion::duration::EMPHASIS).as_secs_f32();
+                if p >= 1.0 {
+                    self.pulse_at = None;
+                    0.0
+                } else if self.reduced {
+                    // no bloom, just a brighter dot for the same moment
+                    0.5
+                } else {
+                    p.max(0.001)
+                }
+            }
+            None => 0.0,
+        };
         if look != self.look {
             self.look = look;
             self.paint();
         }
+    }
+
+    /// One soft pulse of the resting dot: your words landed.
+    pub fn pulse(&mut self) {
+        self.pulse_at = Some(Instant::now());
     }
 
     fn cursor_nearness(&self) -> (f32, f32) {
@@ -386,6 +409,11 @@ fn render(state: OverlayState, tick: u32, look: Look) -> (i32, i32, Vec<u32>) {
                 c.glow(look.near_x * wf, hf / 2.0, hf * 2.5, 0x60D060, 0.35 * look.near * (1.0 - hover) * fade);
             }
             let d = (IDLE_H - 8) as f32;
+            if look.pulse > 0.0 {
+                let s = (std::f32::consts::PI * look.pulse).sin();
+                let ring = d + 6.0 * s;
+                c.capsule(wf / 2.0 - ring / 2.0, hf / 2.0 - ring / 2.0, ring, ring, rgb, 0.35 * s * fade);
+            }
             c.capsule(wf / 2.0 - d / 2.0, hf / 2.0 - d / 2.0, d, d, rgb, fade);
             if hover > 0.0 {
                 let r = 1.2;
@@ -516,6 +544,17 @@ mod tests {
         let (_, _, a) = render(OverlayState::Listening(0.0), 0, live);
         let (_, _, b) = render(OverlayState::Listening(0.0), 0, Look { near: 1.0, near_x: 0.0, hover: 1.0, ..live });
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn landing_pulse_blooms_around_the_dot() {
+        let (w, h, calm) = render(OverlayState::Idle, 0, Look::default());
+        let (_, _, pulse) = render(OverlayState::Idle, 0, Look { pulse: 0.5, ..Default::default() });
+        let green = |p: u32| (p >> 8) & 0xFF;
+        let beside = ((h / 2) * w + w / 2 + 4) as usize;
+        assert!(green(pulse[beside]) > green(calm[beside]) + 0x10, "{:08X} vs {:08X}", pulse[beside], calm[beside]);
+        let (_, _, over) = render(OverlayState::Idle, 0, Look { pulse: 0.0, ..Default::default() });
+        assert_eq!(over, calm);
     }
 
     fn alpha(p: u32) -> u32 {
