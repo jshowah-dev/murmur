@@ -5,6 +5,7 @@ mod about_ui;
 mod audio_out;
 mod autostart;
 mod caret;
+mod canvas;
 mod correction;
 mod correction_ui;
 mod dictionary_panel;

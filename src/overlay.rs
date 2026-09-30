@@ -10,7 +10,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::Foundation::GetLastError;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow, GetWindowRect, LoadCursorW, PeekMessageW,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos, GetForegroundWindow, GetWindowRect, LoadCursorW, PeekMessageW,
     RegisterClassW, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, UpdateLayeredWindow, GWL_EXSTYLE,
     HWND_TOPMOST, IDC_ARROW, MSG,
     PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE, ULW_ALPHA, WINDOW_EX_STYLE, WM_QUIT,
@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use crate::editor_kit::{ease, reduced_motion};
 use crate::motion;
+use crate::canvas::Canvas;
 use windows::Win32::Graphics::Gdi::{MonitorFromWindow, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST};
 use windows::Win32::Graphics::Gdi::AC_SRC_ALPHA;
 use windows::Win32::Graphics::Gdi::BLENDFUNCTION;
@@ -83,6 +84,23 @@ struct Look {
     level: f32,
     /// seconds of ribbon drift; only advances while there's voice
     phase: f32,
+    /// cursor proximity, 0..=1, and where along the pill it is
+    near: f32,
+    near_x: f32,
+}
+
+/// How far out the resting pill notices the cursor.
+const NEAR_PX: f32 = 60.0;
+
+/// (strength 0..=1, where along the pill 0..=1) for a cursor at `cursor` near `pill`: full
+/// strength on the pill, nothing from NEAR_PX away.
+fn nearness(cursor: (i32, i32), pill: RECT) -> (f32, f32) {
+    let (x, y) = cursor;
+    let dx = (pill.left - x).max(x - pill.right).max(0) as f32;
+    let dy = (pill.top - y).max(y - pill.bottom).max(0) as f32;
+    let strength = (1.0 - dx.hypot(dy) / NEAR_PX).max(0.0);
+    let along = ((x - pill.left) as f32 / (pill.right - pill.left).max(1) as f32).clamp(0.0, 1.0);
+    (strength, along)
 }
 
 /// Linear progress after `dt`: toward 1 over `up` while `on`, back toward 0 over `down`
@@ -303,9 +321,24 @@ impl Overlay {
         if look.level > 0.01 && !self.reduced {
             look.phase = (look.phase + dt.as_secs_f32()) % 1000.0;
         }
+        let (near, near_x) = if resting && !self.reduced { self.cursor_nearness() } else { (0.0, look.near_x) };
+        // quantized so a still cursor or a far one causes no repaints
+        look.near = (near * 64.0).round() / 64.0;
+        look.near_x = (near_x * 64.0).round() / 64.0;
         if look != self.look {
             self.look = look;
             self.paint();
+        }
+    }
+
+    fn cursor_nearness(&self) -> (f32, f32) {
+        unsafe {
+            let mut pt = POINT::default();
+            let mut r = RECT::default();
+            if GetCursorPos(&mut pt).is_err() || GetWindowRect(self.hwnd, &mut r).is_err() {
+                return (0.0, 0.5);
+            }
+            nearness((pt.x, pt.y), r)
         }
     }
 
@@ -330,49 +363,6 @@ impl Overlay {
     }
 }
 
-/// Premultiplied RGBA canvas; shapes are drawn with per-pixel coverage so edges are antialiased.
-struct Canvas {
-    w: i32,
-    h: i32,
-    px: Vec<[f32; 4]>,
-}
-
-impl Canvas {
-    fn new(w: i32, h: i32) -> Self {
-        Canvas { w, h, px: vec![[0.0; 4]; (w * h) as usize] }
-    }
-
-    /// Composite a capsule (rounded rect, radius = half the short side) of 0xRRGGBB at `alpha` over the canvas.
-    fn capsule(&mut self, x: f32, y: f32, cw: f32, ch: f32, rgb: u32, alpha: f32) {
-        let r = cw.min(ch) / 2.0;
-        let (cx, cy) = (x + cw / 2.0, y + ch / 2.0);
-        let (bx, by) = (cw / 2.0 - r, ch / 2.0 - r);
-        let col = [(rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF].map(|c| c as f32 / 255.0);
-        for py in (y.floor() as i32).max(0)..((y + ch).ceil() as i32).min(self.h) {
-            for pxl in (x.floor() as i32).max(0)..((x + cw).ceil() as i32).min(self.w) {
-                // signed distance from the pixel centre to the capsule edge
-                let qx = (pxl as f32 + 0.5 - cx).abs() - bx;
-                let qy = (py as f32 + 0.5 - cy).abs() - by;
-                let d = qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - r;
-                let a = (0.5 - d).clamp(0.0, 1.0) * alpha;
-                if a > 0.0 {
-                    let dst = &mut self.px[(py * self.w + pxl) as usize];
-                    for i in 0..3 {
-                        dst[i] = col[i] * a + dst[i] * (1.0 - a);
-                    }
-                    dst[3] = a + dst[3] * (1.0 - a);
-                }
-            }
-        }
-    }
-
-    /// Pack as premultiplied BGRA (0xAARRGGBB little-endian), what UpdateLayeredWindow expects.
-    fn into_bgra(self) -> Vec<u32> {
-        let q = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u32;
-        self.px.into_iter().map(|[r, g, b, a]| (q(a) << 24) | (q(r) << 16) | (q(g) << 8) | q(b)).collect()
-    }
-}
-
 /// Paint `state` into premultiplied BGRA pixels, row-major, `w * h` long. The size follows
 /// `look.grow`; `look.hover` wakes the resting pill (full body opacity plus the "more" dots).
 fn render(state: OverlayState, tick: u32, look: Look) -> (i32, i32, Vec<u32>) {
@@ -391,6 +381,10 @@ fn render(state: OverlayState, tick: u32, look: Look) -> (i32, i32, Vec<u32>) {
             // shrinking back from live: the dot fades in as the pill settles
             let fade = 1.0 - grow;
             let rgb = if state == OverlayState::Idle { 0x60D060 } else { 0x808080 };
+            if look.near > 0.0 {
+                // gathers toward an approaching cursor; the hover dots take over on arrival
+                c.glow(look.near_x * wf, hf / 2.0, hf * 2.5, 0x60D060, 0.35 * look.near * (1.0 - hover) * fade);
+            }
             let d = (IDLE_H - 8) as f32;
             c.capsule(wf / 2.0 - d / 2.0, hf / 2.0 - d / 2.0, d, d, rgb, fade);
             if hover > 0.0 {
@@ -492,6 +486,36 @@ mod tests {
         let (w, h, px) = render(OverlayState::Locked(1.0), 0, Look { grow: 1.0, level: 1.0, ..Default::default() });
         let p = px[((h / 2) * w + W - 25) as usize];
         assert!((p >> 16) & 0xFF > (p >> 8) & 0xFF, "red dot overdrawn: {p:08X}");
+    }
+
+    #[test]
+    fn nearness_rises_as_the_cursor_approaches() {
+        let pill = RECT { left: 100, top: 100, right: 156, bottom: 114 };
+        assert_eq!(nearness((0, 0), pill).0, 0.0);
+        assert_eq!(nearness((128, 107), pill), (1.0, 0.5), "over the pill");
+        let (n, x) = nearness((70, 107), pill);
+        assert!((n - 0.5).abs() < 1e-3 && x == 0.0, "30 px to the left: {n} {x}");
+        assert_eq!(nearness((200, 60), pill).1, 1.0, "right of the pill");
+        assert_eq!(nearness((128, 30), pill).0, 0.0, "70 px above: out of reach");
+    }
+
+    #[test]
+    fn glow_gathers_on_the_cursor_side() {
+        let near = Look { near: 1.0, near_x: 0.0, ..Default::default() };
+        let (w, h, px) = render(OverlayState::Idle, 0, near);
+        let green = |p: u32| (p >> 8) & 0xFF;
+        let row = (h / 2) * w;
+        assert!(green(px[(row + 5) as usize]) > green(px[(row + w - 6) as usize]) + 8);
+        let (_, _, plain) = render(OverlayState::Idle, 0, Look::default());
+        assert_ne!(px, plain);
+    }
+
+    #[test]
+    fn live_pill_ignores_the_cursor() {
+        let live = Look { grow: 1.0, ..Default::default() };
+        let (_, _, a) = render(OverlayState::Listening(0.0), 0, live);
+        let (_, _, b) = render(OverlayState::Listening(0.0), 0, Look { near: 1.0, near_x: 0.0, hover: 1.0, ..live });
+        assert_eq!(a, b);
     }
 
     fn alpha(p: u32) -> u32 {
