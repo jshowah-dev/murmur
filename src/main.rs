@@ -251,6 +251,7 @@ fn main() -> Result<()> {
         if !overlay.pump_once() {
             break;
         }
+        overlay.animate();
         while let Ok(chunk) = audio_rx.try_recv() {
             if forwarding {
                 // level is metered here, not in the pipeline, so it keeps moving while a chunk decodes

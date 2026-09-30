@@ -26,7 +26,7 @@ pub(crate) fn reduced_motion() -> bool {
 }
 
 /// A cubic-bezier easing token evaluated at `x` in 0..=1.
-fn ease([x1, y1, x2, y2]: [f32; 4], x: f32) -> f32 {
+pub(crate) fn ease([x1, y1, x2, y2]: [f32; 4], x: f32) -> f32 {
     let at = |a: f32, b: f32, t: f32| 3.0 * a * t * (1.0 - t).powi(2) + 3.0 * b * t * t * (1.0 - t) + t.powi(3);
     // x(t) rises monotonically for easing curves, so bisect for the t that gives x
     let (mut lo, mut hi) = (0.0, 1.0);
