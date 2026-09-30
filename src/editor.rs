@@ -95,9 +95,10 @@ impl EditorApp {
     }
 
     /// Saves every tab with edits. If one fails (its banner says why), shows it and returns false.
+    /// A tab without edits is skipped, so a file that failed to load there doesn't block closing.
     fn save_all(&mut self) -> bool {
-        let dictionary = self.dictionary.save();
-        let snippets = self.snippets.save();
+        let dictionary = !self.is_dirty(Tab::Dictionary) || self.dictionary.save();
+        let snippets = !self.is_dirty(Tab::Snippets) || self.snippets.save();
         if !dictionary {
             self.tab = Tab::Dictionary;
         } else if !snippets {
@@ -333,6 +334,18 @@ mod tests {
         assert!(!app.dictionary.is_dirty(), "the valid tab was still saved");
         app.snippets.edit()[0].trigger = "sig".into();
         assert!(app.save_all());
+    }
+
+    #[test]
+    fn save_all_ignores_an_unedited_tab_whose_file_failed_to_load() {
+        let dir = std::env::temp_dir().join(format!("murmur-editor-broken-other-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("dictionary.toml"), "[[term]\nbroken").unwrap();
+        let mut app = EditorApp::new(dir.join("dictionary.toml"), dir.join("snippets.toml"), Tab::Snippets);
+        app.snippets.edit().push(Snippet { trigger: "sig".into(), text: "x".into() });
+        assert!(app.save_all(), "the only edited tab saved, so the window can close");
+        assert_eq!(app.tab, Tab::Snippets);
     }
 
     #[test]
