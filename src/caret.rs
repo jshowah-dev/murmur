@@ -4,8 +4,8 @@ use windows::Win32::Graphics::Gdi::{ClientToScreen, GetMonitorInfoW, MonitorFrom
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, SAFEARRAY};
 use windows::Win32::System::Ole::{SafeArrayAccessData, SafeArrayDestroy, SafeArrayGetUBound, SafeArrayUnaccessData};
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomationTextPattern2, IUIAutomationTextRange, TextPatternRangeEndpoint_Start, TextUnit_Character,
-    UIA_TextPattern2Id,
+    CUIAutomation, IUIAutomation, IUIAutomationTextPattern, IUIAutomationTextPattern2, IUIAutomationTextRange,
+    TextPatternRangeEndpoint_Start, TextUnit_Character, UIA_TextPattern2Id, UIA_TextPatternId,
 };
 use windows::Win32::UI::HiDpi::{SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::WindowsAndMessaging::{GetGUIThreadInfo, GetWindowRect, GetWindowThreadProcessId, GUITHREADINFO};
@@ -54,6 +54,12 @@ pub fn find(target: HWND) -> Option<Anchor> {
     })
 }
 
+/// Whether the caret's centre lies within `field`, give or take a pixel of rounding.
+fn inside(caret: RECT, field: RECT) -> bool {
+    let (x, y) = ((caret.left + caret.right) / 2, (caret.top + caret.bottom) / 2);
+    x >= field.left - 1 && x <= field.right + 1 && y >= field.top - 1 && y <= field.bottom + 1
+}
+
 fn non_empty(r: RECT) -> bool {
     r.right > r.left && r.bottom > r.top
 }
@@ -80,23 +86,38 @@ unsafe fn uia_anchor() -> Option<Anchor> {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED); // already-initialized is fine
         let uia: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()?;
         let el = uia.GetFocusedElement().ok()?;
+        let field = el.CurrentBoundingRectangle().ok();
+        // WebView2 apps (new Outlook) can report a caret on the wrong monitor; only believe one
+        // inside the focused field, and otherwise ask the next way
+        let believable = |r: &RECT| field.is_none_or(|f| inside(*r, f));
         if let Ok(tp) = el.GetCurrentPatternAs::<IUIAutomationTextPattern2>(UIA_TextPattern2Id) {
             let mut active = BOOL::default();
-            if let Ok(range) = tp.GetCaretRange(&mut active) {
-                if let Some(r) = range_rect(&range) {
-                    return Some(Anchor::Caret(r));
-                }
-                // an empty range at the end of the text has no rectangle; take the previous character's right edge
-                if range.MoveEndpointByUnit(TextPatternRangeEndpoint_Start, TextUnit_Character, -1).is_ok() {
-                    if let Some(mut r) = range_rect(&range) {
-                        r.left = r.right;
-                        return Some(Anchor::Caret(r));
-                    }
-                }
+            if let Some(r) = tp.GetCaretRange(&mut active).ok().and_then(|range| caret_rect(&range)).filter(believable) {
+                return Some(Anchor::Caret(r));
             }
         }
-        let r = el.CurrentBoundingRectangle().ok()?;
+        // Chrome's contenteditable fields (Gmail) offer only the older pattern: the caret is the
+        // selection's empty range
+        if let Ok(tp) = el.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) {
+            if let Some(r) = tp.GetSelection().ok().and_then(|sel| sel.GetElement(0).ok()).and_then(|range| caret_rect(&range)).filter(believable) {
+                return Some(Anchor::Caret(r));
+            }
+        }
+        let r = field?;
         non_empty(r).then_some(Anchor::Area(r))
+    }
+}
+
+/// Rectangle of a caret range. An empty range has none; take the previous character's right edge.
+unsafe fn caret_rect(range: &IUIAutomationTextRange) -> Option<RECT> {
+    unsafe {
+        if let Some(r) = range_rect(range) {
+            return Some(r);
+        }
+        range.MoveEndpointByUnit(TextPatternRangeEndpoint_Start, TextUnit_Character, -1).ok()?;
+        let mut r = range_rect(range)?;
+        r.left = r.right;
+        Some(r)
     }
 }
 
@@ -157,6 +178,15 @@ mod tests {
     use super::*;
 
     const WORK: RECT = RECT { left: 0, top: 0, right: 1920, bottom: 1040 };
+
+    #[test]
+    fn a_caret_outside_the_focused_field_is_not_believed() {
+        let field = RECT { left: 910, top: 406, right: 1657, bottom: 895 };
+        assert!(inside(RECT { left: 910, top: 406, right: 911, bottom: 427 }, field), "at the field's corner");
+        assert!(inside(RECT { left: 1200, top: 600, right: 1200, bottom: 618 }, field), "zero-width caret");
+        assert!(!inside(RECT { left: 729, top: -176, right: 729, bottom: -175 }, field), "on another monitor");
+        assert!(!inside(RECT { left: 908, top: 350, right: 1645, bottom: 382 }, field), "the line above the field");
+    }
 
     fn caret(x: i32, y: i32) -> Anchor {
         Anchor::Caret(RECT { left: x, top: y, right: x + 1, bottom: y + 20 })

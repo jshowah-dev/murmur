@@ -5,6 +5,7 @@ mod about_ui;
 mod audio_out;
 mod autostart;
 mod caret;
+mod canvas;
 mod correction;
 mod correction_ui;
 mod dictionary_panel;
@@ -15,6 +16,7 @@ mod hotkey;
 mod inject;
 #[allow(dead_code)] // generated tokens; not all are used yet
 mod motion;
+mod mote;
 mod overlay;
 mod pipeline;
 mod setup_ui;
@@ -27,6 +29,7 @@ use crossbeam_channel::unbounded;
 use dictionary::Dictionary;
 use history::History;
 use hotkey::HotkeyEvent;
+use mote::{landing_point, on_done, Landing, Mote};
 use overlay::{Overlay, OverlayState};
 use pipeline::{PipelineCmd, PipelineMsg};
 use std::sync::{Arc, Mutex};
@@ -34,6 +37,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tray::{Tray, TrayEvent};
+use windows::Win32::Foundation::{HWND, RECT};
 
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
 
@@ -205,6 +209,11 @@ fn main() -> Result<()> {
     pipeline::spawn(cfg.clone(), dict.clone(), cmd_rx, msg_tx);
 
     let mut overlay = Overlay::create()?;
+    let mut mote = Mote::create()?;
+    // (window, caret) from the lookup that runs when you let go of the key
+    let (caret_tx, caret_rx) = unbounded::<(isize, Option<RECT>)>();
+    // the window a finished dictation's words will land in, until they do
+    let mut awaiting: Option<isize> = None;
     let tray = Tray::create()?;
     let (up_tx, up_rx) = unbounded::<UpdateMsg>();
     let checker_tx = up_tx.clone();
@@ -252,6 +261,13 @@ fn main() -> Result<()> {
             break;
         }
         overlay.animate();
+        // you switched windows mid-flight: the words won't land where the mote is
+        if mote.is_active() && awaiting.is_some_and(|t| t != inject::foreground_hwnd()) {
+            mote.fade();
+            overlay.set_quiet(false);
+            awaiting = None;
+        }
+        mote.animate();
         while let Ok(chunk) = audio_rx.try_recv() {
             if forwarding {
                 // level is metered here, not in the pipeline, so it keeps moving while a chunk decodes
@@ -366,6 +382,8 @@ fn main() -> Result<()> {
                     overlay.set(OverlayState::Locked(0.0));
                 }
                 HotkeyEvent::Cancel => {
+                    awaiting = None;
+                    mote.fade();
                     output_mute.restore();
                     forwarding = false;
                     while audio_rx.try_recv().is_ok() {}
@@ -377,6 +395,7 @@ fn main() -> Result<()> {
                     }
                 }
                 HotkeyEvent::Release => {
+                    let dictating = forwarding;
                     while let Ok(chunk) = audio_rx.try_recv() {
                         let _ = cmd_tx.send(PipelineCmd::Audio(chunk));
                     }
@@ -388,6 +407,22 @@ fn main() -> Result<()> {
                     if !cfg.mic_always_on {
                         capture.take();
                     }
+                    if dictating {
+                        let target = inject::foreground_hwnd();
+                        awaiting = Some(target);
+                        let tx = caret_tx.clone();
+                        // UIA can take tens of ms; the loop mustn't wait for it
+                        std::thread::spawn(move || {
+                            let t0 = Instant::now();
+                            let found = caret::find(HWND(target as *mut _));
+                            log::info!("caret lookup: {found:?} in {} ms", t0.elapsed().as_millis());
+                            let caret = match found {
+                                Some(caret::Anchor::Caret(r)) => Some(r),
+                                _ => None,
+                            };
+                            let _ = tx.send((target, caret));
+                        });
+                    }
                 }
                 HotkeyEvent::FixLast => {
                     log::info!("fix-last hotkey");
@@ -397,17 +432,34 @@ fn main() -> Result<()> {
                 _ => {}
             }
         }
+        while let Ok((target, caret)) = caret_rx.try_recv() {
+            if let Some(to) = landing_point(awaiting, target, inject::foreground_hwnd(), caret) {
+                mote.launch(overlay.centre_physical(), to);
+                overlay.set_quiet(true);
+            }
+        }
         while let Ok(m) = msg_rx.try_recv() {
             match m {
                 PipelineMsg::Processing => overlay.set(OverlayState::Processing),
                 PipelineMsg::Done(e) => {
                     overlay.set(resting(paused));
+                    overlay.set_quiet(false);
+                    let same = awaiting.take().is_some_and(|t| t == inject::foreground_hwnd());
+                    match on_done(mote.is_active(), !e.cleaned.is_empty(), same) {
+                        Landing::Dissolve => mote.dissolve(),
+                        Landing::Fade => mote.fade(),
+                        Landing::Pulse => overlay.pulse(),
+                        Landing::Nothing => {}
+                    }
                     if !e.cleaned.is_empty() {
                         history.push(e);
                     }
                 }
                 PipelineMsg::Error(s) => {
                     overlay.set(resting(paused));
+                    awaiting = None;
+                    mote.fade();
+                    overlay.set_quiet(false);
                     forwarding = false;
                     listening = false;
                     locked = false;
