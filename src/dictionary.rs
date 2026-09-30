@@ -1,10 +1,10 @@
 use crate::config::config_dir;
+pub use crate::config::{file_stamp, SaveOutcome, Stamp};
 use crate::phonetic;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use similar::{ChangeTag, TextDiff};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Term {
@@ -31,19 +31,6 @@ fn default_loaded_cleanly() -> bool {
     true
 }
 
-/// A file's modified time, `None` when it doesn't exist. Used to notice writes by another process.
-pub type Stamp = Option<SystemTime>;
-
-#[derive(Debug, PartialEq)]
-pub enum SaveOutcome {
-    Saved(Stamp),
-    /// The file changed since it was loaded; nothing was written.
-    Conflict,
-}
-
-pub fn file_stamp(p: &Path) -> Stamp {
-    std::fs::metadata(p).and_then(|m| m.modified()).ok()
-}
 
 const SEED: &[(&str, &[&str])] = &[
     ("HAWB", &["hob", "hawb", "haub"]),
@@ -124,17 +111,7 @@ impl Dictionary {
         if !self.loaded_cleanly {
             return Err(anyhow!("dictionary was not loaded cleanly; fix dictionary.toml first"));
         }
-        if let Some(dir) = p.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        if p.exists() {
-            if let Err(e) = std::fs::copy(p, p.with_extension("toml.bak")) {
-                log::warn!("failed to back up dictionary.toml: {e}");
-            }
-        }
-        let tmp = p.with_extension("toml.tmp");
-        std::fs::write(&tmp, self.to_toml()?).context("write dictionary.toml.tmp")?;
-        std::fs::rename(&tmp, p).context("rename dictionary.toml.tmp")
+        crate::config::write_with_backup(p, &self.to_toml()?)
     }
 
     /// Load for editing. The stamp is read before the file, so a write landing mid-read shows

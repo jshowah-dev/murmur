@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -79,6 +80,45 @@ fn resolve_with(cfg: &mut Config, previous: &[&str], installed: impl Fn(&Path) -
 
 pub fn config_dir() -> PathBuf {
     dirs::config_dir().expect("APPDATA").join("Murmur")
+}
+
+/// A file's modified time, `None` when it doesn't exist. Used to notice writes by another process.
+pub type Stamp = Option<SystemTime>;
+
+#[derive(Debug, PartialEq)]
+pub enum SaveOutcome {
+    Saved(Stamp),
+    /// The file changed since it was loaded; nothing was written.
+    Conflict,
+}
+
+pub fn file_stamp(p: &Path) -> Stamp {
+    std::fs::metadata(p).and_then(|m| m.modified()).ok()
+}
+
+/// Writes `contents` through a `.tmp` and a rename, keeping the previous version as `.bak`.
+pub fn write_with_backup(p: &Path, contents: &str) -> Result<()> {
+    let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if let Some(dir) = p.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    if p.exists() {
+        if let Err(e) = std::fs::copy(p, p.with_extension("toml.bak")) {
+            log::warn!("failed to back up {name}: {e}");
+        }
+    }
+    let tmp = p.with_extension("toml.tmp");
+    std::fs::write(&tmp, contents).with_context(|| format!("write {name}.tmp"))?;
+    std::fs::rename(&tmp, p).with_context(|| format!("rename {name}.tmp"))
+}
+
+/// Writes only if the file is still the version stamped at load (or at the last save).
+pub fn write_if_unchanged(p: &Path, stamp: Stamp, contents: &str) -> Result<SaveOutcome> {
+    if file_stamp(p) != stamp {
+        return Ok(SaveOutcome::Conflict);
+    }
+    write_with_backup(p, contents)?;
+    Ok(SaveOutcome::Saved(file_stamp(p)))
 }
 
 /// Expand `%VAR%` segments using the process environment. Unknown vars are left as-is.
@@ -179,6 +219,34 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn backup_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("murmur-config-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn write_with_backup_keeps_the_previous_version_and_no_tmp() {
+        let p = backup_dir("backup").join("x.toml");
+        write_with_backup(&p, "one").unwrap();
+        assert!(!p.with_extension("toml.bak").exists(), "nothing to back up on the first write");
+        write_with_backup(&p, "two").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "two");
+        assert_eq!(std::fs::read_to_string(p.with_extension("toml.bak")).unwrap(), "one");
+        assert!(!p.with_extension("toml.tmp").exists());
+    }
+
+    #[test]
+    fn write_if_unchanged_saves_on_a_matching_stamp_and_conflicts_after_an_outside_write() {
+        let p = backup_dir("stamp").join("x.toml");
+        assert!(matches!(write_if_unchanged(&p, None, "new").unwrap(), SaveOutcome::Saved(Some(_))), "a missing file saves");
+        let stamp = file_stamp(&p);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&p, "outside").unwrap();
+        assert_eq!(write_if_unchanged(&p, stamp, "mine").unwrap(), SaveOutcome::Conflict);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "outside");
+    }
 
     #[test]
     fn defaults_match_spec() {

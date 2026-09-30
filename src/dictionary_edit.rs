@@ -96,10 +96,10 @@ pub fn undo(terms: &mut Vec<Term>, d: Deleted) -> usize {
     at
 }
 
-/// Terms added, removed or edited; an edit counts once (it's one term missing on each side).
-pub fn changes(loaded: &[Term], working: &[Term]) -> usize {
-    fn missing(a: &[Term], b: &[Term]) -> usize {
-        let mut pool: Vec<&Term> = b.iter().collect();
+/// Items added, removed or edited; an edit counts once (it's one item missing on each side).
+pub fn changes<T: PartialEq>(loaded: &[T], working: &[T]) -> usize {
+    fn missing<T: PartialEq>(a: &[T], b: &[T]) -> usize {
+        let mut pool: Vec<&T> = b.iter().collect();
         a.iter()
             .filter(|t| match pool.iter().position(|x| x == t) {
                 Some(p) => {
