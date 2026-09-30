@@ -6,12 +6,28 @@ use crate::dictionary_panel::DictionaryPanel;
 use anyhow::Result;
 use eframe::egui::{self, Frame, Id, Margin, Modal, ViewportCommand};
 use std::sync::Arc;
-use windows::core::{w, HSTRING, PCWSTR};
-use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
-use windows::Win32::System::Threading::CreateMutexW;
+use windows::core::{HSTRING, PCWSTR};
+use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
+use windows::Win32::System::Threading::{CreateMutexW, OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
 use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, IsIconic, ShowWindow, SW_RESTORE};
 
 const TITLE: &str = "Murmur — Dictionary";
+const MUTEX: &str = "Local\\Murmur.DictionaryEditor";
+
+fn mutex_exists(name: &str) -> bool {
+    match unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, &HSTRING::from(name)) } {
+        Ok(h) => {
+            let _ = unsafe { CloseHandle(h) };
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Whether an editor process is running, from outside it: an update would force-close it.
+pub fn is_open() -> bool {
+    mutex_exists(MUTEX)
+}
 
 enum CloseChoice {
     Save,
@@ -105,7 +121,7 @@ fn focus_existing() {
 pub fn run() -> Result<()> {
     log::info!("dictionary editor starting");
     let _instance = unsafe {
-        let m = CreateMutexW(None, false, w!("Local\\Murmur.DictionaryEditor"))?;
+        let m = CreateMutexW(None, false, &HSTRING::from(MUTEX))?;
         if GetLastError() == ERROR_ALREADY_EXISTS {
             focus_existing();
             return Ok(());
@@ -151,6 +167,16 @@ mod tests {
             ..Default::default()
         };
         let _ = ctx.run_ui(input, |ui| app.prompt(ui.ctx()));
+    }
+
+    #[test]
+    fn a_held_mutex_is_seen_from_outside() {
+        let name = format!("Local\\Murmur.Test.{}", std::process::id());
+        assert!(!mutex_exists(&name));
+        let held = unsafe { CreateMutexW(None, false, &HSTRING::from(name.as_str())) }.unwrap();
+        assert!(mutex_exists(&name));
+        unsafe { CloseHandle(held) }.unwrap();
+        assert!(!mutex_exists(&name));
     }
 
     #[test]
