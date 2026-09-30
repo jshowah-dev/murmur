@@ -51,7 +51,8 @@ pub(crate) struct Sprite {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Phase {
     Hidden,
-    Flying { from: Pt, to: Pt, start: Instant },
+    /// `home`: the words already landed, so dissolve on arrival
+    Flying { from: Pt, to: Pt, start: Instant, home: bool },
     Settled { at: Pt, since: Instant },
     Leaving { at: Pt, start: Instant, alpha: f32, grow: bool },
 }
@@ -68,11 +69,15 @@ impl Flight {
 
     /// Starts a flight from the pill to the caret, replacing whatever was showing.
     pub(crate) fn launch(&mut self, from: Pt, to: Pt, now: Instant) {
-        self.phase = if self.reduced { Phase::Settled { at: to, since: now } } else { Phase::Flying { from, to, start: now } };
+        self.phase = if self.reduced { Phase::Settled { at: to, since: now } } else { Phase::Flying { from, to, start: now, home: false } };
     }
 
-    /// The words landed: grow and fade into them.
+    /// The words landed: grow and fade into them. Mid-flight, it finishes the flight first.
     pub(crate) fn dissolve(&mut self, now: Instant) {
+        if let Phase::Flying { home, .. } = &mut self.phase {
+            *home = true;
+            return;
+        }
         self.leave(now, true);
     }
 
@@ -101,10 +106,15 @@ impl Flight {
         let phase = self.phase;
         match phase {
             Phase::Hidden => None,
-            Phase::Flying { from, to, start } => {
+            Phase::Flying { from, to, start, home } => {
                 let t = secs(start, FLIGHT);
                 if t >= 1.0 {
-                    self.phase = Phase::Settled { at: to, since: start + motion::scaled(FLIGHT) };
+                    let landed = start + motion::scaled(FLIGHT);
+                    self.phase = if home {
+                        Phase::Leaving { at: to, start: landed, alpha: 1.0, grow: true }
+                    } else {
+                        Phase::Settled { at: to, since: landed }
+                    };
                     return self.sprite(now);
                 }
                 Some(Sprite { at: arc_point(from, to, ease(motion::easing::ENTER, t)), alpha: 1.0, radius: 1.0 })
@@ -296,6 +306,19 @@ mod tests {
         g.fade(t0 + FLIGHT / 2);
         let s = g.sprite(t0 + FLIGHT / 2 + ms(1)).unwrap();
         assert_eq!((s.at, s.radius), (mid_air, 1.0), "fades where it is, without growing");
+    }
+
+    #[test]
+    fn words_landing_mid_flight_still_fly_home_first() {
+        let t0 = Instant::now();
+        let mut f = Flight::new(false);
+        f.launch(PILL, CARET, t0);
+        f.dissolve(t0 + FLIGHT / 3);
+        let s = f.sprite(t0 + FLIGHT / 2).unwrap();
+        assert!(s.at != CARET && s.alpha == 1.0 && s.radius == 1.0, "keeps flying: {s:?}");
+        let s = f.sprite(t0 + FLIGHT + motion::duration::EXIT / 2).unwrap();
+        assert!(s.at == CARET && s.radius > 1.0 && s.alpha < 1.0, "dissolves at the caret: {s:?}");
+        assert!(f.sprite(t0 + FLIGHT + motion::duration::EXIT + ms(1)).is_none());
     }
 
     #[test]
