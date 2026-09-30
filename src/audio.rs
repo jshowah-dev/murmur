@@ -27,7 +27,7 @@ impl Capture {
         let supported = device.default_input_config().context("default input config")?;
         let config = supported.config();
         let channels = config.channels as usize;
-        let rate = config.sample_rate.0;
+        let rate = config.sample_rate;
         let resampler = if rate != TARGET_RATE {
             Some(
                 LinearResampler::create(rate as i32, TARGET_RATE as i32)
@@ -36,13 +36,17 @@ impl Capture {
         } else {
             None
         };
-        let err_fn = |e| log::error!("audio stream error: {e:?}");
+        // cpal 0.18 reports capture overruns, which come with CPU load and aren't fatal
+        let err_fn = |e: cpal::Error| match e.kind() {
+            cpal::ErrorKind::Xrun => log::warn!("audio overrun (samples dropped)"),
+            _ => log::error!("audio stream error: {e:?}"),
+        };
 
         macro_rules! build {
             ($t:ty, $conv:expr) => {{
                 let tx = tx.clone();
                 device.build_input_stream(
-                    &config,
+                    config,
                     move |data: &[$t], _: &cpal::InputCallbackInfo| {
                         if data.is_empty() {
                             return;
