@@ -79,6 +79,10 @@ struct Look {
     hover: f32,
     /// 0 = resting size, 1 = live size
     grow: f32,
+    /// the voice, smoothed: 0..=1
+    level: f32,
+    /// seconds of ribbon drift; only advances while there's voice
+    phase: f32,
 }
 
 /// Linear progress after `dt`: toward 1 over `up` while `on`, back toward 0 over `down`
@@ -90,6 +94,36 @@ fn step(p: f32, on: bool, dt: Duration, up: Duration, down: Duration, reduced: b
     let d = motion::scaled(if on { up } else { down });
     let delta = dt.as_secs_f32() / d.as_secs_f32();
     if on { (p + delta).min(1.0) } else { (p - delta).max(0.0) }
+}
+
+/// How fast the ribbon answers the voice. Deliberately quicker than any kit token: the
+/// material is breath, and a meter that lags your voice feels deaf. Logged in the kit ledger.
+const VOICE_RISE: Duration = Duration::from_millis(40);
+
+/// The smoothed level one frame on: rises toward `target` over VOICE_RISE, falls at a steady
+/// pace over the fill token. Reduced motion follows the voice exactly.
+fn follow(level: f32, target: f32, dt: Duration, reduced: bool) -> f32 {
+    if reduced {
+        return target;
+    }
+    if target > level {
+        level + (target - level) * (dt.as_secs_f32() / motion::scaled(VOICE_RISE).as_secs_f32()).min(1.0)
+    } else {
+        (level - dt.as_secs_f32() / motion::scaled(motion::duration::FILL).as_secs_f32()).max(target)
+    }
+}
+
+/// Seven soft blobs across `span` that swell with the voice, each slightly out of step with
+/// its neighbours, so it reads as a voice rather than a meter.
+fn ribbon(c: &mut Canvas, x0: f32, span: f32, hf: f32, level: f32, phase: f32, alpha: f32) {
+    const N: usize = 7;
+    let bw = 8.0;
+    let gap = (span - bw).max(0.0) / (N - 1) as f32;
+    for i in 0..N {
+        let wobble = 0.6 + 0.4 * (phase * 7.0 + i as f32 * 0.9).sin();
+        let bh = (4.0 + (hf - 14.0) * level.clamp(0.0, 1.0) * wobble).clamp(4.0, hf - 8.0);
+        c.capsule(x0 + i as f32 * gap, hf / 2.0 - bh / 2.0, bw, bh, 0x60D060, alpha);
+    }
 }
 
 /// Pill size for eased growth `g`: the resting size at 0, the live size at 1.
@@ -260,6 +294,15 @@ impl Overlay {
         let mut look = self.look;
         look.hover = step(look.hover, resting && HOVERED.load(Ordering::Relaxed), dt, motion::duration::HOVER, motion::duration::EXIT, self.reduced);
         look.grow = step(look.grow, !resting, dt, motion::duration::ENTER, motion::duration::EXIT, self.reduced);
+        let target = match self.state {
+            OverlayState::Listening(l) | OverlayState::Locked(l) => l.clamp(0.0, 1.0),
+            _ => 0.0,
+        };
+        look.level = follow(look.level, target, dt, self.reduced);
+        // still at silence, so a quiet pill doesn't repaint every frame
+        if look.level > 0.01 && !self.reduced {
+            look.phase = (look.phase + dt.as_secs_f32()) % 1000.0;
+        }
         if look != self.look {
             self.look = look;
             self.paint();
@@ -357,14 +400,13 @@ fn render(state: OverlayState, tick: u32, look: Look) -> (i32, i32, Vec<u32>) {
                 }
             }
         }
-        OverlayState::Listening(level) | OverlayState::Locked(level) => {
+        OverlayState::Listening(_) | OverlayState::Locked(_) => {
             // live content arrives late in the growth, once there's room for it
             let show = grow * grow;
             let locked = matches!(state, OverlayState::Locked(_));
             // the locked bar stops short of the dot at the right end
             let span = (if locked { wf - 58.0 } else { wf - 40.0 }).max(0.0);
-            let bar_w = (span * level.clamp(0.0, 1.0)).max(6.0);
-            c.capsule(20.0, hf / 2.0 - 3.0, bar_w, 6.0, 0x60D060, show);
+            ribbon(&mut c, 20.0, span, hf, look.level, look.phase, show);
             if locked {
                 let d = 10.0;
                 c.capsule(wf - 20.0 - d, hf / 2.0 - d / 2.0, d, d, 0xE04040, show);
@@ -413,6 +455,43 @@ mod tests {
         let back = step(mid, false, x / 4, e, x, false);
         assert!((back - 0.25).abs() < 1e-3, "{back}");
         assert_eq!(step(0.2, true, Duration::from_millis(1), e, x, true), 1.0, "reduced motion snaps");
+    }
+
+    #[test]
+    fn voice_level_rises_fast_and_falls_slowly() {
+        let ms = |n: u64| Duration::from_millis(n);
+        assert_eq!(follow(0.0, 1.0, VOICE_RISE, false), 1.0);
+        let half = follow(0.0, 1.0, VOICE_RISE / 2, false);
+        assert!((half - 0.5).abs() < 1e-3, "{half}");
+        let fall = follow(1.0, 0.0, motion::duration::FILL / 2, false);
+        assert!((fall - 0.5).abs() < 1e-3, "{fall}");
+        assert_eq!(follow(0.6, 0.2, ms(1), true), 0.2, "reduced motion follows the voice exactly");
+        assert_eq!(follow(0.3, 0.3, ms(15), false), 0.3);
+    }
+
+    #[test]
+    fn ribbon_swells_with_the_voice_and_stays_inside() {
+        let quiet = Look { grow: 1.0, level: 0.0, ..Default::default() };
+        let loud = Look { grow: 1.0, level: 1.0, ..Default::default() };
+        let (w, h, px_q) = render(OverlayState::Listening(0.0), 0, quiet);
+        let (_, _, px_l) = render(OverlayState::Listening(1.0), 0, loud);
+        let green = |p: u32| (p >> 8) & 0xFF;
+        // first blob's column, 7 px above the middle: body when quiet, ribbon when loud
+        let at = |y: i32| (y * w + 24) as usize;
+        assert!(green(px_l[at(h / 2 - 7)]) > green(px_q[at(h / 2 - 7)]) + 0x40);
+        // never touches the top or bottom 3 rows
+        for x in 0..w {
+            for y in [0, 1, 2, h - 3, h - 2, h - 1] {
+                assert!(green(px_l[(y * w + x) as usize]) < 0x40, "ribbon at ({x},{y})");
+            }
+        }
+    }
+
+    #[test]
+    fn locked_ribbon_leaves_the_red_dot_alone() {
+        let (w, h, px) = render(OverlayState::Locked(1.0), 0, Look { grow: 1.0, level: 1.0, ..Default::default() });
+        let p = px[((h / 2) * w + W - 25) as usize];
+        assert!((p >> 16) & 0xFF > (p >> 8) & 0xFF, "red dot overdrawn: {p:08X}");
     }
 
     fn alpha(p: u32) -> u32 {
