@@ -57,6 +57,9 @@ pub struct DictionaryPanel {
     /// The rewrite last shown there, and when it first appeared.
     proof_shown: Option<(String, f64)>,
     reduced_motion: bool,
+    /// Part of every text field's id, bumped when items change position. egui keeps a field's
+    /// undo history under its id, so without this Ctrl+Z could bring back another item's text.
+    fields: u32,
 }
 
 impl DictionaryPanel {
@@ -81,6 +84,7 @@ impl DictionaryPanel {
             proof_at: None,
             proof_shown: None,
             reduced_motion: reduced_motion(),
+            fields: 0,
         };
         p.reload();
         p
@@ -211,6 +215,13 @@ impl DictionaryPanel {
         self.frozen = None;
         self.settle = None;
         self.proof_at = None;
+        self.fields += 1;
+    }
+
+    fn remove_spoken(&mut self, i: usize, k: usize) {
+        self.working[i].spoken.remove(k);
+        self.proof_at = None;
+        self.fields += 1;
     }
 
     /// Selects term `i`. The old term's written field isn't drawn again, so it never reports
@@ -395,6 +406,7 @@ impl DictionaryPanel {
             ui.label(RichText::new(&x.message).size(12.0).color(if x.error { RED } else { AMBER }));
         };
         let focus = self.focus.take();
+        let fields = self.fields;
         let (enter, backspace) = ui.input(|x| (x.key_pressed(Key::Enter), x.key_pressed(Key::Backspace)));
         let now = ui.input(|x| x.time);
         let mut remove_spoken = None;
@@ -405,7 +417,7 @@ impl DictionaryPanel {
         let t = &mut self.working[i];
 
         ui.label(RichText::new("Written as").size(12.0).color(MUTED));
-        let written = ui.add(TextEdit::singleline(&mut t.written).id_salt(("written", i)).desired_width(f32::INFINITY));
+        let written = ui.add(TextEdit::singleline(&mut t.written).id_salt(("written", fields, i)).desired_width(f32::INFINITY));
         if focus == Some(Focus::Written) {
             written.request_focus();
         }
@@ -416,7 +428,7 @@ impl DictionaryPanel {
         ui.horizontal_wrapped(|ui| {
             for (k, s) in t.spoken.iter_mut().enumerate() {
                 let was_empty = s.is_empty();
-                let r = ui.add(TextEdit::singleline(s).id_salt(("spoken", i, k)).desired_width(110.0));
+                let r = ui.add(TextEdit::singleline(s).id_salt(("spoken", fields, i, k)).desired_width(110.0));
                 if focus == Some(Focus::Spoken(k)) {
                     r.request_focus();
                 }
@@ -472,11 +484,11 @@ impl DictionaryPanel {
             self.unfreeze(now);
         }
         if let Some(k) = remove_spoken {
-            self.working[i].spoken.remove(k);
-            self.proof_at = None;
+            self.remove_spoken(i, k);
         }
         if let Some(k) = insert_spoken {
             self.working[i].spoken.insert(k, String::new());
+            self.fields += 1;
         }
         if next_focus.is_some() {
             self.focus = next_focus;
@@ -887,6 +899,48 @@ mod tests {
         assert_eq!(panel.working[2].spoken, vec!["pro number", ""]);
         frame(&ctx, &mut panel, vec![key(Key::Backspace)]);
         assert_eq!(panel.working[2].spoken, vec!["pro number"]);
+    }
+
+    fn undo_key() -> egui::Event {
+        egui::Event::Key { key: Key::Z, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::COMMAND }
+    }
+
+    #[test]
+    fn undo_in_a_field_never_brings_back_a_deleted_terms_text() {
+        let p = temp_file("undo-history", TWO);
+        let mut panel = DictionaryPanel::new(p);
+        let ctx = egui::Context::default();
+        // the written field at index 0 remembers "HAWB" as its first undo point
+        panel.selected = Some(0);
+        panel.focus = Some(Focus::Written);
+        frame(&ctx, &mut panel, vec![]);
+        frame(&ctx, &mut panel, vec![]);
+        panel.delete_selected();
+        // BOL moves up to index 0
+        panel.selected = Some(0);
+        panel.focus = Some(Focus::Written);
+        frame(&ctx, &mut panel, vec![]);
+        frame(&ctx, &mut panel, vec![undo_key()]);
+        assert_eq!(panel.working[0].written, "BOL");
+    }
+
+    #[test]
+    fn undo_in_a_spoken_field_never_brings_back_a_removed_forms_text() {
+        let p = temp_file("undo-spoken", TWO);
+        let mut panel = DictionaryPanel::new(p);
+        panel.working[0].spoken.push("haub".into());
+        let ctx = egui::Context::default();
+        // the spoken field at position 0 remembers "hob" as its first undo point
+        panel.selected = Some(0);
+        panel.focus = Some(Focus::Spoken(0));
+        frame(&ctx, &mut panel, vec![]);
+        frame(&ctx, &mut panel, vec![]);
+        panel.remove_spoken(0, 0);
+        // "haub" moves up to position 0
+        panel.focus = Some(Focus::Spoken(0));
+        frame(&ctx, &mut panel, vec![]);
+        frame(&ctx, &mut panel, vec![undo_key()]);
+        assert_eq!(panel.working[0].spoken, vec!["haub"]);
     }
 
     #[test]

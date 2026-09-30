@@ -52,6 +52,9 @@ pub struct SnippetsPanel {
     /// Scroll the selected row into view on the next draw.
     reveal: bool,
     reduced_motion: bool,
+    /// Part of every text field's id, bumped when items change position. egui keeps a field's
+    /// undo history under its id, so without this Ctrl+Z could bring back another item's text.
+    fields: u32,
 }
 
 impl SnippetsPanel {
@@ -74,6 +77,7 @@ impl SnippetsPanel {
             settle: None,
             reveal: false,
             reduced_motion: reduced_motion(),
+            fields: 0,
         };
         p.reload();
         p
@@ -204,6 +208,7 @@ impl SnippetsPanel {
         self.fresh = None;
         self.frozen = None;
         self.settle = None;
+        self.fields += 1;
     }
 
     /// Selects snippet `i`. The old snippet's trigger field isn't drawn again, so it never
@@ -380,13 +385,14 @@ impl SnippetsPanel {
             ui.label(RichText::new(&x.message).size(12.0).color(if x.error { RED } else { AMBER }));
         };
         let focus = self.focus.take();
+        let fields = self.fields;
         let (enter, now) = ui.input(|x| (x.key_pressed(Key::Enter), x.time));
         let mut delete = false;
         let s = &mut self.working[i];
 
         ui.label(RichText::new("Say").size(12.0).color(MUTED));
         let trigger =
-            ui.add(TextEdit::singleline(&mut s.trigger).id_salt(("trigger", i)).hint_text("e.g. my signature").desired_width(f32::INFINITY));
+            ui.add(TextEdit::singleline(&mut s.trigger).id_salt(("trigger", fields, i)).hint_text("e.g. my signature").desired_width(f32::INFINITY));
         if focus == Some(Focus::Trigger) {
             trigger.request_focus();
         }
@@ -395,7 +401,7 @@ impl SnippetsPanel {
 
         ui.label(RichText::new("Paste").size(12.0).color(MUTED));
         // Tab isn't captured (egui's default), so it moves focus on instead of typing a tab
-        let text = ui.add(TextEdit::multiline(&mut s.text).id_salt(("text", i)).desired_rows(5).desired_width(f32::INFINITY));
+        let text = ui.add(TextEdit::multiline(&mut s.text).id_salt(("text", fields, i)).desired_rows(5).desired_width(f32::INFINITY));
         if focus == Some(Focus::Text) {
             text.request_focus();
         }
@@ -770,6 +776,29 @@ mod tests {
         panel.test = "thanks sig".into();
         let text = frame(&ctx, &mut panel, WINDOW, vec![]);
         assert!(text.iter().any(|(t, _)| t == "→ thanks Best,\nJeff"), "no preview in {text:?}");
+    }
+
+    fn undo_key() -> egui::Event {
+        egui::Event::Key { key: Key::Z, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::COMMAND }
+    }
+
+    #[test]
+    fn undo_in_a_field_never_brings_back_a_deleted_snippets_text() {
+        let p = temp_file("undo-history", TWO);
+        let mut panel = SnippetsPanel::new(p);
+        let ctx = egui::Context::default();
+        // the field at row 0 remembers "my signature" as its first undo point
+        panel.selected = Some(0);
+        panel.focus = Some(Focus::Trigger);
+        frame(&ctx, &mut panel, WINDOW, vec![]);
+        frame(&ctx, &mut panel, WINDOW, vec![]);
+        panel.delete_selected();
+        // "my email" moves up to index 0
+        panel.selected = Some(0);
+        panel.focus = Some(Focus::Trigger);
+        frame(&ctx, &mut panel, WINDOW, vec![]);
+        frame(&ctx, &mut panel, WINDOW, vec![undo_key()]);
+        assert_eq!(panel.working[0].trigger, "my email");
     }
 
     #[test]
