@@ -54,7 +54,7 @@ Murmur lives in the system tray (teal microphone; grey when paused). Right-click
 | Fix last (Left Shift+PTT) | Edit the last dictation |
 | History… | Browse recent dictations |
 | Dictionary… | Add, edit, delete and test dictionary terms |
-| Open snippets | Edit `snippets.toml` |
+| Snippets… | Add, edit, delete and test snippets |
 | Open config folder | Open `%APPDATA%\Murmur` |
 | Start with Windows | Start Murmur when you sign in (on/off) |
 | Quit | Exit Murmur |
@@ -96,7 +96,9 @@ phonetic = true   # also match words that sound alike (default)
 
 ### Snippets
 
-`%APPDATA%\Murmur\snippets.toml`. Say the trigger anywhere in a dictation and the text is pasted exactly as written. Triggers match whole words, ignoring case and punctuation. Changes apply on the next dictation.
+Say a trigger phrase anywhere in a dictation and a saved block of text is pasted instead, exactly as written. Open them from the tray with **Snippets…**: pick one to edit it, **+ New snippet** to add one (**Say** is the trigger, **Paste** is the text), and type or dictate into the test box to see what the snippets do to a phrase. Triggers match whole words, ignoring case and punctuation. Changes apply to the next dictation once you save; dictation keeps working while the window is open.
+
+Snippets live in `%APPDATA%\Murmur\snippets.toml`, which you can also edit by hand:
 
 ```toml
 [[snippet]]
