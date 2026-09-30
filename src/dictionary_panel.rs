@@ -2,6 +2,7 @@
 //! any `egui::Ui`, so a future settings window can host it as a tab.
 
 use crate::correction_ui::{AMBER, GREEN, MUTED, TEXT};
+use crate::editor_kit::{has_comments, open_file, RED};
 use crate::motion;
 use eframe::egui::{
     self, Align, Button, CentralPanel, Frame, Key, Layout, Margin, Modifiers, Panel, RichText, ScrollArea, Sense, TextEdit, TextStyle,
@@ -13,7 +14,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-const RED: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x6C, 0x6C);
 const LIST_W: f32 = 200.0;
 const SOUND_ALIKE_TIP: &str = "Also catch words that sound like this term, e.g. 'haub' for HAWB. \
 For all-caps acronyms only the single-word 'Heard as' forms are used.";
@@ -58,10 +58,6 @@ pub struct DictionaryPanel {
     /// The rewrite last shown there, and when it first appeared.
     proof_shown: Option<(String, f64)>,
     reduced_motion: bool,
-}
-
-fn open_file(p: &Path) {
-    let _ = std::process::Command::new("explorer.exe").arg(p).spawn();
 }
 
 /// Windows' "Show animations in Windows" setting, off meaning reduced motion.
@@ -134,9 +130,7 @@ impl DictionaryPanel {
                 self.working = d.terms;
                 self.stamp = stamp;
                 self.load_error = None;
-                self.has_comments = std::fs::read_to_string(&self.path)
-                    .map(|s| s.lines().any(|l| l.trim_start().starts_with('#')))
-                    .unwrap_or(false);
+                self.has_comments = has_comments(&self.path);
                 self.selected = keep.and_then(|w| self.working.iter().position(|t| t.written == w));
                 self.undo = None;
                 self.banner = None;
@@ -151,6 +145,12 @@ impl DictionaryPanel {
 
     pub fn is_dirty(&self) -> bool {
         self.load_error.is_none() && self.working != self.loaded
+    }
+
+    /// The working copy, for the editor window's tests.
+    #[cfg(test)]
+    pub(crate) fn edit(&mut self) -> &mut Vec<Term> {
+        &mut self.working
     }
 
     fn has_errors(&self) -> bool {

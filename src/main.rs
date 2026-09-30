@@ -9,6 +9,7 @@ mod correction;
 mod correction_ui;
 mod dictionary_editor;
 mod dictionary_panel;
+mod editor_kit;
 mod history_ui;
 mod hotkey;
 mod inject;
@@ -17,6 +18,7 @@ mod motion;
 mod overlay;
 mod pipeline;
 mod setup_ui;
+mod snippets_panel;
 mod tray;
 
 use anyhow::Result;
