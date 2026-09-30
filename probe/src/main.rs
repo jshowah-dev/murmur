@@ -76,7 +76,7 @@ fn main() {
         let c = count.clone();
         let stream = device
             .build_input_stream(
-                &config,
+                config,
                 move |data: &[f32], _| {
                     c.fetch_add(data.len(), Ordering::SeqCst);
                 },
