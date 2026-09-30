@@ -7,7 +7,7 @@ use crate::motion;
 use anyhow::{anyhow, Result};
 use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, RegisterClassW, SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE,
@@ -128,6 +128,31 @@ impl Flight {
     }
 }
 
+/// Where to fly for a caret found after key release: only for the dictation still waiting on
+/// its words (`awaiting` holds its window), and only if that window is still in front.
+pub(crate) fn landing_point(awaiting: Option<isize>, target: isize, foreground: isize, caret: Option<RECT>) -> Option<Pt> {
+    let r = caret?;
+    (awaiting == Some(target) && foreground == target).then(|| (r.left as f32, (r.top + r.bottom) as f32 / 2.0))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Landing {
+    Dissolve,
+    Fade,
+    Pulse,
+    Nothing,
+}
+
+/// How the words land when the pipeline finishes.
+pub(crate) fn on_done(mote_active: bool, has_text: bool, same_window: bool) -> Landing {
+    match (mote_active, has_text) {
+        (true, true) if same_window => Landing::Dissolve,
+        (true, _) => Landing::Fade,
+        (false, true) => Landing::Pulse,
+        (false, false) => Landing::Nothing,
+    }
+}
+
 /// The mote window's side, in physical pixels.
 const S: i32 = 40;
 
@@ -219,6 +244,7 @@ impl Mote {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+    use windows::Win32::Foundation::RECT;
 
     fn ms(n: u64) -> Duration {
         Duration::from_millis(n)
@@ -305,6 +331,26 @@ mod tests {
         let big = render(&Sprite { at: (0.0, 0.0), alpha: 1.0, radius: 1.6 });
         let ring = (S / 2 * S + S / 2 + 9) as usize;
         assert!(big[ring] >> 24 > px[ring] >> 24, "dissolving spreads out");
+    }
+
+    #[test]
+    fn only_a_fresh_caret_in_the_same_window_launches() {
+        let caret = Some(RECT { left: 400, top: 290, right: 401, bottom: 310 });
+        assert_eq!(landing_point(Some(7), 7, 7, caret), Some((400.0, 300.0)));
+        assert_eq!(landing_point(None, 7, 7, caret), None, "after Done or Cancel");
+        assert_eq!(landing_point(Some(8), 7, 7, caret), None, "an older dictation's lookup");
+        assert_eq!(landing_point(Some(7), 7, 9, caret), None, "you switched windows");
+        assert_eq!(landing_point(Some(7), 7, 7, None), None, "no caret");
+    }
+
+    #[test]
+    fn done_picks_how_the_words_land() {
+        assert_eq!(on_done(true, true, true), Landing::Dissolve);
+        assert_eq!(on_done(true, true, false), Landing::Fade);
+        assert_eq!(on_done(true, false, true), Landing::Fade);
+        assert_eq!(on_done(false, true, true), Landing::Pulse);
+        assert_eq!(on_done(false, true, false), Landing::Pulse);
+        assert_eq!(on_done(false, false, true), Landing::Nothing);
     }
 
     #[test]

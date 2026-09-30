@@ -81,6 +81,8 @@ struct Look {
     near_x: f32,
     /// landing pulse progress, 0 = none
     pulse: f32,
+    /// a mote carries the "working" signal, so the processing dots step back
+    quiet: bool,
 }
 
 /// How far out the resting pill notices the cursor.
@@ -307,6 +309,13 @@ impl Overlay {
         }
     }
 
+    pub fn set_quiet(&mut self, quiet: bool) {
+        if self.look.quiet != quiet {
+            self.look.quiet = quiet;
+            self.paint();
+        }
+    }
+
     /// One soft pulse of the resting dot: your words landed.
     pub fn pulse(&mut self) {
         self.pulse_at = Some(Instant::now());
@@ -397,7 +406,7 @@ fn render(state: OverlayState, tick: u32, look: Look) -> (i32, i32, Vec<u32>) {
             let on = (tick / 4) % 3;
             for i in 0..3 {
                 let rgb = if i == on { 0xFFFFFF } else { 0x707070 };
-                c.capsule(wf / 2.0 - 18.0 + i as f32 * 14.0, hf / 2.0 - 3.0, 6.0, 6.0, rgb, show);
+                c.capsule(wf / 2.0 - 18.0 + i as f32 * 14.0, hf / 2.0 - 3.0, 6.0, 6.0, rgb, show * if look.quiet { 0.3 } else { 1.0 });
             }
         }
     }
@@ -513,6 +522,15 @@ mod tests {
         assert!(green(pulse[beside]) > green(calm[beside]) + 0x10, "{:08X} vs {:08X}", pulse[beside], calm[beside]);
         let (_, _, over) = render(OverlayState::Idle, 0, Look { pulse: 0.0, ..Default::default() });
         assert_eq!(over, calm);
+    }
+
+    #[test]
+    fn quiet_dims_the_processing_dots() {
+        let live = Look { grow: 1.0, ..Default::default() };
+        let (w, h, loud) = render(OverlayState::Processing, 0, live);
+        let (_, _, quiet) = render(OverlayState::Processing, 0, Look { quiet: true, ..live });
+        let lit = ((h / 2) * w + w / 2 - 15) as usize;
+        assert!(((quiet[lit] >> 16) & 0xFF) + 0x40 < ((loud[lit] >> 16) & 0xFF));
     }
 
     fn alpha(p: u32) -> u32 {
