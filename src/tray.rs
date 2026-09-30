@@ -13,7 +13,7 @@ pub enum TrayEvent {
     FixLast,
     History,
     EditDictionary,
-    OpenSnippets,
+    EditSnippets,
     OpenConfigDir,
     ToggleAutostart,
     Update,
@@ -66,7 +66,7 @@ impl Tray {
         let fix = MenuItem::new("Fix last (Left Shift+PTT)", true, None);
         let hist = MenuItem::new("History…", true, None);
         let dict = MenuItem::new("Dictionary…", true, None);
-        let snip = MenuItem::new("Open snippets", true, None);
+        let snip = MenuItem::new("Snippets…", true, None);
         let cfg = MenuItem::new("Open config folder", true, None);
         let autostart = CheckMenuItem::new("Start with Windows", true, crate::autostart::is_enabled(), None);
         let about = MenuItem::new("About Murmur", true, None);
@@ -80,7 +80,7 @@ impl Tray {
             (fix.id().clone(), TrayEvent::FixLast),
             (hist.id().clone(), TrayEvent::History),
             (dict.id().clone(), TrayEvent::EditDictionary),
-            (snip.id().clone(), TrayEvent::OpenSnippets),
+            (snip.id().clone(), TrayEvent::EditSnippets),
             (cfg.id().clone(), TrayEvent::OpenConfigDir),
             (autostart.id().clone(), TrayEvent::ToggleAutostart),
             (update.id().clone(), TrayEvent::Update),

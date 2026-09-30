@@ -11,7 +11,7 @@ use eframe::egui::{
 use murmur_lib::dictionary::{file_stamp, Dictionary, SaveOutcome, Stamp, Term};
 use murmur_lib::dictionary_edit::{self as edit, Deleted, Issue};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 const LIST_W: f32 = 200.0;
@@ -595,6 +595,7 @@ impl DictionaryPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn temp_file(name: &str, contents: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("murmur-panel-{name}-{}", std::process::id()));
