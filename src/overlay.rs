@@ -72,23 +72,37 @@ fn more_dots(w: f32, h: f32) -> [(f32, f32); 3] {
     [16.0, 12.0, 8.0].map(|from_right| (w - from_right, h / 2.0))
 }
 
-/// Linear hover progress after `dt`: toward 1 over the hover token while `on`, back toward 0
-/// over the exit token otherwise, from wherever it is. Reduced motion jumps straight there.
-fn step_hover(p: f32, on: bool, dt: Duration, reduced: bool) -> f32 {
+/// Everything besides the state that shapes a frame. Progress values are linear 0..=1 and
+/// eased when drawn.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Look {
+    hover: f32,
+    /// 0 = resting size, 1 = live size
+    grow: f32,
+}
+
+/// Linear progress after `dt`: toward 1 over `up` while `on`, back toward 0 over `down`
+/// otherwise, from wherever it is. Reduced motion jumps straight there.
+fn step(p: f32, on: bool, dt: Duration, up: Duration, down: Duration, reduced: bool) -> f32 {
     if reduced {
         return if on { 1.0 } else { 0.0 };
     }
-    let d = motion::scaled(if on { motion::duration::HOVER } else { motion::duration::EXIT });
+    let d = motion::scaled(if on { up } else { down });
     let delta = dt.as_secs_f32() / d.as_secs_f32();
     if on { (p + delta).min(1.0) } else { (p - delta).max(0.0) }
+}
+
+/// Pill size for eased growth `g`: the resting size at 0, the live size at 1.
+fn size(g: f32) -> (i32, i32) {
+    let lerp = |a: i32, b: i32| (a as f32 + (b - a) as f32 * g).round() as i32;
+    (lerp(IDLE_W, W), lerp(IDLE_H, H))
 }
 
 pub struct Overlay {
     hwnd: HWND,
     state: OverlayState,
     tick: u32,
-    /// linear 0..=1, eased when drawn
-    hover: f32,
+    look: Look,
     stepped_at: Instant,
     reduced: bool,
 }
@@ -139,7 +153,7 @@ impl Overlay {
                 0, 0, W, H,
                 None, None, Some(hinst.into()), None,
             )?;
-            Ok(Overlay { hwnd, state: OverlayState::Idle, tick: 0, hover: 0.0, stepped_at: Instant::now(), reduced: reduced_motion() })
+            Ok(Overlay { hwnd, state: OverlayState::Idle, tick: 0, look: Look::default(), stepped_at: Instant::now(), reduced: reduced_motion() })
         }
     }
 
@@ -158,7 +172,7 @@ impl Overlay {
 
     /// Paint the pill into a 32-bit DIB and push it with UpdateLayeredWindow.
     fn paint(&mut self) {
-        let (w, h, pixels) = render(self.state, self.tick, self.hover);
+        let (w, h, pixels) = render(self.state, self.tick, self.look);
         unsafe {
             let screen = GetDC(None);
             let mem = CreateCompatibleDC(Some(screen));
@@ -215,7 +229,7 @@ impl Overlay {
         if !state.is_resting() {
             // the live pill is click-through, so no leave message will come
             HOVERED.store(false, Ordering::Relaxed);
-            self.hover = 0.0;
+            self.look.hover = 0.0;
         }
         self.tick = self.tick.wrapping_add(1);
         self.paint();
@@ -236,15 +250,18 @@ impl Overlay {
         }
     }
 
-    /// Moves the hover hint one frame toward the cursor's state; repaints only when it changed.
+    /// Steps every per-frame value one frame toward where the state and cursor say it should be;
+    /// repaints only when the look changed.
     pub fn animate(&mut self) {
         let now = Instant::now();
         let dt = now - self.stepped_at;
         self.stepped_at = now;
-        let on = self.state.is_resting() && HOVERED.load(Ordering::Relaxed);
-        let next = step_hover(self.hover, on, dt, self.reduced);
-        if next != self.hover {
-            self.hover = next;
+        let resting = self.state.is_resting();
+        let mut look = self.look;
+        look.hover = step(look.hover, resting && HOVERED.load(Ordering::Relaxed), dt, motion::duration::HOVER, motion::duration::EXIT, self.reduced);
+        look.grow = step(look.grow, !resting, dt, motion::duration::ENTER, motion::duration::EXIT, self.reduced);
+        if look != self.look {
+            self.look = look;
             self.paint();
         }
     }
@@ -313,45 +330,52 @@ impl Canvas {
     }
 }
 
-/// Paint `state` into premultiplied BGRA pixels, row-major, `w * h` long.
-/// `hover` (0..=1, linear) wakes the resting pill: full body opacity plus the "more" dots.
-fn render(state: OverlayState, tick: u32, hover: f32) -> (i32, i32, Vec<u32>) {
-    let (w, h, alpha) = state.geometry();
+/// Paint `state` into premultiplied BGRA pixels, row-major, `w * h` long. The size follows
+/// `look.grow`; `look.hover` wakes the resting pill (full body opacity plus the "more" dots).
+fn render(state: OverlayState, tick: u32, look: Look) -> (i32, i32, Vec<u32>) {
+    let grow = ease(motion::easing::STANDARD, look.grow.clamp(0.0, 1.0));
+    let hover = if state.is_resting() { ease(motion::easing::STANDARD, look.hover.clamp(0.0, 1.0)) } else { 0.0 };
+    let (w, h) = size(grow);
     let mut c = Canvas::new(w, h);
     let (wf, hf) = (w as f32, h as f32);
-    let hover = if state.is_resting() { ease(motion::easing::STANDARD, hover.clamp(0.0, 1.0)) } else { 0.0 };
+    let (_, _, rest_alpha) = OverlayState::Idle.geometry();
     let (_, _, live_alpha) = OverlayState::Processing.geometry();
-    let alpha = alpha as f32 + (live_alpha as f32 - alpha as f32) * hover;
+    let alpha = rest_alpha as f32 + (live_alpha as f32 - rest_alpha as f32) * grow.max(hover);
     // body: dim when resting, near-opaque when live or hovered
     c.capsule(0.0, 0.0, wf, hf, 0x202020, alpha / 255.0);
     match state {
         OverlayState::Idle | OverlayState::Paused => {
+            // shrinking back from live: the dot fades in as the pill settles
+            let fade = 1.0 - grow;
             let rgb = if state == OverlayState::Idle { 0x60D060 } else { 0x808080 };
-            let d = hf - 8.0;
-            c.capsule(wf / 2.0 - d / 2.0, 4.0, d, d, rgb, 1.0);
+            let d = (IDLE_H - 8) as f32;
+            c.capsule(wf / 2.0 - d / 2.0, hf / 2.0 - d / 2.0, d, d, rgb, fade);
             if hover > 0.0 {
                 let r = 1.2;
                 for (x, y) in more_dots(wf, hf) {
-                    c.capsule(x - r, y - r, 2.0 * r, 2.0 * r, 0xE0E0E0, hover);
+                    c.capsule(x - r, y - r, 2.0 * r, 2.0 * r, 0xE0E0E0, hover * fade);
                 }
             }
         }
         OverlayState::Listening(level) | OverlayState::Locked(level) => {
+            // live content arrives late in the growth, once there's room for it
+            let show = grow * grow;
             let locked = matches!(state, OverlayState::Locked(_));
             // the locked bar stops short of the dot at the right end
-            let span = if locked { W - 58 } else { W - 40 } as f32;
+            let span = (if locked { wf - 58.0 } else { wf - 40.0 }).max(0.0);
             let bar_w = (span * level.clamp(0.0, 1.0)).max(6.0);
-            c.capsule(20.0, hf / 2.0 - 3.0, bar_w, 6.0, 0x60D060, 1.0);
+            c.capsule(20.0, hf / 2.0 - 3.0, bar_w, 6.0, 0x60D060, show);
             if locked {
                 let d = 10.0;
-                c.capsule(wf - 20.0 - d, hf / 2.0 - d / 2.0, d, d, 0xE04040, 1.0);
+                c.capsule(wf - 20.0 - d, hf / 2.0 - d / 2.0, d, d, 0xE04040, show);
             }
         }
         OverlayState::Processing => {
+            let show = grow * grow;
             let on = (tick / 4) % 3;
             for i in 0..3 {
                 let rgb = if i == on { 0xFFFFFF } else { 0x707070 };
-                c.capsule(wf / 2.0 - 18.0 + i as f32 * 14.0, hf / 2.0 - 3.0, 6.0, 6.0, rgb, 1.0);
+                c.capsule(wf / 2.0 - 18.0 + i as f32 * 14.0, hf / 2.0 - 3.0, 6.0, 6.0, rgb, show);
             }
         }
     }
@@ -363,13 +387,41 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// Settled look for a state: live states fully grown, resting ones at rest.
+    fn look_for(state: OverlayState) -> Look {
+        Look { grow: if state.is_resting() { 0.0 } else { 1.0 }, ..Default::default() }
+    }
+
+    #[test]
+    fn pill_size_follows_growth() {
+        assert_eq!(size(0.0), (IDLE_W, IDLE_H));
+        assert_eq!(size(1.0), (W, H));
+        let (w, h) = size(0.5);
+        assert!(w > IDLE_W && w < W && h > IDLE_H && h < H, "{w}x{h}");
+        let (w, h, _) = render(OverlayState::Listening(0.0), 0, Look { grow: 0.0, ..Default::default() });
+        assert_eq!((w, h), (IDLE_W, IDLE_H), "a live state starts from the resting size");
+    }
+
+    #[test]
+    fn growth_turns_back_from_where_it_is() {
+        let e = motion::duration::ENTER;
+        let x = motion::duration::EXIT;
+        assert_eq!(step(0.0, true, e, e, x, false), 1.0);
+        let mid = step(0.0, true, e / 2, e, x, false);
+        assert!((mid - 0.5).abs() < 1e-3, "{mid}");
+        // released midway: shrinks from 0.5 at the exit pace, no jump to either end
+        let back = step(mid, false, x / 4, e, x, false);
+        assert!((back - 0.25).abs() < 1e-3, "{back}");
+        assert_eq!(step(0.2, true, Duration::from_millis(1), e, x, true), 1.0, "reduced motion snaps");
+    }
+
     fn alpha(p: u32) -> u32 {
         p >> 24
     }
 
     #[test]
     fn body_is_opaque_inside_and_clear_at_corners() {
-        let (w, _, px) = render(OverlayState::Listening(0.0), 0, 0.0);
+        let (w, _, px) = render(OverlayState::Listening(0.0), 0, look_for(OverlayState::Listening(0.0)));
         assert_eq!(alpha(px[(4 * w + w / 2) as usize]), 0xE6);
         assert_eq!(px[0], 0);
         assert_eq!(px[(w - 1) as usize], 0);
@@ -378,7 +430,7 @@ mod tests {
     #[test]
     fn rim_is_antialiased() {
         for state in [OverlayState::Idle, OverlayState::Listening(0.0)] {
-            let (_, _, px) = render(state, 0, 0.0);
+            let (_, _, px) = render(state, 0, look_for(state));
             let (_, _, body) = state.geometry();
             assert!(px.iter().any(|&p| alpha(p) > 0 && alpha(p) < body), "{state:?} has no partial rim pixels");
         }
@@ -387,7 +439,7 @@ mod tests {
     #[test]
     fn pixels_are_premultiplied() {
         for state in [OverlayState::Idle, OverlayState::Paused, OverlayState::Listening(0.7), OverlayState::Locked(0.4), OverlayState::Processing] {
-            let (_, _, px) = render(state, 0, 0.0);
+            let (_, _, px) = render(state, 0, look_for(state));
             for p in px {
                 let a = alpha(p);
                 assert!((p >> 16) & 0xFF <= a && (p >> 8) & 0xFF <= a && p & 0xFF <= a, "{state:?}: {p:08X}");
@@ -397,8 +449,8 @@ mod tests {
 
     #[test]
     fn hovered_pill_brightens_and_shows_more_dots() {
-        let (w, h, rest) = render(OverlayState::Idle, 0, 0.0);
-        let (_, _, hover) = render(OverlayState::Idle, 0, 1.0);
+        let (w, h, rest) = render(OverlayState::Idle, 0, look_for(OverlayState::Idle));
+        let (_, _, hover) = render(OverlayState::Idle, 0, Look { hover: 1.0, ..Default::default() });
         let at = |x: f32| ((h / 2) * w + x as i32) as usize;
         // body between the green dot and the "more" dots
         assert_eq!(alpha(rest[at(w as f32 / 2.0 - 8.0)]), 0x80);
@@ -412,15 +464,15 @@ mod tests {
     #[test]
     fn hover_eases_in_and_out_and_can_turn_back() {
         let ms = |n: u64| Duration::from_millis(n);
-        assert_eq!(step_hover(0.0, true, motion::duration::HOVER, false), 1.0);
-        assert_eq!(step_hover(1.0, false, motion::duration::EXIT, false), 0.0);
-        let half = step_hover(0.0, true, motion::duration::HOVER / 2, false);
+        assert_eq!(step(0.0, true, motion::duration::HOVER, motion::duration::HOVER, motion::duration::EXIT, false), 1.0);
+        assert_eq!(step(1.0, false, motion::duration::EXIT, motion::duration::HOVER, motion::duration::EXIT, false), 0.0);
+        let half = step(0.0, true, motion::duration::HOVER / 2, motion::duration::HOVER, motion::duration::EXIT, false);
         assert!((half - 0.5).abs() < 1e-3, "{half}");
         // leaving midway heads back from where it is, at the exit pace
-        let back = step_hover(half, false, ms(50), false);
+        let back = step(half, false, ms(50), motion::duration::HOVER, motion::duration::EXIT, false);
         assert!((back - 0.0).abs() < 1e-3, "{back}");
-        assert_eq!(step_hover(0.0, true, ms(1), true), 1.0, "reduced motion jumps");
-        assert_eq!(step_hover(1.0, false, ms(1), true), 0.0);
+        assert_eq!(step(0.0, true, ms(1), motion::duration::HOVER, motion::duration::EXIT, true), 1.0, "reduced motion jumps");
+        assert_eq!(step(1.0, false, ms(1), motion::duration::HOVER, motion::duration::EXIT, true), 0.0);
     }
 
     #[test]
@@ -438,10 +490,10 @@ mod tests {
 
     #[test]
     fn locked_dot_is_red_and_idle_dot_is_green() {
-        let (w, h, px) = render(OverlayState::Locked(0.0), 0, 0.0);
+        let (w, h, px) = render(OverlayState::Locked(0.0), 0, look_for(OverlayState::Locked(0.0)));
         let p = px[((h / 2) * w + W - 25) as usize];
         assert!((p >> 16) & 0xFF > p & 0xFF, "locked dot not red: {p:08X}");
-        let (w, h, px) = render(OverlayState::Idle, 0, 0.0);
+        let (w, h, px) = render(OverlayState::Idle, 0, look_for(OverlayState::Idle));
         let p = px[((h / 2) * w + w / 2) as usize];
         assert!((p >> 8) & 0xFF > (p >> 16) & 0xFF, "idle dot not green: {p:08X}");
     }
