@@ -10,8 +10,9 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::Foundation::GetLastError;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow, GetWindowRect, PeekMessageW, RegisterClassW,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, UpdateLayeredWindow, GWL_EXSTYLE, HWND_TOPMOST, MSG,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow, GetWindowRect, LoadCursorW, PeekMessageW,
+    RegisterClassW, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, UpdateLayeredWindow, GWL_EXSTYLE,
+    HWND_TOPMOST, IDC_ARROW, MSG,
     PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE, ULW_ALPHA, WINDOW_EX_STYLE, WM_QUIT,
     WM_MOUSEMOVE, WM_RBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
@@ -121,6 +122,8 @@ impl Overlay {
             let class = wide("MurmurOverlay");
             let wc = WNDCLASSW {
                 lpfnWndProc: Some(wndproc),
+                // without a class cursor the pill shows the thread's initial wait cursor
+                hCursor: LoadCursorW(None, IDC_ARROW)?,
                 hInstance: hinst.into(),
                 lpszClassName: PCWSTR(class.as_ptr()),
                 ..Default::default()
