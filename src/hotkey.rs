@@ -1,4 +1,6 @@
 use crossbeam_channel::Sender;
+use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::Arc;
 use std::thread::{self, sleep, JoinHandle};
 use std::time::{Duration, Instant};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_ESCAPE, VK_LSHIFT, VK_RSHIFT, VK_SHIFT};
@@ -135,7 +137,7 @@ impl Machine {
     }
 }
 
-fn down(vk: u16) -> bool {
+pub(crate) fn down(vk: u16) -> bool {
     unsafe { (GetAsyncKeyState(vk as i32) as u16 & 0x8000) != 0 }
 }
 
@@ -143,13 +145,23 @@ fn shift_down() -> bool {
     down(VK_SHIFT.0) || down(VK_LSHIFT.0) || down(VK_RSHIFT.0)
 }
 
-pub fn spawn(ptt_vk: u16, max: Duration, tx: Sender<HotkeyEvent>) -> JoinHandle<()> {
+/// Whether the PTT key is held. A key of 0 is no key: the thread isn't listening for one.
+fn ptt_down(ptt_vk: &AtomicU16) -> bool {
+    match ptt_vk.load(Ordering::Relaxed) {
+        0 => false,
+        vk => down(vk),
+    }
+}
+
+/// `ptt_vk` is read on every poll, so storing another key (or 0, to stop listening) takes effect
+/// at once.
+pub fn spawn(ptt_vk: Arc<AtomicU16>, max: Duration, tx: Sender<HotkeyEvent>) -> JoinHandle<()> {
     thread::Builder::new()
         .name("hotkey".into())
         .spawn(move || {
             let mut m = Machine::new(max);
             loop {
-                let input = Input { ptt: down(ptt_vk), shift: shift_down(), esc: down(VK_ESCAPE.0) };
+                let input = Input { ptt: ptt_down(&ptt_vk), shift: shift_down(), esc: down(VK_ESCAPE.0) };
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| m.step(input, Instant::now()))) {
                     Ok(evs) => {
                         for ev in evs {
@@ -185,6 +197,11 @@ mod tests {
             .iter()
             .flat_map(|&(ms, ptt, shift, esc)| m.step(Input { ptt, shift, esc }, t0 + Duration::from_millis(ms)))
             .collect()
+    }
+
+    #[test]
+    fn no_key_set_is_never_down() {
+        assert!(!ptt_down(&AtomicU16::new(0)));
     }
 
     #[test]
