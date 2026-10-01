@@ -13,6 +13,7 @@ mod editor;
 mod editor_kit;
 mod history_ui;
 mod hotkey;
+mod hotkey_ui;
 mod inject;
 #[allow(dead_code)] // generated tokens; not all are used yet
 mod motion;
@@ -32,6 +33,7 @@ use hotkey::HotkeyEvent;
 use mote::{landing_point, on_done, Landing, Mote};
 use overlay::{Overlay, OverlayState};
 use pipeline::{PipelineCmd, PipelineMsg};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -205,7 +207,9 @@ fn main() -> Result<()> {
     let (msg_tx, msg_rx) = unbounded::<PipelineMsg>();
     let (audio_tx, audio_rx) = unbounded::<Vec<f32>>();
 
-    hotkey::spawn(cfg.ptt_vk(), cfg.hands_free_max(), hk_tx);
+    // shared with the hotkey thread, so the picker can change the key while Murmur runs
+    let ptt_vk = Arc::new(AtomicU16::new(cfg.ptt_vk()));
+    hotkey::spawn(ptt_vk.clone(), cfg.hands_free_max(), hk_tx);
     pipeline::spawn(cfg.clone(), dict.clone(), cmd_rx, msg_tx);
 
     let mut overlay = Overlay::create()?;
@@ -214,7 +218,7 @@ fn main() -> Result<()> {
     let (caret_tx, caret_rx) = unbounded::<(isize, Option<RECT>)>();
     // the window a finished dictation's words will land in, until they do
     let mut awaiting: Option<isize> = None;
-    let tray = Tray::create()?;
+    let tray = Tray::create(&cfg.ptt_key_label())?;
     let (up_tx, up_rx) = unbounded::<UpdateMsg>();
     let checker_tx = up_tx.clone();
     update::spawn_checker(move |r| {
@@ -314,6 +318,22 @@ fn main() -> Result<()> {
                 }
                 TrayEvent::EditDictionary => open_editor(&tray, editor::Tab::Dictionary),
                 TrayEvent::EditSnippets => open_editor(&tray, editor::Tab::Snippets),
+                TrayEvent::PttKey => {
+                    // not listening while the window is open: pressing the current key there mustn't dictate
+                    ptt_vk.store(0, Ordering::Relaxed);
+                    let picked = hotkey_ui::show(cfg.ptt_vk());
+                    if let Some(name) = picked.and_then(config::ptt_name_of) {
+                        log::info!("ptt key: {} -> {name}", cfg.ptt_key);
+                        if let Err(e) = config::save_ptt_key(&name) {
+                            log::error!("save ptt key: {e:#}");
+                            tray.notify("Murmur", &format!("Couldn't save the push-to-talk key, so it lasts until Murmur restarts: {e}"));
+                        }
+                        cfg.ptt_key = name;
+                        tray.set_ptt_label(&cfg.ptt_key_label());
+                    }
+                    ptt_vk.store(cfg.ptt_vk(), Ordering::Relaxed);
+                    while hk_rx.try_recv().is_ok() {}
+                }
                 TrayEvent::OpenConfigDir => open_path(&config::config_dir()),
                 TrayEvent::ToggleAutostart => {
                     // the registry, not the menu's own check state, says what's on

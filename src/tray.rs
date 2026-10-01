@@ -15,6 +15,7 @@ pub enum TrayEvent {
     History,
     EditDictionary,
     EditSnippets,
+    PttKey,
     OpenConfigDir,
     ToggleAutostart,
     Update,
@@ -27,16 +28,17 @@ pub struct Tray {
     _icon: TrayIcon,
     menu: Menu,
     pause: MenuItem,
+    ptt: MenuItem,
     autostart: CheckMenuItem,
     update: MenuItem,
     model: MenuItem,
     /// whether (model, update) are in the menu
     shown: Cell<(bool, bool)>,
-    ids: [(MenuId, TrayEvent); 11],
+    ids: [(MenuId, TrayEvent); 12],
 }
 
 /// Menu position of "About Murmur" before any optional item is added.
-const ABOUT_AT: usize = 9;
+const ABOUT_AT: usize = 10;
 
 /// Where the model and update items go when shown: above About, model first.
 fn extras_positions(model: bool, update: bool) -> (Option<usize>, Option<usize>) {
@@ -61,13 +63,14 @@ fn icon(paused: bool) -> Icon {
 }
 
 impl Tray {
-    pub fn create() -> Result<Tray> {
+    pub fn create(ptt_label: &str) -> Result<Tray> {
         let menu = Menu::new();
         let pause = MenuItem::new("Pause", true, None);
         let fix = MenuItem::new("Fix last (Left Shift+PTT)", true, None);
         let hist = MenuItem::new("History…", true, None);
         let dict = MenuItem::new("Dictionary…", true, None);
         let snip = MenuItem::new("Snippets…", true, None);
+        let ptt = MenuItem::new(ptt_item_label(ptt_label), true, None);
         let cfg = MenuItem::new("Open config folder", true, None);
         let autostart = CheckMenuItem::new("Start with Windows", true, crate::autostart::is_enabled(), None);
         let about = MenuItem::new("About Murmur", true, None);
@@ -75,13 +78,14 @@ impl Tray {
         // not in the menu until there's something to offer
         let update = MenuItem::new("Update", true, None);
         let model = MenuItem::new("Download new speech model", true, None);
-        menu.append_items(&[&pause, &fix, &hist, &PredefinedMenuItem::separator(), &dict, &snip, &cfg, &autostart, &PredefinedMenuItem::separator(), &about, &quit])?;
+        menu.append_items(&[&pause, &fix, &hist, &PredefinedMenuItem::separator(), &dict, &snip, &ptt, &cfg, &autostart, &PredefinedMenuItem::separator(), &about, &quit])?;
         let ids = [
             (pause.id().clone(), TrayEvent::TogglePause),
             (fix.id().clone(), TrayEvent::FixLast),
             (hist.id().clone(), TrayEvent::History),
             (dict.id().clone(), TrayEvent::EditDictionary),
             (snip.id().clone(), TrayEvent::EditSnippets),
+            (ptt.id().clone(), TrayEvent::PttKey),
             (cfg.id().clone(), TrayEvent::OpenConfigDir),
             (autostart.id().clone(), TrayEvent::ToggleAutostart),
             (update.id().clone(), TrayEvent::Update),
@@ -90,7 +94,7 @@ impl Tray {
             (quit.id().clone(), TrayEvent::Quit),
         ];
         let _icon = TrayIconBuilder::new().with_menu(Box::new(menu.clone())).with_tooltip("Murmur").with_icon(icon(false)).build()?;
-        Ok(Tray { _icon, menu, pause, autostart, update, model, shown: Cell::new((false, false)), ids })
+        Ok(Tray { _icon, menu, pause, ptt, autostart, update, model, shown: Cell::new((false, false)), ids })
     }
 
     pub fn poll(&self) -> Option<TrayEvent> {
@@ -114,6 +118,10 @@ impl Tray {
     pub fn set_paused(&self, paused: bool) {
         self.pause.set_text(if paused { "Resume" } else { "Pause" });
         let _ = self._icon.set_icon(Some(icon(paused)));
+    }
+
+    pub fn set_ptt_label(&self, label: &str) {
+        self.ptt.set_text(ptt_item_label(label));
     }
 
     /// muda flips a CheckMenuItem on click; the caller sets it back from the registry.
@@ -160,6 +168,10 @@ impl Tray {
             let _ = self._icon.set_tooltip(Some(format!("Murmur — {title}: {body}")));
         }
     }
+}
+
+fn ptt_item_label(key: &str) -> String {
+    format!("Push-to-talk key: {key}…")
 }
 
 fn relabel(item: &MenuItem, label: Option<&str>, enabled: bool) -> bool {
@@ -227,10 +239,15 @@ mod tests {
 
     #[test]
     fn optional_items_sit_above_about() {
-        // Pause, Fix last, History, ─, Dictionary, Snippets, Config, Start with Windows, ─, [model], [update], About, Quit
+        // Pause, Fix last, History, ─, Dictionary, Snippets, Push-to-talk key, Config, Start with Windows, ─, [model], [update], About, Quit
         assert_eq!(extras_positions(false, false), (None, None));
-        assert_eq!(extras_positions(false, true), (None, Some(9)));
-        assert_eq!(extras_positions(true, false), (Some(9), None));
-        assert_eq!(extras_positions(true, true), (Some(9), Some(10)));
+        assert_eq!(extras_positions(false, true), (None, Some(10)));
+        assert_eq!(extras_positions(true, false), (Some(10), None));
+        assert_eq!(extras_positions(true, true), (Some(10), Some(11)));
+    }
+
+    #[test]
+    fn the_ptt_item_names_the_current_key() {
+        assert_eq!(ptt_item_label("Right Ctrl"), "Push-to-talk key: Right Ctrl…");
     }
 }

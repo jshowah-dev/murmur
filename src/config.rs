@@ -151,6 +151,94 @@ pub fn expand_env(s: &str) -> String {
     out
 }
 
+const VK_RCONTROL: u16 = 0xA3;
+const VK_RSHIFT: u16 = 0xA1;
+const VK_F1: u16 = 0x70;
+
+/// (config name, virtual-key code, label) of the PTT keys that aren't function keys. None of them
+/// types anything: the key is watched, not swallowed, so it still reaches the app in front.
+const PTT_KEYS: [(&str, u16, &str); 8] = [
+    ("RControl", VK_RCONTROL, "Right Ctrl"),
+    ("LControl", 0xA2, "Left Ctrl"),
+    ("RAlt", 0xA5, "Right Alt"),
+    ("LAlt", 0xA4, "Left Alt"),
+    ("RShift", VK_RSHIFT, "Right Shift"),
+    ("CapsLock", 0x14, "Caps Lock"),
+    ("ScrollLock", 0x91, "Scroll Lock"),
+    ("Pause", 0x13, "Pause"),
+];
+
+/// Other spellings config.toml accepts.
+const PTT_ALIASES: [(&str, &str); 4] = [("RCtrl", "RControl"), ("LCtrl", "LControl"), ("RMenu", "RAlt"), ("LMenu", "LAlt")];
+
+/// Virtual-key code for a PTT key name from config.toml, any case; F1 to F24 included.
+pub fn ptt_vk_of(name: &str) -> Option<u16> {
+    let name = PTT_ALIASES.iter().find(|(a, _)| a.eq_ignore_ascii_case(name)).map_or(name, |(_, n)| n);
+    if let Some((_, vk, _)) = PTT_KEYS.iter().find(|(n, _, _)| n.eq_ignore_ascii_case(name)) {
+        return Some(*vk);
+    }
+    let n: u16 = name.strip_prefix(['f', 'F'])?.parse().ok()?;
+    (1..=24).contains(&n).then(|| VK_F1 + n - 1)
+}
+
+/// The name config.toml stores for a PTT key.
+pub fn ptt_name_of(vk: u16) -> Option<String> {
+    ptt_key_of(vk).map(|(name, _)| name)
+}
+
+/// A PTT key as a person would name it ("Right Ctrl").
+pub fn ptt_label_of(vk: u16) -> Option<String> {
+    ptt_key_of(vk).map(|(_, label)| label)
+}
+
+fn ptt_key_of(vk: u16) -> Option<(String, String)> {
+    if let Some((name, _, label)) = PTT_KEYS.iter().find(|(_, v, _)| *v == vk) {
+        return Some((name.to_string(), label.to_string()));
+    }
+    (VK_F1..VK_F1 + 24).contains(&vk).then(|| {
+        let f = format!("F{}", vk - VK_F1 + 1);
+        (f.clone(), f)
+    })
+}
+
+/// The keys the picker offers. Right Shift isn't one: Shift with the PTT key means fix-last, so
+/// it could never start a dictation.
+pub fn pickable_vks() -> Vec<u16> {
+    PTT_KEYS.iter().map(|(_, vk, _)| *vk).filter(|vk| *vk != VK_RSHIFT).chain(VK_F1..VK_F1 + 24).collect()
+}
+
+/// `text` (a config.toml) with its `ptt_key` set to `name`. Only that line changes, and it keeps
+/// its trailing comment; a file without the line gets it at the top.
+pub fn set_ptt_key_line(text: &str, name: &str) -> String {
+    let set = format!("ptt_key = \"{name}\"");
+    let mut out = String::with_capacity(text.len() + set.len() + 1);
+    let mut done = false;
+    let mut in_table = false;
+    for line in text.split_inclusive('\n') {
+        in_table |= line.trim_start().starts_with('[');
+        let value = line.trim_start().strip_prefix("ptt_key").map(str::trim_start).and_then(|r| r.strip_prefix('='));
+        match value {
+            Some(value) if !done && !in_table => {
+                let value = value.trim_start();
+                // what follows the quoted value: a comment, the line ending
+                let tail = value.chars().next().filter(|q| matches!(q, '"' | '\'')).and_then(|q| value[1..].find(q).map(|end| &value[end + 2..]));
+                out.push_str(&set);
+                out.push_str(tail.unwrap_or(&line[line.trim_end_matches(['\r', '\n']).len()..]));
+                done = true;
+            }
+            _ => out.push_str(line),
+        }
+    }
+    if done { out } else { format!("{set}\n{out}") }
+}
+
+/// Stores `name` as the PTT key in config.toml, leaving the rest of the file as it was written.
+pub fn save_ptt_key(name: &str) -> Result<()> {
+    let path = config_dir().join("config.toml");
+    let text = if path.exists() { std::fs::read_to_string(&path).context("read config.toml")? } else { String::new() };
+    write_with_backup(&path, &set_ptt_key_line(&text, name))
+}
+
 impl Config {
     pub fn load_or_create() -> Result<Config> {
         let dir = config_dir();
@@ -177,37 +265,14 @@ impl Config {
             .unwrap_or_else(|| PathBuf::from("silero_vad.onnx"))
     }
 
-    /// Virtual-key code for the configured PTT key.
+    /// Virtual-key code for the configured PTT key; an unknown name means Right Ctrl.
     pub fn ptt_vk(&self) -> u16 {
-        match self.ptt_key.to_ascii_lowercase().as_str() {
-            "rcontrol" | "rctrl" => 0xA3,
-            "lcontrol" | "lctrl" => 0xA2,
-            "ralt" | "rmenu" => 0xA5,
-            "lalt" | "lmenu" => 0xA4,
-            "rshift" => 0xA1,
-            "capslock" => 0x14,
-            "scrolllock" => 0x91,
-            "pause" => 0x13,
-            k if k.starts_with('f') && k[1..].parse::<u16>().map(|n| (1..=24).contains(&n)).unwrap_or(false) => {
-                0x70 + k[1..].parse::<u16>().unwrap() - 1
-            }
-            _ => 0xA3,
-        }
+        ptt_vk_of(&self.ptt_key).unwrap_or(VK_RCONTROL)
     }
 
     /// The PTT key as a person would name it ("Right Ctrl"), for on-screen instructions.
     pub fn ptt_key_label(&self) -> String {
-        match self.ptt_vk() {
-            0xA2 => "Left Ctrl".into(),
-            0xA5 => "Right Alt".into(),
-            0xA4 => "Left Alt".into(),
-            0xA1 => "Right Shift".into(),
-            0x14 => "Caps Lock".into(),
-            0x91 => "Scroll Lock".into(),
-            0x13 => "Pause".into(),
-            vk @ 0x70..=0x87 => format!("F{}", vk - 0x70 + 1),
-            _ => "Right Ctrl".into(),
-        }
+        ptt_label_of(self.ptt_vk()).unwrap_or_default()
     }
 
     /// Length cap for a hands-free recording; at least one minute.
@@ -291,6 +356,64 @@ mod tests {
         // an unknown name falls back to Right Ctrl, the same key ptt_vk falls back to
         c.ptt_key = "nonsense".into();
         assert_eq!(c.ptt_key_label(), "Right Ctrl");
+    }
+
+    #[test]
+    fn key_names_vks_and_labels_agree() {
+        for (name, vk, label) in [
+            ("RControl", 0xA3, "Right Ctrl"),
+            ("LAlt", 0xA4, "Left Alt"),
+            ("Pause", 0x13, "Pause"),
+            ("F1", 0x70, "F1"),
+            ("F13", 0x7C, "F13"),
+            ("F24", 0x87, "F24"),
+        ] {
+            assert_eq!(ptt_vk_of(name), Some(vk), "{name}");
+            assert_eq!(ptt_name_of(vk).as_deref(), Some(name));
+            assert_eq!(ptt_label_of(vk).as_deref(), Some(label));
+        }
+        assert_eq!(ptt_vk_of("rctrl"), Some(0xA3));
+        assert_eq!(ptt_vk_of("LMENU"), Some(0xA4));
+        for unknown in ["nonsense", "f", "F0", "F25", ""] {
+            assert_eq!(ptt_vk_of(unknown), None, "{unknown}");
+        }
+        assert_eq!(ptt_name_of(0x41), None);
+    }
+
+    #[test]
+    fn right_shift_parses_but_cannot_be_picked() {
+        assert_eq!(ptt_vk_of("RShift"), Some(0xA1));
+        let vks = pickable_vks();
+        assert!(!vks.contains(&0xA1));
+        assert_eq!(vks.len(), 7 + 24);
+        for vk in vks {
+            let name = ptt_name_of(vk).expect("a pickable key has a config name");
+            assert_eq!(ptt_vk_of(&name), Some(vk));
+        }
+    }
+
+    #[test]
+    fn setting_the_key_changes_only_its_line() {
+        let before = "# my notes\r\nptt_key = \"RControl\"  # the talk key\r\nthreads = 4\r\n# ptt_key = \"F13\"\r\n";
+        let after = "# my notes\r\nptt_key = \"F13\"  # the talk key\r\nthreads = 4\r\n# ptt_key = \"F13\"\r\n";
+        assert_eq!(set_ptt_key_line(before, "F13"), after);
+        assert_eq!(set_ptt_key_line("ptt_key='CapsLock'", "LAlt"), "ptt_key = \"LAlt\"");
+    }
+
+    #[test]
+    fn setting_the_key_adds_a_missing_line_at_the_top() {
+        assert_eq!(set_ptt_key_line("threads = 4\n", "F13"), "ptt_key = \"F13\"\nthreads = 4\n");
+        assert_eq!(set_ptt_key_line("", "F13"), "ptt_key = \"F13\"\n");
+        // another key that merely starts the same is not the setting
+        assert_eq!(set_ptt_key_line("ptt_key_old = 1\n", "F13"), "ptt_key = \"F13\"\nptt_key_old = 1\n");
+    }
+
+    #[test]
+    fn the_rewritten_file_still_parses_to_the_new_key() {
+        let text = set_ptt_key_line(&toml::to_string_pretty(&Config::default()).unwrap(), "CapsLock");
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.ptt_key, "CapsLock");
+        assert_eq!(back.threads, 8);
     }
 
     const OLD: &str = "%LOCALAPPDATA%\\Murmur\\models\\old-model";
