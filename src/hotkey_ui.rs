@@ -62,38 +62,15 @@ struct PickerApp {
     hwnd: HWND,
     frame: u32,
     was_focused: bool,
+    /// Set once the window has been asked to close. It's drawn a few more times before it goes:
+    /// those frames must show the same card, or it blinks out and back.
+    closing: bool,
     height: f32,
 }
 
-impl eframe::App for PickerApp {
-    fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] {
-        [0.0; 4]
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
-        self.frame += 1;
-        if self.frame == 2 {
-            // same as History: take focus once shown, then re-pin topmost
-            unsafe {
-                crate::correction::bring_to_front(self.hwnd);
-                let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            }
-        }
-        // Esc or clicking another window closes it
-        let focused = ctx.input(|i| i.focused);
-        self.was_focused |= focused;
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) || (self.was_focused && !focused) {
-            ctx.send_viewport_cmd(ViewportCommand::Close);
-            return;
-        }
-        let changed = self.picked.clone().filter(|vks| ptt_name_of(vks) != ptt_name_of(&self.current));
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
-            self.chosen.set(changed);
-            ctx.send_viewport_cmd(ViewportCommand::Close);
-            return;
-        }
-
+impl PickerApp {
+    /// Reads the keyboard for this frame and asks for the next one.
+    fn poll_keys(&mut self, ctx: &egui::Context, focused: bool) {
         // egui can't tell left Ctrl from right or see a modifier on its own, so the keys are polled
         let now: Vec<u16> = self.vks.iter().copied().filter(|vk| focused && down(*vk)).collect();
         let shift = focused && down(VK_SHIFT.0);
@@ -114,6 +91,42 @@ impl eframe::App for PickerApp {
         }
         self.was_shift = shift;
         ctx.request_repaint_after(POLL);
+    }
+}
+
+impl eframe::App for PickerApp {
+    fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] {
+        [0.0; 4]
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        self.frame += 1;
+        if self.frame == 2 {
+            // same as History: take focus once shown, then re-pin topmost
+            unsafe {
+                crate::correction::bring_to_front(self.hwnd);
+                let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
+        }
+        // Esc or clicking another window closes it
+        let focused = ctx.input(|i| i.focused);
+        self.was_focused |= focused;
+        let changed = self.picked.clone().filter(|vks| ptt_name_of(vks) != ptt_name_of(&self.current));
+        if !self.closing {
+            if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) || (self.was_focused && !focused) {
+                self.closing = true;
+            } else if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
+                self.chosen.set(changed.clone());
+                self.closing = true;
+            }
+            if self.closing {
+                ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
+        }
+        if !self.closing {
+            self.poll_keys(&ctx, focused);
+        }
 
         // the keys being held show as they go down; they're kept once let go
         let keys = [self.capture.held(), self.picked.as_deref().unwrap_or(&[]), &self.current];
@@ -190,7 +203,7 @@ pub fn show(current: Vec<u16>) -> Option<Vec<u16>> {
             let hwnd = hwnd_of(cc).unwrap_or_default();
             let mut vks = pickable_vks();
             vks.extend(chord_vks().into_iter().filter(|vk| !pickable_vks().contains(vk)));
-            Ok(Box::new(PickerApp { current, picked: None, refusal: None, vks, capture: Capture::default(), was_shift: true, chosen: app_chosen, hwnd, frame: 0, was_focused: false, height: 0.0 }))
+            Ok(Box::new(PickerApp { current, picked: None, refusal: None, vks, capture: Capture::default(), was_shift: true, chosen: app_chosen, hwnd, frame: 0, was_focused: false, closing: false, height: 0.0 }))
         }),
     );
     if let Err(e) = r {
