@@ -58,7 +58,7 @@ Out of scope: any other context, telling a compose box from a search bar, tone c
 `detect` takes `GetForegroundWindow`, then:
 
 - **exe**: `GetWindowThreadProcessId` → `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` → `QueryFullProcessImageNameW`, file name only.
-- **title**: `GetWindowTextW`.
+- **title**: `GetWindowTextW`, read only when the exe is a browser.
 
 `classify` returns `Email` when either holds, compared without regard to case:
 
@@ -85,11 +85,13 @@ Looks only at the **start** of the dictation.
 
 - The first words are a greeting opener: `hi`, `hello`, `hey`, `dear`, `good morning`, `good afternoon`, `good evening`, `greetings`.
 - A comma directly on the opener ("Hi, Sarah.") is dropped.
-- After the opener come **0 to 3** name words, and the last of them (or the opener itself when there are none) ends in `,` `.` or `!`, or is the last word of the line.
+- After the opener comes a **run** of name words, which stops after a word ending in `.` or `!`.
 - A name word is a capitalised word, or one of `there`, `all`, `everyone`, `everybody`, `team`, `folks`, `both`, `and`. `I` and its contractions (`I'm`, `I'll`, `I've`, `I'd`) are never name words. The full stop of `Mr.` `Mrs.` `Ms.` `Dr.` `Prof.` is part of the word and does not end the greeting.
-- When that holds: that final mark becomes `,`, a blank line follows, and the next word is capitalised.
-- When the words after the opener are not name words but the opener itself carries a comma ("Hi, just checking in."), the greeting is the opener alone.
-- Otherwise the rule does not fire and the text is unchanged.
+- An opener that itself ends in `.` or `!`, or is the whole line, is the greeting on its own.
+- With no name words after it, the opener is the greeting on its own only when it carries a comma ("Hi, just checking in.").
+- A run of more than 3 name words leaves the text unchanged.
+- Otherwise the greeting ends at the last word of the run that ends in `,` `.` or `!`, or is the last word of the line; when there is none, the text is unchanged. Commas between names are kept ("Hi Sarah, Tom,").
+- The greeting's final mark becomes `,`, a blank line follows, and the next word is capitalised.
 
 | In | Out |
 |---|---|
@@ -101,6 +103,9 @@ Looks only at the **start** of the dictation.
 | `Dear Mr. Smith, the report is attached.` | `Dear Mr. Smith,` ⏎⏎ `The report is attached.` |
 | `Hey Jeff can you send the file` | unchanged (no punctuation ends the greeting) |
 | `Hi, I'm Jeff. I'm writing about the invoice.` | `Hi,` ⏎⏎ `I'm Jeff. I'm writing about the invoice.` |
+| `Hi Sarah, Tom, the build is ready.` | `Hi Sarah, Tom,` ⏎⏎ `The build is ready.` |
+| `Hi Sarah, Tom, and Priya, the build is ready.` | unchanged (more than 3 name words) |
+| `Hey, Jeff can you send the file?` | unchanged (nothing ends the greeting) |
 | `Hi Sarah and Tom and Priya and Dev, the build is ready.` | unchanged (more than 3 words) |
 | `The build is ready. Hi Sarah, thanks.` | unchanged (not at the start) |
 
@@ -150,6 +155,7 @@ The window title can hold an email subject or address. It is used for the match 
 - When the recogniser puts no punctuation after the greeting name, the greeting rule does not fire and the output is today's.
 - A browser tab whose title happens to contain a fragment (an article titled "Gmail tips") is treated as email.
 - An elevated mail client, whose exe name cannot be read from a non-elevated Murmur, is treated as `Plain`.
+- Store mail apps that run inside `ApplicationFrameHost.exe` are seen under that name and stay `Plain`; adding their own exe to `email_apps` does not help.
 
 ## Testing
 
