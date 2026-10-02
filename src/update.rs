@@ -10,7 +10,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const RELEASES_PAGE: &str = "https://github.com/jshowah-dev/murmur/releases/latest";
 const LATEST_API: &str = "https://api.github.com/repos/jshowah-dev/murmur/releases/latest";
 const FIRST_CHECK: Duration = Duration::from_secs(60);
-const CHECK_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+// one request an hour is well inside GitHub's 60 an hour for unauthenticated callers
+const CHECK_EVERY: Duration = Duration::from_secs(60 * 60);
 const TICK: Duration = Duration::from_secs(15 * 60);
 
 /// Inno Setup switches for an unattended update. `/RELAUNCH` is ours: `murmur.iss` starts Murmur
@@ -169,12 +170,12 @@ pub fn check() -> Result<Option<Release>, String> {
     check_at(&latest_url(), VERSION)
 }
 
-/// Whether a day has passed since `last` by the wall clock. A clock set back counts as due.
+/// Whether an hour has passed since `last` by the wall clock. A clock set back counts as due.
 pub fn check_due(last: Option<SystemTime>, now: SystemTime) -> bool {
     last.is_none_or(|t| now.duration_since(t).map_or(true, |d| d >= CHECK_EVERY))
 }
 
-/// Checks a minute after launch, then daily, calling `found` for each newer release seen.
+/// Checks a minute after launch, then hourly, calling `found` for each newer release seen.
 /// Failures are only logged: the next check retries.
 pub fn spawn_checker(found: impl Fn(Release) + Send + 'static) {
     std::thread::spawn(move || {
@@ -424,9 +425,10 @@ mod tests {
         let now = SystemTime::now();
         let hours = |h: u64| Duration::from_secs(h * 60 * 60);
         assert!(check_due(None, now));
-        assert!(!check_due(Some(now - hours(23)), now));
-        // a laptop asleep overnight: its thread slept only minutes, but a day has passed
-        assert!(check_due(Some(now - hours(24)), now));
+        assert!(!check_due(Some(now - Duration::from_secs(59 * 60)), now));
+        assert!(check_due(Some(now - hours(1)), now));
+        // a laptop asleep overnight: its thread slept only minutes, but hours have passed
+        assert!(check_due(Some(now - hours(8)), now));
         // the clock went back: check rather than wait for it to catch up
         assert!(check_due(Some(now + hours(1)), now));
     }
