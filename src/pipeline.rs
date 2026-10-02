@@ -1,5 +1,6 @@
 use crate::cleanup;
 use crate::config::Config;
+use crate::context::{self, Profile};
 use crate::dictionary::{self, Dictionary, DictionaryFile};
 use crate::history::Entry;
 use crate::inject;
@@ -149,9 +150,12 @@ impl State {
         if let Some(e) = self.dict_file.refresh(&self.dict) {
             let _ = self.tx.send(PipelineMsg::Error(e));
         }
+        // read now, as the text is about to be pasted: the profile belongs to the window that receives it
+        let profile = if self.cfg.format_by_context { context::detect(&self.cfg) } else { Profile::Plain };
+        log::info!("profile: {}", profile.name());
         let cleaned = {
             let d = self.dict.lock().unwrap_or_else(|e| e.into_inner());
-            cleanup::clean(&raw, &d, &self.snippets.current, &self.cfg)
+            cleanup::clean(&raw, &d, &self.snippets.current, &self.cfg, profile)
         };
         let inject = match inject::paste(&cleaned) {
             Ok(r) => Some(r),

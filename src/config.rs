@@ -22,6 +22,13 @@ pub struct Config {
     pub hands_free_max_minutes: u64,
     /// Also log dictated text (DEBUG level). Off by default for privacy.
     pub debug_log: bool,
+    /// Shape the text for the app it lands in. Only email is recognised: a dictated greeting
+    /// and sign-off get their own lines. false = the same output everywhere.
+    pub format_by_context: bool,
+    /// Exe names treated as email, compared without regard to case.
+    pub email_apps: Vec<String>,
+    /// Window-title fragments treated as email. They count in browsers only.
+    pub email_titles: Vec<String>,
 }
 
 impl Default for Config {
@@ -38,6 +45,9 @@ impl Default for Config {
             mute_output: true,
             hands_free_max_minutes: 5,
             debug_log: false,
+            format_by_context: true,
+            email_apps: ["OUTLOOK.EXE", "olk.exe", "thunderbird.exe"].iter().map(|s| s.to_string()).collect(),
+            email_titles: ["Gmail", "Outlook", "Proton Mail", "Yahoo Mail"].iter().map(|s| s.to_string()).collect(),
         }
     }
 }
@@ -324,6 +334,23 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("murmur-config-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn format_by_context_defaults() {
+        let c = Config::default();
+        assert!(c.format_by_context);
+        assert_eq!(c.email_apps, vec!["OUTLOOK.EXE", "olk.exe", "thunderbird.exe"]);
+        assert_eq!(c.email_titles, vec!["Gmail", "Outlook", "Proton Mail", "Yahoo Mail"]);
+    }
+
+    #[test]
+    fn a_config_written_before_format_by_context_loads_with_its_defaults() {
+        let c: Config = toml::from_str("ptt_key = \"F13\"\ndebug_log = true\n").unwrap();
+        assert_eq!(c.ptt_key, "F13");
+        assert!(c.format_by_context);
+        assert_eq!(c.email_apps, Config::default().email_apps);
+        assert_eq!(c.email_titles, Config::default().email_titles);
     }
 
     #[test]
