@@ -365,10 +365,14 @@ fn main() -> Result<()> {
                 }
                 TrayEvent::About => {
                     let terms = dict.lock().map(|d| d.terms.len()).unwrap_or(0);
-                    if let Some(r) = about_ui::show(about_ui::model_label(&model_dir), terms, installed_copy) {
+                    if let Some((r, clicked)) = about_ui::show(about_ui::model_label(&model_dir), terms, installed_copy) {
                         let tag = r.tag.clone();
-                        offer.available(r);
-                        if start_update(&mut offer, &tray, &up_tx) {
+                        // the hourly check may not have seen it yet: offer it in the tray too, without a balloon
+                        if offer.available(r) {
+                            log::info!("update available: v{tag} (from About)");
+                            tray.set_update(Some(&update_label(&tag, installed_copy)), true);
+                        }
+                        if clicked && start_update(&mut offer, &tray, &up_tx) {
                             // the window is gone and the tray menu is closed: say something's happening
                             tray.notify(&format!("Updating to Murmur v{tag}"), "Murmur restarts when it's installed.");
                         }

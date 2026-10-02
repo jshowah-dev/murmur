@@ -1,5 +1,5 @@
 //! The About window: version (checked against the latest GitHub release while it's open, with a
-//! link that starts the same update as the tray's), what Murmur has learned, and the parts that
+//! link that starts the same update as the tray's; a newer release also goes to the tray menu), what Murmur has learned, and the parts that
 //! do the hearing, with their licenses.
 
 use crate::correction_ui::{hwnd_of, keycap, load_system_font, BG, BORDER, GREEN, MUTED, TEXT};
@@ -79,7 +79,9 @@ struct AboutApp {
     rx: Option<Receiver<Update>>,
     /// The installed copy updates itself; any other copy links to the release page.
     installed: bool,
-    chosen: Rc<Cell<Option<Release>>>,
+    /// The newer release the check found, for the tray to offer once the window is gone.
+    found: Rc<Cell<Option<Release>>>,
+    clicked: Rc<Cell<bool>>,
     hwnd: HWND,
     frame: u32,
     was_focused: bool,
@@ -105,6 +107,9 @@ impl eframe::App for AboutApp {
             }
         }
         if let Some(u) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            if let Update::Available(r) = &u {
+                self.found.set(Some(r.clone()));
+            }
             self.update = u;
             self.rx = None;
         }
@@ -141,7 +146,7 @@ impl eframe::App for AboutApp {
                         }
                         Update::Available(r) if self.installed => {
                             if ui.link(RichText::new(format!("update to v{} →", r.tag)).color(GREEN)).clicked() {
-                                self.chosen.set(Some(r.clone()));
+                                self.clicked.set(true);
                                 ctx.send_viewport_cmd(ViewportCommand::Close);
                             }
                         }
@@ -186,11 +191,12 @@ impl eframe::App for AboutApp {
     }
 }
 
-/// Shows the About window, centred on screen. Blocks until closed, returning the release to update
-/// to if its update link was clicked.
-pub fn show(model: String, terms: usize, installed: bool) -> Option<Release> {
-    let chosen = Rc::new(Cell::new(None));
-    let app_chosen = chosen.clone();
+/// Shows the About window, centred on screen. Blocks until closed, returning the newer release its
+/// check found, if any, and whether its update link was clicked.
+pub fn show(model: String, terms: usize, installed: bool) -> Option<(Release, bool)> {
+    let found = Rc::new(Cell::new(None));
+    let clicked = Rc::new(Cell::new(false));
+    let (app_found, app_clicked) = (found.clone(), clicked.clone());
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Murmur — about")
@@ -210,13 +216,13 @@ pub fn show(model: String, terms: usize, installed: bool) -> Option<Release> {
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
             load_system_font(&cc.egui_ctx);
             let hwnd = hwnd_of(cc).unwrap_or_default();
-            Ok(Box::new(AboutApp { model, terms, update: Update::Checking, rx: None, installed, chosen: app_chosen, hwnd, frame: 0, was_focused: false, height: 0.0 }))
+            Ok(Box::new(AboutApp { model, terms, update: Update::Checking, rx: None, installed, found: app_found, clicked: app_clicked, hwnd, frame: 0, was_focused: false, height: 0.0 }))
         }),
     );
     if let Err(e) = r {
         log::error!("about window: {e}");
     }
-    chosen.take()
+    found.take().map(|r| (r, clicked.get()))
 }
 
 #[cfg(test)]
