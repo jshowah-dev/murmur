@@ -1,6 +1,6 @@
 #![windows_subsystem = "windows"]
 
-use murmur_lib::{audio, cleanup, config, dictionary, history, model_fetch, snippets, stt, update, vad};
+use murmur_lib::{audio, cleanup, config, context, dictionary, history, model_fetch, snippets, stt, update, vad};
 mod about_ui;
 mod audio_out;
 mod autostart;

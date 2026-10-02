@@ -71,11 +71,33 @@ Settings live in `%APPDATA%\Murmur\config.toml`, created with defaults on first 
 | `min_silence_ms` | `500` | Silence that ends a speech segment |
 | `fillers` | `["um", "uh", "er", "hmm", "mm"]` | Words removed from the output |
 | `spoken_commands` | `true` | Turn "new line" / "new paragraph" into line breaks |
+| `format_by_context` | `true` | Shape the text for the app it lands in. Today that means email: a greeting and a sign-off get their own lines. `false` = the same output everywhere |
+| `email_apps` | `["OUTLOOK.EXE", "olk.exe", "thunderbird.exe"]` | Programs treated as email |
+| `email_titles` | `["Gmail", "Outlook", "Proton Mail", "Yahoo Mail"]` | Window-title text treated as email, in browsers only |
 | `mic_always_on` | `true` | Keep the mic open between dictations so the first word isn't clipped; closes after `idle_unload_minutes` |
 | `mute_output` | `true` | Mute the speakers while the key is held |
 | `hands_free_max_minutes` | `5` | Hands-free recordings stop and paste after this long |
 | `idle_unload_minutes` | `15` | Idle minutes before the model is unloaded and the mic closes, to free memory. `0` = never |
 | `debug_log` | `false` | Also log dictated text. Leave off for privacy |
+
+### Email formatting
+
+When you dictate into an email app, Murmur puts a greeting and a sign-off on their own lines. Say "hi Sarah thanks for the update I'll send notes by Friday thanks Jeff" and you get:
+
+```
+Hi Sarah,
+
+Thanks for the update. I'll send notes by Friday.
+
+Thanks,
+Jeff
+```
+
+Everywhere else the same words are pasted as one paragraph. Only the very start and the very end of a dictation are looked at, so an email dictated in several goes works.
+
+Murmur recognises Outlook and Thunderbird by program name, and Gmail, Outlook, Proton Mail and Yahoo Mail in Chrome, Edge, Firefox, Brave, Opera, Vivaldi and Arc by the tab title. Add your own with `email_apps` and `email_titles`, or turn the feature off with `format_by_context = false`.
+
+Limits: any field in a webmail tab is treated as email, including its search box; and "Thanks, Sarah." at the end is laid out as a sign-off even when you were thanking Sarah.
 
 ### Dictionary
 
@@ -113,6 +135,7 @@ Your Name"""
 - Audio is processed in memory and never saved or sent anywhere.
 - The only network access is the one-time model download from the [sherpa-onnx releases](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models).
 - `%APPDATA%\Murmur\murmur.log` records events, not what you said, unless you turn on `debug_log`.
+- To recognise an email app, Murmur reads the name and window title of the program you are dictating into. They are used for that one check and never stored or logged.
 
 ## Build from source
 

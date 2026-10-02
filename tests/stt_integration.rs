@@ -1,4 +1,4 @@
-use murmur_lib::{cleanup, config::Config, dictionary::Dictionary, snippets::Snippets, stt::Recognizer};
+use murmur_lib::{cleanup, config::Config, context::Profile, dictionary::Dictionary, snippets::Snippets, stt::Recognizer};
 use sherpa_onnx::Wave;
 use std::path::PathBuf;
 
@@ -26,7 +26,7 @@ fn fixtures_transcribe_to_expected_after_cleanup() {
         let wave = Wave::read(&format!("tests/fixtures/{file}")).expect("read wav");
         assert_eq!(wave.sample_rate(), 16_000, "{file} must be 16 kHz");
         let raw = rec.transcribe(wave.samples());
-        let got = cleanup::clean(&raw, &dict, &Snippets::default(), &cfg);
+        let got = cleanup::clean(&raw, &dict, &Snippets::default(), &cfg, Profile::Plain);
         if got == want {
             if known {
                 eprintln!("{file}: known failure now passes; drop its # in expected.txt");

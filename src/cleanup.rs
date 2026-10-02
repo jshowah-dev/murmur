@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::context::Profile;
 use crate::dictionary::Dictionary;
 use crate::snippets::Snippets;
 
@@ -100,7 +101,7 @@ fn tidy(text: &str) -> String {
     out
 }
 
-pub fn clean(text: &str, dict: &Dictionary, snippets: &Snippets, cfg: &Config) -> String {
+pub fn clean(text: &str, dict: &Dictionary, snippets: &Snippets, cfg: &Config, profile: Profile) -> String {
     let s = strip_fillers(text, &cfg.fillers);
     // before the dictionary so phonetic matching cannot rewrite trigger words
     let (mut s, expansions) = snippets.mark(&s);
@@ -108,16 +109,33 @@ pub fn clean(text: &str, dict: &Dictionary, snippets: &Snippets, cfg: &Config) -
     if cfg.spoken_commands {
         s = apply_commands(&s);
     }
+    let s = tidy(&s);
     // trim spaces only: a leading/trailing "new line" command is deliberate
-    crate::snippets::restore(tidy(&s).trim_matches(' '), &expansions)
+    let s = s.trim_matches(' ');
+    // before the snippets come back, so their text is never reshaped or read as a name
+    let s = match profile {
+        Profile::Email => crate::email::format(s),
+        Profile::Plain => s.to_string(),
+    };
+    crate::snippets::restore(&s, &expansions)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::config::Config;
     use crate::dictionary::{Dictionary, Term};
     use crate::snippets::{Snippet, Snippets};
+    use crate::context::Profile;
+
+    /// The existing tests run as `Plain`: its output must stay what it was before profiles.
+    fn clean(text: &str, dict: &Dictionary, snippets: &Snippets, cfg: &Config) -> String {
+        super::clean(text, dict, snippets, cfg, Profile::Plain)
+    }
+
+    /// No dictionary terms, so sound-alike matching cannot touch the words under test.
+    fn bare_env() -> (Dictionary, Config) {
+        (Dictionary::from_terms(vec![]), Config::default())
+    }
 
     fn snips() -> Snippets {
         Snippets {
@@ -210,5 +228,47 @@ best,
         let (d, c) = env();
         assert_eq!(clean("Thanks, New Line, Jeff.", &d, &Snippets::default(), &c), "Thanks.\nJeff.");
         assert_eq!(clean("Thanks. New line. Jeff.", &d, &Snippets::default(), &c), "Thanks.\nJeff.");
+    }
+
+    #[test]
+    fn email_profile_shapes_greeting_and_signoff() {
+        let (d, c) = bare_env();
+        let raw = "um, hi Sarah, thanks for the update. I'll review it tomorrow and send notes by Friday. Thanks, Jeff.";
+        assert_eq!(
+            super::clean(raw, &d, &Snippets::default(), &c, Profile::Email),
+            "Hi Sarah,
+
+Thanks for the update. I'll review it tomorrow and send notes by Friday.
+
+Thanks,
+Jeff"
+        );
+        assert_eq!(
+            super::clean(raw, &d, &Snippets::default(), &c, Profile::Plain),
+            "Hi Sarah, thanks for the update. I'll review it tomorrow and send notes by Friday. Thanks, Jeff."
+        );
+    }
+
+    #[test]
+    fn email_leaves_a_trailing_snippet_alone() {
+        let (d, c) = bare_env();
+        let plain = super::clean("Thanks. New paragraph. My signature.", &d, &snips(), &c, Profile::Plain);
+        assert_eq!(super::clean("Thanks. New paragraph. My signature.", &d, &snips(), &c, Profile::Email), plain);
+        // a one-line snippet after a closer is not a name
+        assert_eq!(super::clean("Send it over. Thanks, hob number.", &d, &snips(), &c, Profile::Email), "Send it over. Thanks, hawb-123.");
+    }
+
+    #[test]
+    fn email_keeps_spoken_line_breaks() {
+        let (d, c) = bare_env();
+        assert_eq!(
+            super::clean("Hi Sarah, new line, the build is ready. New paragraph. Thanks, Jeff.", &d, &Snippets::default(), &c, Profile::Email),
+            "Hi Sarah,
+
+The build is ready.
+
+Thanks,
+Jeff"
+        );
     }
 }
