@@ -1,11 +1,11 @@
 use anyhow::Result;
 use std::cell::Cell;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tray_icon::menu::{CheckMenuItem, ContextMenu, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
-use windows::Win32::UI::Shell::{Shell_NotifyIconW, NIF_INFO, NIIF_INFO, NIM_MODIFY, NOTIFYICONDATAW};
+use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass, Shell_NotifyIconW, NIF_INFO, NIIF_INFO, NIM_MODIFY, NOTIFYICONDATAW};
 use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,6 +19,8 @@ pub enum TrayEvent {
     OpenConfigDir,
     ToggleAutostart,
     Update,
+    /// The "update available" balloon was clicked.
+    BalloonUpdate,
     DownloadModel,
     About,
     Quit,
@@ -94,10 +96,17 @@ impl Tray {
             (quit.id().clone(), TrayEvent::Quit),
         ];
         let _icon = TrayIconBuilder::new().with_menu(Box::new(menu.clone())).with_tooltip("Murmur").with_icon(icon(false)).build()?;
+        // tray-icon reports clicks on the icon but not on a balloon, so listen on its window for those
+        if !unsafe { SetWindowSubclass(HWND(_icon.window_handle() as *mut _), Some(balloon_proc), 1, 0) }.as_bool() {
+            log::warn!("balloon clicks unavailable: SetWindowSubclass failed");
+        }
         Ok(Tray { _icon, menu, pause, ptt, autostart, update, model, shown: Cell::new((false, false)), ids })
     }
 
     pub fn poll(&self) -> Option<TrayEvent> {
+        if BALLOON_CLICKED.swap(false, Ordering::Relaxed) && UPDATE_BALLOON.load(Ordering::Relaxed) {
+            return Some(TrayEvent::BalloonUpdate);
+        }
         let ev = MenuEvent::receiver().try_recv().ok()?;
         self.ids.iter().find(|(id, _)| *id == ev.id).map(|(_, e)| *e)
     }
@@ -161,6 +170,17 @@ impl Tray {
     }
 
     pub fn notify(&self, title: &str, body: &str) {
+        self.show_balloon(title, body, false);
+    }
+
+    /// The "update available" balloon: the only one whose click does something (`BalloonUpdate`).
+    pub fn notify_update(&self, title: &str, body: &str) {
+        self.show_balloon(title, body, true);
+    }
+
+    fn show_balloon(&self, title: &str, body: &str, update: bool) {
+        // a click belongs to the balloon on screen, which is the last one shown
+        UPDATE_BALLOON.store(update, Ordering::Relaxed);
         let ok = balloon(&self._icon, title, body);
         log::info!("notify: {title}: {body} (balloon accepted: {ok})");
         if !ok {
@@ -180,6 +200,26 @@ fn relabel(item: &MenuItem, label: Option<&str>, enabled: bool) -> bool {
         item.set_enabled(enabled);
     }
     label.is_some()
+}
+
+/// Set by `balloon_proc`, taken by `poll`.
+static BALLOON_CLICKED: AtomicBool = AtomicBool::new(false);
+/// Whether the last balloon shown was the "update available" one.
+static UPDATE_BALLOON: AtomicBool = AtomicBool::new(false);
+/// tray-icon's private callback message (`WM_USER_TRAYICON`, tray-icon 0.25) and shellapi.h's
+/// NIN_BALLOONUSERCLICK, which arrives as its lparam. If tray-icon renumbers, clicks just stop working.
+const TRAY_CALLBACK: u32 = 6002;
+const NIN_BALLOONUSERCLICK: u32 = 0x0405;
+
+fn is_balloon_click(msg: u32, lparam: isize) -> bool {
+    msg == TRAY_CALLBACK && lparam as u32 == NIN_BALLOONUSERCLICK
+}
+
+unsafe extern "system" fn balloon_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: usize, _data: usize) -> LRESULT {
+    if is_balloon_click(msg, lp.0) {
+        BALLOON_CLICKED.store(true, Ordering::Relaxed);
+    }
+    unsafe { DefSubclassProc(hwnd, msg, wp, lp) }
 }
 
 /// tray-icon has no balloon API, but it registers the icon with Shell_NotifyIconW using an
@@ -244,6 +284,15 @@ mod tests {
         assert_eq!(extras_positions(false, true), (None, Some(10)));
         assert_eq!(extras_positions(true, false), (Some(10), None));
         assert_eq!(extras_positions(true, true), (Some(10), Some(11)));
+    }
+
+    #[test]
+    fn only_a_balloon_click_on_the_tray_callback_counts() {
+        assert!(is_balloon_click(6002, 0x0405));
+        // the balloon timing out or being dismissed (NIN_BALLOONTIMEOUT), and a click on the icon
+        assert!(!is_balloon_click(6002, 0x0404));
+        assert!(!is_balloon_click(6002, 0x0202));
+        assert!(!is_balloon_click(6003, 0x0405));
     }
 
     #[test]
