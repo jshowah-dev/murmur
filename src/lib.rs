@@ -4,6 +4,7 @@ pub mod config;
 pub mod context;
 pub mod dictionary;
 pub mod dictionary_edit;
+pub mod email;
 pub mod history;
 pub mod model_fetch;
 pub mod phonetic;
