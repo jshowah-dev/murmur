@@ -86,7 +86,7 @@ Looks only at the **start** of the dictation.
 - The first words are a greeting opener: `hi`, `hello`, `hey`, `dear`, `good morning`, `good afternoon`, `good evening`, `greetings`.
 - A comma directly on the opener ("Hi, Sarah.") is dropped.
 - After the opener come **0 to 3** name words, and the last of them (or the opener itself when there are none) ends in `,` `.` or `!`, or is the last word of the line.
-- A name word is a capitalised word, or one of `there`, `all`, `everyone`, `everybody`, `team`, `folks`, `both`, `and`. The full stop of `Mr.` `Mrs.` `Ms.` `Dr.` `Prof.` is part of the word and does not end the greeting.
+- A name word is a capitalised word, or one of `there`, `all`, `everyone`, `everybody`, `team`, `folks`, `both`, `and`. `I` and its contractions (`I'm`, `I'll`, `I've`, `I'd`) are never name words. The full stop of `Mr.` `Mrs.` `Ms.` `Dr.` `Prof.` is part of the word and does not end the greeting.
 - When that holds: that final mark becomes `,`, a blank line follows, and the next word is capitalised.
 - When the words after the opener are not name words but the opener itself carries a comma ("Hi, just checking in."), the greeting is the opener alone.
 - Otherwise the rule does not fire and the text is unchanged.
@@ -100,6 +100,7 @@ Looks only at the **start** of the dictation.
 | `Hi, just checking in. Are you free?` | `Hi,` ⏎⏎ `Just checking in. Are you free?` |
 | `Dear Mr. Smith, the report is attached.` | `Dear Mr. Smith,` ⏎⏎ `The report is attached.` |
 | `Hey Jeff can you send the file` | unchanged (no punctuation ends the greeting) |
+| `Hi, I'm Jeff. I'm writing about the invoice.` | `Hi,` ⏎⏎ `I'm Jeff. I'm writing about the invoice.` |
 | `Hi Sarah and Tom and Priya and Dev, the build is ready.` | unchanged (more than 3 words) |
 | `The build is ready. Hi Sarah, thanks.` | unchanged (not at the start) |
 
@@ -109,7 +110,7 @@ A dictation that is only a greeting ("Hi Sarah.") becomes `Hi Sarah,` followed b
 
 Looks only at the **end** of the dictation.
 
-- The closer is one of: `thanks`, `thank you`, `thanks again`, `many thanks`, `thanks so much`, `best`, `best regards`, `kind regards`, `warm regards`, `regards`, `cheers`, `sincerely`, `talk soon`. The longest match wins.
+- The closer is one of: `thanks`, `thank you`, `thanks again`, `many thanks`, `thanks so much`, `best`, `best regards`, `kind regards`, `warm regards`, `regards`, `cheers`, `sincerely`, `talk soon`. The longest match wins. A phrase never spans punctuation: in "…works best. Regards, Jeff." the closer is `regards`, not `best regards`. The same holds for greeting openers.
 - The closer starts a sentence: it is the first word of the dictation or the word before it ends in `.` `!` or `?`.
 - After the closer come **0 to 3** name words and then the end of the text. A name word is a capitalised word; only the last may carry punctuation.
 - **With a name** (1 to 3 words): a blank line, the closer followed by `,`, a line break, then the name with its trailing `.` `!` or `,` removed.
@@ -125,6 +126,7 @@ Looks only at the **end** of the dictation.
 | `Thanks, Jeff.` (whole dictation) | `Thanks,` ⏎ `Jeff` |
 | `Thanks for the update, I'll look tomorrow.` | unchanged (more than 3 words follow) |
 | `I said thanks, Jeff.` | unchanged (closer is mid-sentence) |
+| `I think Tuesday works best. Regards, Jeff.` | `I think Tuesday works best.` ⏎⏎ `Regards,` ⏎ `Jeff` |
 | `…notes by Friday. Thanks a lot.` | unchanged ("a lot" is not a name) |
 | `…notes by Friday. Thanks, I appreciate it.` | unchanged (not a name) |
 
@@ -144,6 +146,7 @@ The window title can hold an email subject or address. It is used for the match 
 
 - Webmail's search bar and any other field in the tab get email formatting too; the title cannot tell them apart.
 - "Thanks, Sarah." at the end is formatted as a sign-off even when Sarah was being thanked.
+- Any one to three capitalised words after a closing sentence are read as the name: "…Friday. Thanks. Bye." becomes `Thanks,` ⏎ `Bye`.
 - When the recogniser puts no punctuation after the greeting name, the greeting rule does not fire and the output is today's.
 - A browser tab whose title happens to contain a fragment (an article titled "Gmail tips") is treated as email.
 - An elevated mail client, whose exe name cannot be read from a non-elevated Murmur, is treated as `Plain`.
