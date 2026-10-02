@@ -105,6 +105,15 @@ fn update_label(tag: &str, installed: bool) -> String {
     if installed { format!("Update to v{tag}…") } else { format!("Get v{tag}…") }
 }
 
+/// What the "update available" balloon tells you to do; clicking it does the first part.
+fn update_balloon_body(installed: bool) -> &'static str {
+    if installed {
+        "Click here to update, or right-click the Murmur icon and choose Update."
+    } else {
+        "Click here to get it, or right-click the Murmur icon and choose Get."
+    }
+}
+
 fn model_offer_label() -> String {
     format!("Download new speech model ({} MB)…", model_fetch::parakeet().size / 1_000_000)
 }
@@ -349,13 +358,20 @@ fn main() -> Result<()> {
                     }
                     tray.set_autostart_checked(autostart::is_enabled());
                 }
-                TrayEvent::Update if !installed_copy => {
+                TrayEvent::Update | TrayEvent::BalloonUpdate if !installed_copy => {
                     if offer.release().is_some() {
                         open_path(std::path::Path::new(update::RELEASES_PAGE));
                     }
                 }
                 TrayEvent::Update => {
                     start_update(&mut offer, &tray, &up_tx);
+                }
+                TrayEvent::BalloonUpdate => {
+                    let tag = offer.release().map(|r| r.tag.clone());
+                    if let (Some(tag), true) = (tag, start_update(&mut offer, &tray, &up_tx)) {
+                        // the balloon is gone and the tray menu is closed: say something's happening
+                        tray.notify(&format!("Updating to Murmur v{tag}"), "Murmur restarts when it's installed.");
+                    }
                 }
                 TrayEvent::DownloadModel => {
                     tray.set_model(Some("Downloading speech model… 0%"), false);
@@ -503,7 +519,7 @@ fn main() -> Result<()> {
                         log::info!("update available: v{tag}");
                         tray.set_update(Some(&update_label(&tag, installed_copy)), true);
                         if update::should_alert(&tag, update::read_alerted().as_deref()) {
-                            tray.notify(&format!("Murmur v{tag} is available"), "Update from the tray menu.");
+                            tray.notify_update(&format!("Murmur v{tag} is available"), update_balloon_body(installed_copy));
                             update::write_alerted(&tag);
                         }
                     }
@@ -626,6 +642,14 @@ mod tests {
     fn update_label_depends_on_the_copy() {
         assert_eq!(update_label("0.4.5", true), "Update to v0.4.5…");
         assert_eq!(update_label("0.4.5", false), "Get v0.4.5…");
+    }
+
+    #[test]
+    fn update_balloon_says_what_to_do() {
+        assert!(update_balloon_body(true).starts_with("Click here to update"));
+        assert!(update_balloon_body(false).starts_with("Click here to get it"));
+        // Windows cuts a balloon's text at 255 UTF-16 units
+        assert!(update_balloon_body(true).len() < 256 && update_balloon_body(false).len() < 256);
     }
 
     #[test]
