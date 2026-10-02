@@ -49,11 +49,28 @@ fn is_title(tok: &str) -> bool {
     TITLES.contains(&bare(tok).as_str())
 }
 
+/// "I" or a contraction of it ("I'm", "I'll", "I've", "I'd"): capitalised, but never a name.
+fn is_first_person(core: &str) -> bool {
+    match core.split_once(['\'', '’']) {
+        Some((head, tail)) => head == "I" && matches!(tail, "m" | "ll" | "ve" | "d"),
+        None => core == "I",
+    }
+}
+
+/// Whether `tokens` starts with `phrase`; a non-final word that carries punctuation breaks it.
+fn phrase_at(tokens: &[&str], phrase: &[&str]) -> bool {
+    tokens.len() == phrase.len()
+        && phrase.iter().zip(tokens).enumerate().all(|(i, (w, t))| bare(t) == *w && (i + 1 == phrase.len() || !t.ends_with([',', '.', '!', '?'])))
+}
+
 /// A capitalised word (or, in a greeting, a group word). Snippet placeholders are not letters,
 /// so a snippet is never taken for a name.
 fn name_like(tok: &str, group_ok: bool) -> bool {
     let core = strip_end(tok);
     let Some(first) = core.chars().next() else { return false };
+    if is_first_person(core) {
+        return false;
+    }
     if !core.chars().all(|c| c.is_alphabetic() || matches!(c, '-' | '\'' | '’')) {
         return false;
     }
@@ -62,13 +79,13 @@ fn name_like(tok: &str, group_ok: bool) -> bool {
 
 /// Word count of the longest phrase in `list` that `tokens` starts with.
 fn leading_phrase(tokens: &[&str], list: &[&[&str]]) -> Option<usize> {
-    list.iter().filter(|p| tokens.len() >= p.len() && p.iter().zip(tokens).all(|(w, t)| bare(t) == *w)).map(|p| p.len()).max()
+    list.iter().filter(|p| tokens.len() >= p.len() && phrase_at(&tokens[..p.len()], p)).map(|p| p.len()).max()
 }
 
 /// Word count of the longest phrase in `list` that `tokens` ends with.
 fn trailing_phrase(tokens: &[&str], list: &[&[&str]]) -> Option<usize> {
     list.iter()
-        .filter(|p| tokens.len() >= p.len() && p.iter().zip(&tokens[tokens.len() - p.len()..]).all(|(w, t)| bare(t) == *w))
+        .filter(|p| tokens.len() >= p.len() && phrase_at(&tokens[tokens.len() - p.len()..], p))
         .map(|p| p.len())
         .max()
 }
@@ -247,6 +264,48 @@ mod tests {
         unchanged("Send it Friday. Thanks, \u{E000}.");
         unchanged("Hi \u{E000}, the build is ready.");
         assert_eq!(format("Hi Sarah, \u{E000}"), "Hi Sarah,\n\n\u{E000}");
+    }
+
+    #[test]
+    fn phrases_do_not_span_punctuation() {
+        assert_eq!(format("I think Tuesday works best. Regards, Jeff."), "I think Tuesday works best.
+
+Regards,
+Jeff");
+        assert_eq!(format("That helped many. Thanks, Jeff."), "That helped many.
+
+Thanks,
+Jeff");
+        unchanged("Good. Morning, then.");
+        assert_eq!(format("Send it over. Best regards, Jeff."), "Send it over.
+
+Best regards,
+Jeff");
+    }
+
+    #[test]
+    fn i_is_never_a_name() {
+        assert_eq!(format("Hi, I'm Jeff. I'm writing about the invoice."), "Hi,
+
+I'm Jeff. I'm writing about the invoice.");
+        unchanged("Hi I'm Jeff, the new analyst.");
+        unchanged("Send it over. Thanks, I will.");
+        assert_eq!(format("Hi Mr. O'Brien, the report is attached."), "Hi Mr. O'Brien,
+
+The report is attached.");
+    }
+
+    #[test]
+    fn never_panics_on_odd_input() {
+        for t in ["
+", "
+
+", " ", "Thanks, Jeff. "] {
+            unchanged(t);
+        }
+        assert_eq!(format("Hi"), "Hi,
+
+");
     }
 
     #[test]
