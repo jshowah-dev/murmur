@@ -221,6 +221,8 @@ fn main() -> Result<()> {
     let (cmd_tx, cmd_rx) = unbounded::<PipelineCmd>();
     let (msg_tx, msg_rx) = unbounded::<PipelineMsg>();
     let (audio_tx, audio_rx) = unbounded::<Vec<f32>>();
+    // signalled by the capture when its stream dies; one pending signal is enough
+    let (lost_tx, lost_rx) = crossbeam_channel::bounded::<()>(1);
 
     // shared with the hotkey thread, so the picker can change the key while Murmur runs
     let ptt_vks = Arc::new(Mutex::new(cfg.ptt_vks()));
@@ -247,7 +249,7 @@ fn main() -> Result<()> {
     // The mic stays open while not paused: a rolling buffer of the last PRE_ROLL_SAMPLES is
     // fed to the pipeline ahead of the live audio on key-down, so the first consonant is not
     // lost to device start-up latency.
-    let mut capture = if cfg.mic_always_on { open_mic(&audio_tx, &tray) } else { None };
+    let mut capture = if cfg.mic_always_on { open_mic(&audio_tx, &lost_tx, &tray) } else { None };
     let mut mic_used = Instant::now();
     let mut ring: VecDeque<f32> = VecDeque::with_capacity(PRE_ROLL_SAMPLES * 2);
     let mut forwarding = false;
@@ -287,6 +289,21 @@ fn main() -> Result<()> {
             awaiting = None;
         }
         mote.animate();
+        // the stream died (device unplugged, or the default input changed): open the current default
+        if lost_rx.try_recv().is_ok() {
+            capture.take();
+            // the dead stream may have signalled again before it was dropped
+            while lost_rx.try_recv().is_ok() {}
+            if !forwarding {
+                // what the old device left behind would be prepended to the next dictation
+                while audio_rx.try_recv().is_ok() {}
+                ring.clear();
+            }
+            if reopen_after_loss(paused, cfg.mic_always_on, forwarding) {
+                log::info!("mic lost; reopening on the default input");
+                capture = open_mic(&audio_tx, &lost_tx, &tray);
+            }
+        }
         while let Ok(chunk) = audio_rx.try_recv() {
             if forwarding {
                 // level is metered here, not in the pipeline, so it keeps moving while a chunk decodes
@@ -315,7 +332,7 @@ fn main() -> Result<()> {
                         capture.take();
                         ring.clear();
                     } else if cfg.mic_always_on {
-                        capture = open_mic(&audio_tx, &tray);
+                        capture = open_mic(&audio_tx, &lost_tx, &tray);
                         mic_used = Instant::now();
                     }
                 }
@@ -402,7 +419,7 @@ fn main() -> Result<()> {
             match ev {
                 HotkeyEvent::Down if !paused => {
                     if capture.is_none() {
-                        capture = open_mic(&audio_tx, &tray);
+                        capture = open_mic(&audio_tx, &lost_tx, &tray);
                     }
                     if capture.is_none() {
                         continue;
@@ -580,8 +597,17 @@ fn main() -> Result<()> {
 /// Audio kept while idle and prepended on key-down: 500 ms at 16 kHz.
 const PRE_ROLL_SAMPLES: usize = 8_000;
 
-fn open_mic(audio_tx: &crossbeam_channel::Sender<Vec<f32>>, tray: &Tray) -> Option<audio::Capture> {
-    match audio::Capture::start(audio_tx.clone()) {
+/// Whether a mic whose stream died is opened again now, or left for the next key-down.
+fn reopen_after_loss(paused: bool, always_on: bool, forwarding: bool) -> bool {
+    !paused && (always_on || forwarding)
+}
+
+fn open_mic(
+    audio_tx: &crossbeam_channel::Sender<Vec<f32>>,
+    lost_tx: &crossbeam_channel::Sender<()>,
+    tray: &Tray,
+) -> Option<audio::Capture> {
+    match audio::Capture::start(audio_tx.clone(), lost_tx.clone()) {
         Ok(c) => Some(c),
         Err(e) => {
             log::error!("open mic: {e}");
@@ -636,6 +662,21 @@ mod tests {
         assert_eq!(percent(241_234_192, 482_468_385), 49);
         assert_eq!(percent(482_468_385, 482_468_385), 100);
         assert_eq!(percent(10, 0), 100);
+    }
+
+    #[test]
+    fn a_lost_mic_is_reopened_when_it_would_be_open() {
+        // (paused, always_on, forwarding)
+        assert!(reopen_after_loss(false, true, false));
+        assert!(reopen_after_loss(false, false, true));
+        assert!(reopen_after_loss(false, true, true));
+    }
+
+    #[test]
+    fn a_lost_mic_stays_closed_when_paused_or_opened_on_demand() {
+        assert!(!reopen_after_loss(false, false, false));
+        assert!(!reopen_after_loss(true, true, false));
+        assert!(!reopen_after_loss(true, false, true));
     }
 
     #[test]
