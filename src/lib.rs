@@ -1,6 +1,7 @@
 pub mod audio;
 pub mod cleanup;
 pub mod config;
+pub mod context;
 pub mod dictionary;
 pub mod dictionary_edit;
 pub mod history;
