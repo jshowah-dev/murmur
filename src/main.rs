@@ -33,7 +33,6 @@ use hotkey::HotkeyEvent;
 use mote::{landing_point, on_done, Landing, Mote};
 use overlay::{Overlay, OverlayState};
 use pipeline::{PipelineCmd, PipelineMsg};
-use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -93,6 +92,13 @@ enum UpdateMsg {
     ModelUnpacking,
     ModelReady,
     ModelFailed(String),
+}
+
+/// Hands the hotkey thread the keys to listen for; none stops it listening.
+fn set_ptt(shared: &Mutex<Vec<u16>>, vks: Vec<u16>) {
+    if let Ok(mut keys) = shared.lock() {
+        *keys = vks;
+    }
 }
 
 fn update_label(tag: &str, installed: bool) -> String {
@@ -208,8 +214,8 @@ fn main() -> Result<()> {
     let (audio_tx, audio_rx) = unbounded::<Vec<f32>>();
 
     // shared with the hotkey thread, so the picker can change the key while Murmur runs
-    let ptt_vk = Arc::new(AtomicU16::new(cfg.ptt_vk()));
-    hotkey::spawn(ptt_vk.clone(), cfg.hands_free_max(), hk_tx);
+    let ptt_vks = Arc::new(Mutex::new(cfg.ptt_vks()));
+    hotkey::spawn(ptt_vks.clone(), cfg.hands_free_max(), hk_tx);
     pipeline::spawn(cfg.clone(), dict.clone(), cmd_rx, msg_tx);
 
     let mut overlay = Overlay::create()?;
@@ -320,9 +326,9 @@ fn main() -> Result<()> {
                 TrayEvent::EditSnippets => open_editor(&tray, editor::Tab::Snippets),
                 TrayEvent::PttKey => {
                     // not listening while the window is open: pressing the current key there mustn't dictate
-                    ptt_vk.store(0, Ordering::Relaxed);
-                    let picked = hotkey_ui::show(cfg.ptt_vk());
-                    if let Some(name) = picked.and_then(config::ptt_name_of) {
+                    set_ptt(&ptt_vks, Vec::new());
+                    let picked = hotkey_ui::show(cfg.ptt_vks());
+                    if let Some(name) = picked.and_then(|vks| config::ptt_name_of(&vks)) {
                         log::info!("ptt key: {} -> {name}", cfg.ptt_key);
                         if let Err(e) = config::save_ptt_key(&name) {
                             log::error!("save ptt key: {e:#}");
@@ -331,7 +337,7 @@ fn main() -> Result<()> {
                         cfg.ptt_key = name;
                         tray.set_ptt_label(&cfg.ptt_key_label());
                     }
-                    ptt_vk.store(cfg.ptt_vk(), Ordering::Relaxed);
+                    set_ptt(&ptt_vks, cfg.ptt_vks());
                     while hk_rx.try_recv().is_ok() {}
                 }
                 TrayEvent::OpenConfigDir => open_path(&config::config_dir()),

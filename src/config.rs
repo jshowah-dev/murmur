@@ -153,11 +153,14 @@ pub fn expand_env(s: &str) -> String {
 
 const VK_RCONTROL: u16 = 0xA3;
 const VK_RSHIFT: u16 = 0xA1;
+const VK_LWIN: u16 = 0x5B;
+const VK_RWIN: u16 = 0x5C;
 const VK_F1: u16 = 0x70;
 
 /// (config name, virtual-key code, label) of the PTT keys that aren't function keys. None of them
 /// types anything: the key is watched, not swallowed, so it still reaches the app in front.
-const PTT_KEYS: [(&str, u16, &str); 8] = [
+/// A chord is named and labelled in this order.
+const PTT_KEYS: [(&str, u16, &str); 10] = [
     ("RControl", VK_RCONTROL, "Right Ctrl"),
     ("LControl", 0xA2, "Left Ctrl"),
     ("RAlt", 0xA5, "Right Alt"),
@@ -166,12 +169,14 @@ const PTT_KEYS: [(&str, u16, &str); 8] = [
     ("CapsLock", 0x14, "Caps Lock"),
     ("ScrollLock", 0x91, "Scroll Lock"),
     ("Pause", 0x13, "Pause"),
+    ("LWin", VK_LWIN, "Left Win"),
+    ("RWin", VK_RWIN, "Right Win"),
 ];
 
 /// Other spellings config.toml accepts.
 const PTT_ALIASES: [(&str, &str); 4] = [("RCtrl", "RControl"), ("LCtrl", "LControl"), ("RMenu", "RAlt"), ("LMenu", "LAlt")];
 
-/// Virtual-key code for a PTT key name from config.toml, any case; F1 to F24 included.
+/// Virtual-key code for one key name from config.toml, any case; F1 to F24 included.
 pub fn ptt_vk_of(name: &str) -> Option<u16> {
     let name = PTT_ALIASES.iter().find(|(a, _)| a.eq_ignore_ascii_case(name)).map_or(name, |(_, n)| n);
     if let Some((_, vk, _)) = PTT_KEYS.iter().find(|(n, _, _)| n.eq_ignore_ascii_case(name)) {
@@ -181,14 +186,38 @@ pub fn ptt_vk_of(name: &str) -> Option<u16> {
     (1..=24).contains(&n).then(|| VK_F1 + n - 1)
 }
 
-/// The name config.toml stores for a PTT key.
-pub fn ptt_name_of(vk: u16) -> Option<String> {
-    ptt_key_of(vk).map(|(name, _)| name)
+/// The keys of a `ptt_key` setting: one key, or a chord like "LControl+LAlt" that is held together.
+pub fn ptt_vks_of(name: &str) -> Option<Vec<u16>> {
+    let vks = name.split('+').map(|part| ptt_vk_of(part.trim())).collect::<Option<Vec<u16>>>()?;
+    usable(&vks)
 }
 
-/// A PTT key as a person would name it ("Right Ctrl").
-pub fn ptt_label_of(vk: u16) -> Option<String> {
-    ptt_key_of(vk).map(|(_, label)| label)
+/// The name config.toml stores for a PTT key or chord.
+pub fn ptt_name_of(vks: &[u16]) -> Option<String> {
+    Some(usable(vks)?.iter().filter_map(|vk| ptt_key_of(*vk)).map(|(name, _)| name).collect::<Vec<_>>().join("+"))
+}
+
+/// A PTT key or chord as a person would name it ("Right Ctrl", "Left Ctrl + Left Alt").
+pub fn ptt_label_of(vks: &[u16]) -> Option<String> {
+    Some(usable(vks)?.iter().filter_map(|vk| ptt_key_of(*vk)).map(|(_, label)| label).collect::<Vec<_>>().join(" + "))
+}
+
+/// `vks` without repeats and in the order they're named, if they can be a PTT key: a known key
+/// other than Win on its own, or several of Ctrl, Alt and Win.
+fn usable(vks: &[u16]) -> Option<Vec<u16>> {
+    let mut vks = vks.to_vec();
+    if vks.iter().any(|vk| ptt_key_of(*vk).is_none()) {
+        return None;
+    }
+    vks.sort_by_key(|vk| PTT_KEYS.iter().position(|(_, v, _)| v == vk));
+    vks.dedup();
+    let chord = chord_vks();
+    match vks.as_slice() {
+        [] => None,
+        // Win on its own opens Start when it's let go
+        [vk] => (!matches!(*vk, VK_LWIN | VK_RWIN)).then_some(vks),
+        many => many.iter().all(|vk| chord.contains(vk)).then_some(vks),
+    }
 }
 
 fn ptt_key_of(vk: u16) -> Option<(String, String)> {
@@ -201,10 +230,16 @@ fn ptt_key_of(vk: u16) -> Option<(String, String)> {
     })
 }
 
-/// The keys the picker offers. Right Shift isn't one: Shift with the PTT key means fix-last, so
-/// it could never start a dictation.
+/// The keys the picker offers on their own. Right Shift isn't one: Shift with the PTT key means
+/// fix-last, so it could never start a dictation.
 pub fn pickable_vks() -> Vec<u16> {
-    PTT_KEYS.iter().map(|(_, vk, _)| *vk).filter(|vk| *vk != VK_RSHIFT).chain(VK_F1..VK_F1 + 24).collect()
+    let alone = |vk: &u16| !matches!(*vk, VK_RSHIFT | VK_LWIN | VK_RWIN);
+    PTT_KEYS.iter().map(|(_, vk, _)| *vk).filter(alone).chain(VK_F1..VK_F1 + 24).collect()
+}
+
+/// The keys that can be held together as a chord: Ctrl, Alt and Win, either side.
+pub fn chord_vks() -> Vec<u16> {
+    vec![VK_RCONTROL, 0xA2, 0xA5, 0xA4, VK_LWIN, VK_RWIN]
 }
 
 /// `text` (a config.toml) with its `ptt_key` set to `name`. Only that line changes, and it keeps
@@ -265,14 +300,14 @@ impl Config {
             .unwrap_or_else(|| PathBuf::from("silero_vad.onnx"))
     }
 
-    /// Virtual-key code for the configured PTT key; an unknown name means Right Ctrl.
-    pub fn ptt_vk(&self) -> u16 {
-        ptt_vk_of(&self.ptt_key).unwrap_or(VK_RCONTROL)
+    /// Virtual-key codes for the configured PTT key or chord; an unusable setting means Right Ctrl.
+    pub fn ptt_vks(&self) -> Vec<u16> {
+        ptt_vks_of(&self.ptt_key).unwrap_or_else(|| vec![VK_RCONTROL])
     }
 
     /// The PTT key as a person would name it ("Right Ctrl"), for on-screen instructions.
     pub fn ptt_key_label(&self) -> String {
-        ptt_label_of(self.ptt_vk()).unwrap_or_default()
+        ptt_label_of(&self.ptt_vks()).unwrap_or_default()
     }
 
     /// Length cap for a hands-free recording; at least one minute.
@@ -336,11 +371,11 @@ mod tests {
     #[test]
     fn ptt_key_names_map_to_vk() {
         let mut c = Config::default();
-        assert_eq!(c.ptt_vk(), 0xA3); // VK_RCONTROL
+        assert_eq!(c.ptt_vks(), [0xA3]); // VK_RCONTROL
         c.ptt_key = "F13".into();
-        assert_eq!(c.ptt_vk(), 0x7C);
+        assert_eq!(c.ptt_vks(), [0x7C]);
         c.ptt_key = "CapsLock".into();
-        assert_eq!(c.ptt_vk(), 0x14);
+        assert_eq!(c.ptt_vks(), [0x14]);
     }
 
     #[test]
@@ -369,15 +404,16 @@ mod tests {
             ("F24", 0x87, "F24"),
         ] {
             assert_eq!(ptt_vk_of(name), Some(vk), "{name}");
-            assert_eq!(ptt_name_of(vk).as_deref(), Some(name));
-            assert_eq!(ptt_label_of(vk).as_deref(), Some(label));
+            assert_eq!(ptt_name_of(&[vk]).as_deref(), Some(name));
+            assert_eq!(ptt_label_of(&[vk]).as_deref(), Some(label));
         }
         assert_eq!(ptt_vk_of("rctrl"), Some(0xA3));
         assert_eq!(ptt_vk_of("LMENU"), Some(0xA4));
         for unknown in ["nonsense", "f", "F0", "F25", ""] {
             assert_eq!(ptt_vk_of(unknown), None, "{unknown}");
         }
-        assert_eq!(ptt_name_of(0x41), None);
+        assert_eq!(ptt_name_of(&[0x41]), None);
+        assert_eq!(ptt_name_of(&[]), None);
     }
 
     #[test]
@@ -387,9 +423,44 @@ mod tests {
         assert!(!vks.contains(&0xA1));
         assert_eq!(vks.len(), 7 + 24);
         for vk in vks {
-            let name = ptt_name_of(vk).expect("a pickable key has a config name");
+            let name = ptt_name_of(&[vk]).expect("a pickable key has a config name");
             assert_eq!(ptt_vk_of(&name), Some(vk));
         }
+    }
+
+    #[test]
+    fn modifiers_combine_into_a_chord() {
+        assert_eq!(ptt_vks_of("LControl+LAlt"), Some(vec![0xA2, 0xA4]));
+        assert_eq!(ptt_vks_of("lwin + lctrl"), Some(vec![0xA2, 0x5B]), "any case, spaces, in the stored order");
+        assert_eq!(ptt_vks_of("LControl+LControl"), Some(vec![0xA2]));
+        assert_eq!(ptt_name_of(&[0x5B, 0xA2]).as_deref(), Some("LControl+LWin"));
+        assert_eq!(ptt_label_of(&[0x5B, 0xA2]).as_deref(), Some("Left Ctrl + Left Win"));
+        assert_eq!(ptt_label_of(&[0xA5, 0xA3, 0x5C]).as_deref(), Some("Right Ctrl + Right Alt + Right Win"));
+    }
+
+    #[test]
+    fn only_ctrl_alt_and_win_combine_and_win_is_never_alone() {
+        for bad in ["LWin", "RWin", "F13+LControl", "CapsLock+LAlt", "RShift+LControl", "LControl+", "+", "LControl+nonsense"] {
+            assert_eq!(ptt_vks_of(bad), None, "{bad}");
+        }
+        assert_eq!(ptt_name_of(&[0x5B]), None);
+        assert_eq!(ptt_name_of(&[0x7C, 0xA2]), None);
+        assert!(!pickable_vks().contains(&0x5B));
+        assert_eq!(chord_vks(), [0xA3, 0xA2, 0xA5, 0xA4, 0x5B, 0x5C]);
+    }
+
+    #[test]
+    fn a_chord_in_config_is_used_and_a_bad_one_falls_back_to_right_ctrl() {
+        let mut c = Config::default();
+        c.ptt_key = "LControl+LAlt".into();
+        assert_eq!(c.ptt_vks(), [0xA2, 0xA4]);
+        assert_eq!(c.ptt_key_label(), "Left Ctrl + Left Alt");
+        c.ptt_key = "LWin".into();
+        assert_eq!(c.ptt_vks(), [0xA3]);
+        assert_eq!(c.ptt_key_label(), "Right Ctrl");
+        let text = set_ptt_key_line("ptt_key = \"RControl\"
+", "LControl+LWin");
+        assert_eq!(toml::from_str::<Config>(&text).unwrap().ptt_vks(), [0xA2, 0x5B]);
     }
 
     #[test]
