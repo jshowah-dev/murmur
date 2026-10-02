@@ -1,6 +1,5 @@
 use crossbeam_channel::Sender;
-use std::sync::atomic::{AtomicU16, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, sleep, JoinHandle};
 use std::time::{Duration, Instant};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_ESCAPE, VK_LSHIFT, VK_RSHIFT, VK_SHIFT};
@@ -145,23 +144,22 @@ fn shift_down() -> bool {
     down(VK_SHIFT.0) || down(VK_LSHIFT.0) || down(VK_RSHIFT.0)
 }
 
-/// Whether the PTT key is held. A key of 0 is no key: the thread isn't listening for one.
-fn ptt_down(ptt_vk: &AtomicU16) -> bool {
-    match ptt_vk.load(Ordering::Relaxed) {
-        0 => false,
-        vk => down(vk),
-    }
+/// Whether the PTT key is held: every key of a chord is down. No keys is no PTT key, so the
+/// thread isn't listening for one.
+fn all_down(vks: &[u16], down: impl Fn(u16) -> bool) -> bool {
+    !vks.is_empty() && vks.iter().all(|vk| down(*vk))
 }
 
-/// `ptt_vk` is read on every poll, so storing another key (or 0, to stop listening) takes effect
-/// at once.
-pub fn spawn(ptt_vk: Arc<AtomicU16>, max: Duration, tx: Sender<HotkeyEvent>) -> JoinHandle<()> {
+/// `ptt_vks` is read on every poll, so storing other keys (or none, to stop listening) takes
+/// effect at once.
+pub fn spawn(ptt_vks: Arc<Mutex<Vec<u16>>>, max: Duration, tx: Sender<HotkeyEvent>) -> JoinHandle<()> {
     thread::Builder::new()
         .name("hotkey".into())
         .spawn(move || {
             let mut m = Machine::new(max);
             loop {
-                let input = Input { ptt: ptt_down(&ptt_vk), shift: shift_down(), esc: down(VK_ESCAPE.0) };
+                let ptt = ptt_vks.lock().map(|vks| all_down(&vks, down)).unwrap_or(false);
+                let input = Input { ptt, shift: shift_down(), esc: down(VK_ESCAPE.0) };
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| m.step(input, Instant::now()))) {
                     Ok(evs) => {
                         for ev in evs {
@@ -200,8 +198,16 @@ mod tests {
     }
 
     #[test]
-    fn no_key_set_is_never_down() {
-        assert!(!ptt_down(&AtomicU16::new(0)));
+    fn a_chord_is_down_only_while_every_key_is() {
+        let held = |keys: &'static [u16]| move |vk: u16| keys.contains(&vk);
+        assert!(all_down(&[0xA2, 0xA4], held(&[0xA2, 0xA4, 0x10])));
+        assert!(!all_down(&[0xA2, 0xA4], held(&[0xA2])));
+        assert!(all_down(&[0xA3], held(&[0xA3])));
+    }
+
+    #[test]
+    fn no_keys_set_is_never_down() {
+        assert!(!all_down(&[], |_| true));
     }
 
     #[test]
