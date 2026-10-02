@@ -43,7 +43,7 @@ fn main() -> Result<()> {
     let dir = Path::new("tests/fixtures");
     std::fs::create_dir_all(dir)?;
     let (tx, rx) = crossbeam_channel::unbounded::<Vec<f32>>();
-    let _cap = audio::Capture::start(tx)?;
+    let _cap = audio::Capture::start(tx, crossbeam_channel::bounded(1).0)?;
     for name in names {
         print!("[{name}] Enter to start... ");
         std::io::stdout().flush()?;

@@ -17,9 +17,16 @@ pub fn rms(samples: &[f32]) -> f32 {
     (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
 }
 
+/// True for errors that leave the stream dead: it has to be dropped and opened again.
+pub fn needs_reopen(kind: cpal::ErrorKind) -> bool {
+    matches!(kind, cpal::ErrorKind::StreamInvalidated | cpal::ErrorKind::DeviceNotAvailable)
+}
+
 impl Capture {
     /// Opens the default input device and streams 16 kHz mono f32 chunks to `tx` until dropped.
-    pub fn start(tx: Sender<Vec<f32>>) -> Result<Capture> {
+    /// `lost` is signalled when the stream dies (the device went away or the default changed);
+    /// the owner then drops this capture and starts another.
+    pub fn start(tx: Sender<Vec<f32>>, lost: Sender<()>) -> Result<Capture> {
         let host = cpal::default_host();
         let device = host
             .default_input_device()
@@ -28,6 +35,8 @@ impl Capture {
         let config = supported.config();
         let channels = config.channels as usize;
         let rate = config.sample_rate;
+        let name = device.description().map(|d| d.name().to_string()).unwrap_or_else(|e| format!("? ({e})"));
+        log::info!("mic: {name}, {rate} Hz, {channels} ch, {:?}", supported.sample_format());
         let resampler = if rate != TARGET_RATE {
             Some(
                 LinearResampler::create(rate as i32, TARGET_RATE as i32)
@@ -37,9 +46,15 @@ impl Capture {
             None
         };
         // cpal 0.18 reports capture overruns, which come with CPU load and aren't fatal
-        let err_fn = |e: cpal::Error| match e.kind() {
+        let err_fn = move |e: cpal::Error| match e.kind() {
             cpal::ErrorKind::Xrun => log::warn!("audio overrun (samples dropped)"),
-            _ => log::error!("audio stream error: {e:?}"),
+            kind => {
+                log::error!("audio stream error: {e:?}");
+                if needs_reopen(kind) {
+                    // never blocks: this is cpal's audio thread, and one pending signal is enough
+                    let _ = lost.try_send(());
+                }
+            }
         };
 
         macro_rules! build {
@@ -86,5 +101,19 @@ mod tests {
         assert_eq!(rms(&[0.0; 8]), 0.0);
         assert!((rms(&[1.0, -1.0, 1.0, -1.0]) - 1.0).abs() < 1e-6);
         assert_eq!(rms(&[]), 0.0);
+    }
+
+    #[test]
+    fn a_dead_stream_needs_reopening() {
+        assert!(needs_reopen(cpal::ErrorKind::StreamInvalidated));
+        assert!(needs_reopen(cpal::ErrorKind::DeviceNotAvailable));
+    }
+
+    #[test]
+    fn a_live_stream_is_left_alone() {
+        assert!(!needs_reopen(cpal::ErrorKind::Xrun));
+        // cpal already rerouted the stream
+        assert!(!needs_reopen(cpal::ErrorKind::DeviceChanged));
+        assert!(!needs_reopen(cpal::ErrorKind::BackendError));
     }
 }
