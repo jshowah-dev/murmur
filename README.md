@@ -97,7 +97,7 @@ Everywhere else the same words are pasted as one paragraph. Only the very start 
 
 Murmur recognises Outlook and Thunderbird by program name, and Gmail, Outlook, Proton Mail and Yahoo Mail in Chrome, Edge, Firefox, Brave, Opera, Vivaldi and Arc by the tab title. Add your own with `email_apps` and `email_titles`, or turn the feature off with `format_by_context = false`.
 
-Limits: any field in a webmail tab is treated as email, including its search box; and "Thanks, Sarah." at the end is laid out as a sign-off even when you were thanking Sarah.
+Limits: the greeting and sign-off are recognised from the punctuation the speech model writes, so a greeting it leaves unpunctuated ("Hi Sarah can you…") is pasted as usual. Any field in a webmail tab is treated as email, including its search box, as is any browser tab whose title contains one of the `email_titles`. "Thanks, Sarah." at the end is laid out as a sign-off even when you were thanking Sarah.
 
 ### Dictionary
 

@@ -105,25 +105,33 @@ fn split_greeting(text: &str) -> Option<(String, &str)> {
     let opener = leading_phrase(&tokens, OPENERS)?;
     let opener_end = tokens[opener - 1];
     // tokens[..end] are the greeting
-    let mut end = opener;
-    let mut found = opener_end.ends_with(['.', '!']) || opener == tokens.len();
-    if !found {
-        for j in opener..tokens.len().min(opener + MAX_NAME_WORDS) {
-            if !name_like(tokens[j], true) {
-                break;
-            }
-            if j + 1 == tokens.len() || (tokens[j].ends_with([',', '.', '!']) && !is_title(tokens[j])) {
-                end = j + 1;
-                found = true;
+    let end = if opener_end.ends_with(['.', '!']) || opener == tokens.len() {
+        opener
+    } else {
+        // the run of name words after the opener; a full stop or "!" (not a title's) ends it
+        let mut run_end = opener;
+        while run_end < tokens.len() && name_like(tokens[run_end], true) {
+            run_end += 1;
+            if tokens[run_end - 1].ends_with(['.', '!']) && !is_title(tokens[run_end - 1]) {
                 break;
             }
         }
-    }
-    // "Hey, can you send it": no name, but the comma still ends the greeting
-    if !found && !opener_end.ends_with(',') {
-        return None;
-    }
-    let words: Vec<&str> = tokens[..end].iter().enumerate().map(|(i, t)| if i + 1 < end && is_title(t) { *t } else { strip_end(t) }).collect();
+        if run_end == opener {
+            // "Hey, can you send it": no name, but the comma still ends the greeting
+            if !opener_end.ends_with(',') {
+                return None;
+            }
+            opener
+        } else if run_end - opener > MAX_NAME_WORDS {
+            return None;
+        } else {
+            // the greeting ends at the last name word that closes it with punctuation or the line
+            let closes = |j: usize| j + 1 == tokens.len() || (tokens[j].ends_with([',', '.', '!']) && !is_title(tokens[j]));
+            (opener..run_end).rev().find(|&j| closes(j))? + 1
+        }
+    };
+    // opener words lose their punctuation, earlier names keep their comma, the last gets the greeting's
+    let words: Vec<&str> = tokens[..end].iter().enumerate().map(|(i, t)| if i >= opener && i + 1 < end { *t } else { strip_end(t) }).collect();
     let consumed = tokens[..end].iter().map(|t| t.len() + 1).sum::<usize>().min(line.len());
     Some((format!("{},", words.join(" ")), text[consumed..].trim_start_matches('\n')))
 }
@@ -146,7 +154,7 @@ fn split_signoff(text: &str) -> Option<String> {
         let closer = if name.is_empty() {
             head[start..].join(" ")
         } else {
-            let words: Vec<&str> = head[start..].iter().map(|t| strip_end(t)).collect();
+            let words: Vec<&str> = head[start..].iter().map(|t| t.trim_matches(|c: char| !c.is_alphanumeric())).collect();
             format!("{},\n{}", words.join(" "), strip_end(&name.join(" ")))
         };
         let before = format!("{}{}", &text[..line_start], head[..start].join(" "));
@@ -293,6 +301,31 @@ I'm Jeff. I'm writing about the invoice.");
         assert_eq!(format("Hi Mr. O'Brien, the report is attached."), "Hi Mr. O'Brien,
 
 The report is attached.");
+    }
+
+    #[test]
+    fn recipient_lists() {
+        assert_eq!(format("Hi Sarah, Tom, the build is ready."), "Hi Sarah, Tom,
+
+The build is ready.");
+        unchanged("Hi Sarah, Tom and Priya, the build is ready.");
+        unchanged("Hi Sarah, Tom, and Priya, the build is ready.");
+        unchanged("Hi, Sarah and Tom and Priya and Dev, the build is ready.");
+        assert_eq!(format("Hi Sarah, Tom is joining us."), "Hi Sarah,
+
+Tom is joining us.");
+        assert_eq!(format("Hi Sarah. Tom is joining us."), "Hi Sarah,
+
+Tom is joining us.");
+        unchanged("Hey, Jeff can you send the file?");
+    }
+
+    #[test]
+    fn closer_punctuation() {
+        assert_eq!(format("Send it. Thanks; Jeff."), "Send it.
+
+Thanks,
+Jeff");
     }
 
     #[test]

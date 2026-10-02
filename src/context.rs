@@ -2,7 +2,7 @@
 
 use crate::config::Config;
 use windows::core::PWSTR;
-use windows::Win32::Foundation::CloseHandle;
+use windows::Win32::Foundation::{CloseHandle, HWND};
 use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
 use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId};
 
@@ -24,12 +24,16 @@ impl Profile {
 /// A webmail title only counts in one of these, so "Outlook migration.docx" in Word is not email.
 const BROWSERS: &[&str] = &["chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "vivaldi.exe", "arc.exe"];
 
+fn is_browser(exe: &str) -> bool {
+    BROWSERS.contains(&exe.to_lowercase().as_str())
+}
+
 pub fn classify(exe: &str, title: &str, cfg: &Config) -> Profile {
     let exe = exe.to_lowercase();
     if !exe.is_empty() && cfg.email_apps.iter().any(|a| a.to_lowercase() == exe) {
         return Profile::Email;
     }
-    if BROWSERS.contains(&exe.as_str()) {
+    if is_browser(&exe) {
         let title = title.to_lowercase();
         if cfg.email_titles.iter().any(|t| !t.is_empty() && title.contains(&t.to_lowercase())) {
             return Profile::Email;
@@ -38,9 +42,9 @@ pub fn classify(exe: &str, title: &str, cfg: &Config) -> Profile {
     Profile::Plain
 }
 
-/// The foreground window's exe file name and title. `None` when the process cannot be opened
-/// (an elevated app seen from a non-elevated Murmur).
-fn foreground() -> Option<(String, String)> {
+/// The foreground window and its exe file name. `None` when there is no window or the process
+/// cannot be opened (an elevated app seen from a non-elevated Murmur).
+fn foreground() -> Option<(HWND, String)> {
     unsafe {
         let hwnd = GetForegroundWindow();
         if hwnd.is_invalid() {
@@ -55,18 +59,25 @@ fn foreground() -> Option<(String, String)> {
         let _ = CloseHandle(process);
         named.ok()?;
         let path = String::from_utf16_lossy(&path[..len as usize]);
-        let exe = path.rsplit(['\\', '/']).next().unwrap_or_default().to_string();
-        let mut title = [0u16; 512];
-        let n = GetWindowTextW(hwnd, &mut title).max(0) as usize;
-        Some((exe, String::from_utf16_lossy(&title[..n])))
+        Some((hwnd, path.rsplit(['\\', '/']).next().unwrap_or_default().to_string()))
     }
 }
 
-/// The profile for the window that has the focus right now. The title is used for the match
-/// and dropped: it can hold a subject line or an address, so it is never logged.
+fn window_title(hwnd: HWND) -> String {
+    let mut title = [0u16; 512];
+    let n = unsafe { GetWindowTextW(hwnd, &mut title) }.max(0) as usize;
+    String::from_utf16_lossy(&title[..n])
+}
+
+/// The profile for the window that has the focus right now. The title is read only for a
+/// browser, used for the match and dropped: it can hold a subject line or an address, so it is
+/// never logged.
 pub fn detect(cfg: &Config) -> Profile {
     match foreground() {
-        Some((exe, title)) => classify(&exe, &title, cfg),
+        Some((hwnd, exe)) => {
+            let title = if is_browser(&exe) { window_title(hwnd) } else { String::new() };
+            classify(&exe, &title, cfg)
+        }
         None => Profile::Plain,
     }
 }
@@ -121,6 +132,14 @@ mod tests {
         c.email_titles.clear();
         assert_eq!(classify("OUTLOOK.EXE", "Inbox - Gmail", &c), Profile::Plain);
         assert_eq!(classify("chrome.exe", "Inbox - Gmail", &c), Profile::Plain);
+    }
+
+    #[test]
+    fn is_browser_ignores_case() {
+        assert!(is_browser("Chrome.EXE"));
+        assert!(is_browser("msedge.exe"));
+        assert!(!is_browser("OUTLOOK.EXE"));
+        assert!(!is_browser(""));
     }
 
     #[test]
