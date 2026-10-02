@@ -85,9 +85,11 @@ Looks only at the **start** of the dictation.
 
 - The first words are a greeting opener: `hi`, `hello`, `hey`, `dear`, `good morning`, `good afternoon`, `good evening`, `greetings`.
 - A comma directly on the opener ("Hi, Sarah.") is dropped.
-- After the opener come **0 to 3** words, and the last of them (or the opener itself when there are none) ends in `,` `.` or `!`.
+- After the opener come **0 to 3** name words, and the last of them (or the opener itself when there are none) ends in `,` `.` or `!`, or is the last word of the line.
+- A name word is a capitalised word, or one of `there`, `all`, `everyone`, `everybody`, `team`, `folks`, `both`, `and`. The full stop of `Mr.` `Mrs.` `Ms.` `Dr.` `Prof.` is part of the word and does not end the greeting.
 - When that holds: that final mark becomes `,`, a blank line follows, and the next word is capitalised.
-- When no such mark is found within the 3 words, the rule does not fire and the text is unchanged.
+- When the words after the opener are not name words but the opener itself carries a comma ("Hi, just checking in."), the greeting is the opener alone.
+- Otherwise the rule does not fire and the text is unchanged.
 
 | In | Out |
 |---|---|
@@ -95,6 +97,9 @@ Looks only at the **start** of the dictation.
 | `Hi, Sarah. Thanks for the update.` | `Hi Sarah,` ⏎⏎ `Thanks for the update.` |
 | `Good morning, team. The build is ready.` | `Good morning team,` ⏎⏎ `The build is ready.` |
 | `Hello. Quick question.` | `Hello,` ⏎⏎ `Quick question.` |
+| `Hi, just checking in. Are you free?` | `Hi,` ⏎⏎ `Just checking in. Are you free?` |
+| `Dear Mr. Smith, the report is attached.` | `Dear Mr. Smith,` ⏎⏎ `The report is attached.` |
+| `Hey Jeff can you send the file` | unchanged (no punctuation ends the greeting) |
 | `Hi Sarah and Tom and Priya and Dev, the build is ready.` | unchanged (more than 3 words) |
 | `The build is ready. Hi Sarah, thanks.` | unchanged (not at the start) |
 
@@ -106,10 +111,11 @@ Looks only at the **end** of the dictation.
 
 - The closer is one of: `thanks`, `thank you`, `thanks again`, `many thanks`, `thanks so much`, `best`, `best regards`, `kind regards`, `warm regards`, `regards`, `cheers`, `sincerely`, `talk soon`. The longest match wins.
 - The closer starts a sentence: it is the first word of the dictation or the word before it ends in `.` `!` or `?`.
-- After the closer come **0 to 3** words and then the end of the text.
+- After the closer come **0 to 3** name words and then the end of the text. A name word is a capitalised word; only the last may carry punctuation.
 - **With a name** (1 to 3 words): a blank line, the closer followed by `,`, a line break, then the name with its trailing `.` `!` or `,` removed.
 - **With no name**: a blank line, then the closer exactly as dictated.
-- More than 3 words after the closer, or a closer in mid-sentence: the rule does not fire.
+- More than 3 words after the closer, words after it that are not name words, or a closer in mid-sentence: the rule does not fire.
+- A dictation that is only a closer with no name ("Thanks.") is unchanged.
 
 | In | Out |
 |---|---|
@@ -119,6 +125,8 @@ Looks only at the **end** of the dictation.
 | `Thanks, Jeff.` (whole dictation) | `Thanks,` ⏎ `Jeff` |
 | `Thanks for the update, I'll look tomorrow.` | unchanged (more than 3 words follow) |
 | `I said thanks, Jeff.` | unchanged (closer is mid-sentence) |
+| `…notes by Friday. Thanks a lot.` | unchanged ("a lot" is not a name) |
+| `…notes by Friday. Thanks, I appreciate it.` | unchanged (not a name) |
 
 ### Order and interactions
 
