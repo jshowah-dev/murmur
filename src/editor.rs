@@ -80,6 +80,11 @@ impl eframe::App for EditorApp {
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
         self.draw(ui);
     }
+
+    // only the window is remembered, not egui's scroll offsets and the like
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
 }
 
 impl EditorApp {
@@ -207,6 +212,22 @@ fn focus_existing() {
     }
 }
 
+/// eframe remembers the window's size and position in `state`, and keeps it on a connected monitor.
+fn options(state: PathBuf) -> eframe::NativeOptions {
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/murmur.png")).unwrap_or_default();
+    eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title(TITLE)
+            .with_icon(Arc::new(icon))
+            .with_inner_size([760.0, 560.0])
+            .with_min_inner_size([560.0, 420.0]),
+        // eframe centers after restoring, which would undo where the window was left
+        centered: !state.exists(),
+        persistence_path: Some(state),
+        ..Default::default()
+    }
+}
+
 pub fn run(tab: Tab) -> Result<()> {
     log::info!("editor starting on {tab:?}");
     let _instance = unsafe {
@@ -217,20 +238,10 @@ pub fn run(tab: Tab) -> Result<()> {
         }
         m
     };
-    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/murmur.png")).unwrap_or_default();
-    let opts = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(TITLE)
-            .with_icon(Arc::new(icon))
-            .with_inner_size([760.0, 560.0])
-            .with_min_inner_size([560.0, 420.0]),
-        centered: true,
-        ..Default::default()
-    };
     let app = EditorApp::new(murmur_lib::dictionary::path(), murmur_lib::snippets::path(), tab);
     eframe::run_native(
         "murmur-dictionary",
-        opts,
+        options(murmur_lib::config::config_dir().join("editor.ron")),
         Box::new(move |cc| {
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
             load_system_font(&cc.egui_ctx);
@@ -369,5 +380,31 @@ mod tests {
         let text = frame(&ctx, &mut app, MIN, vec![], false);
         assert!(text.iter().any(|(t, _)| t == "Snippets •"));
         assert!(text.iter().any(|(t, _)| t == "Dictionary"));
+    }
+
+    #[test]
+    fn the_first_open_is_centered_and_the_window_is_remembered_in_the_given_file() {
+        let dir = std::env::temp_dir().join(format!("murmur-editor-window-new-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = dir.join("editor.ron");
+        let opts = options(state.clone());
+        assert!(opts.centered);
+        assert!(opts.persist_window);
+        assert_eq!(opts.persistence_path, Some(state));
+    }
+
+    #[test]
+    fn once_the_window_is_remembered_it_opens_where_it_was_left() {
+        let dir = std::env::temp_dir().join(format!("murmur-editor-window-saved-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = dir.join("editor.ron");
+        std::fs::write(&state, "{}").unwrap();
+        // centering is applied after eframe restores the saved position, so it would undo it
+        assert!(!options(state).centered);
+    }
+
+    #[test]
+    fn only_the_window_is_remembered() {
+        assert!(!eframe::App::persist_egui_memory(&app("memory", Tab::Dictionary)));
     }
 }
