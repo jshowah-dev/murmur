@@ -85,6 +85,9 @@ struct AboutApp {
     hwnd: HWND,
     frame: u32,
     was_focused: bool,
+    /// Set once the window has been asked to close. It's drawn a few more times before it goes:
+    /// those frames must show the same card, or it blinks out and back.
+    closing: bool,
     height: f32,
 }
 
@@ -94,6 +97,13 @@ impl eframe::App for AboutApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
+        self.draw(ui);
+    }
+}
+
+impl AboutApp {
+    /// The whole window, apart from eframe itself, so tests can drive it.
+    fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.frame += 1;
         if self.frame == 1 {
@@ -116,9 +126,9 @@ impl eframe::App for AboutApp {
         // Esc or clicking another window closes it
         let focused = ctx.input(|i| i.focused);
         self.was_focused |= focused;
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) || (self.was_focused && !focused) {
+        if !self.closing && (ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) || (self.was_focused && !focused)) {
+            self.closing = true;
             ctx.send_viewport_cmd(ViewportCommand::Close);
-            return;
         }
 
         let card = Frame::new()
@@ -147,6 +157,7 @@ impl eframe::App for AboutApp {
                         Update::Available(r) if self.installed => {
                             if ui.link(RichText::new(format!("update to v{} →", r.tag)).color(GREEN)).clicked() {
                                 self.clicked.set(true);
+                                self.closing = true;
                                 ctx.send_viewport_cmd(ViewportCommand::Close);
                             }
                         }
@@ -216,7 +227,7 @@ pub fn show(model: String, terms: usize, installed: bool) -> Option<(Release, bo
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
             load_system_font(&cc.egui_ctx);
             let hwnd = hwnd_of(cc).unwrap_or_default();
-            Ok(Box::new(AboutApp { model, terms, update: Update::Checking, rx: None, installed, found: app_found, clicked: app_clicked, hwnd, frame: 0, was_focused: false, height: 0.0 }))
+            Ok(Box::new(AboutApp { model, terms, update: Update::Checking, rx: None, installed, found: app_found, clicked: app_clicked, hwnd, frame: 0, was_focused: false, closing: false, height: 0.0 }))
         }),
     );
     if let Err(e) = r {
@@ -234,6 +245,59 @@ mod tests {
         let p = Path::new(r"C:\m\sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8");
         assert_eq!(model_label(p), "Parakeet TDT 0.6B v2 (NVIDIA)");
         assert_eq!(model_label(Path::new(r"C:\m\whisper-small")), "whisper-small");
+    }
+
+    /// Past the frames that start the update check and take focus, so a test touches neither.
+    fn app() -> AboutApp {
+        AboutApp {
+            model: "Parakeet".into(),
+            terms: 0,
+            update: Update::UpToDate,
+            rx: None,
+            installed: true,
+            found: Rc::new(Cell::new(None)),
+            clicked: Rc::new(Cell::new(false)),
+            hwnd: HWND::default(),
+            frame: 5,
+            was_focused: false,
+            closing: false,
+            height: 0.0,
+        }
+    }
+
+    /// Runs one frame, returning the text drawn and whether the window asked to close.
+    fn frame(ctx: &egui::Context, app: &mut AboutApp, events: Vec<egui::Event>) -> (Vec<String>, bool) {
+        fn walk(shape: &egui::epaint::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::epaint::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                egui::epaint::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let input = egui::RawInput { events, ..Default::default() };
+        let out = ctx.run_ui(input, |ui| app.draw(ui));
+        let mut text = Vec::new();
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut text));
+        let close = out.viewport_output.values().any(|v| v.commands.contains(&ViewportCommand::Close));
+        (text, close)
+    }
+
+    fn esc() -> egui::Event {
+        egui::Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }
+    }
+
+    #[test]
+    fn the_card_stays_drawn_while_it_closes() {
+        let ctx = egui::Context::default();
+        let mut app = app();
+        frame(&ctx, &mut app, vec![]);
+        let (text, close) = frame(&ctx, &mut app, vec![esc()]);
+        assert!(close);
+        assert!(text.iter().any(|t| t == "Murmur"), "closing frame drew {text:?}");
+        // a redraw already queued, before the window goes
+        let (text, close) = frame(&ctx, &mut app, vec![]);
+        assert!(!close, "asks to close once");
+        assert!(text.iter().any(|t| t == "Murmur"), "next frame drew {text:?}");
     }
 
     #[test]
