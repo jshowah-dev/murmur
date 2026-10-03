@@ -32,6 +32,7 @@ pub struct Tray {
     _icon: TrayIcon,
     menu: Menu,
     pause: MenuItem,
+    fix: MenuItem,
     ptt: MenuItem,
     autostart: CheckMenuItem,
     update: MenuItem,
@@ -72,7 +73,7 @@ impl Tray {
     pub fn create(ptt_label: &str) -> Result<Tray> {
         let menu = Menu::new();
         let pause = MenuItem::new("Pause", true, None);
-        let fix = MenuItem::new("Fix last (Left Shift+PTT)", true, None);
+        let fix = MenuItem::new(fix_item_label(ptt_label), true, None);
         let hist = MenuItem::new("History…", true, None);
         let dict = MenuItem::new("Dictionary…", true, None);
         let snip = MenuItem::new("Snippets…", true, None);
@@ -104,7 +105,7 @@ impl Tray {
         if !unsafe { SetWindowSubclass(HWND(_icon.window_handle() as *mut _), Some(balloon_proc), 1, 0) }.as_bool() {
             log::warn!("balloon clicks unavailable: SetWindowSubclass failed");
         }
-        Ok(Tray { _icon, menu, pause, ptt, autostart, update, model, shown: Cell::new((false, false)), ids, click: RefCell::new(BalloonClick::Nothing) })
+        Ok(Tray { _icon, menu, pause, fix, ptt, autostart, update, model, shown: Cell::new((false, false)), ids, click: RefCell::new(BalloonClick::Nothing) })
     }
 
     pub fn poll(&self) -> Option<TrayEvent> {
@@ -140,6 +141,7 @@ impl Tray {
     }
 
     pub fn set_ptt_label(&self, label: &str) {
+        self.fix.set_text(fix_item_label(label));
         self.ptt.set_text(ptt_item_label(label));
     }
 
@@ -203,6 +205,10 @@ impl Tray {
             let _ = self._icon.set_tooltip(Some(format!("Murmur — {title}: {body}")));
         }
     }
+}
+
+fn fix_item_label(key: &str) -> String {
+    format!("Fix last dictation (Shift + {key})")
 }
 
 fn ptt_item_label(key: &str) -> String {
@@ -352,5 +358,12 @@ mod tests {
     #[test]
     fn the_ptt_item_names_the_current_key() {
         assert_eq!(ptt_item_label("Right Ctrl"), "Push-to-talk key: Right Ctrl…");
+    }
+
+    #[test]
+    fn the_fix_item_names_shift_and_the_current_key() {
+        // either Shift works, so the label doesn't name a side
+        assert_eq!(fix_item_label("Right Ctrl"), "Fix last dictation (Shift + Right Ctrl)");
+        assert_eq!(fix_item_label("Left Ctrl + Left Alt"), "Fix last dictation (Shift + Left Ctrl + Left Alt)");
     }
 }
