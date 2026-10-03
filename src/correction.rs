@@ -58,7 +58,7 @@ fn shorten(term: &str) -> String {
     term.chars().take(TERM_MAX - 1).chain(['…']).collect()
 }
 
-/// What the mote says after fix-last, or None when the landing says it all.
+/// What the mote says after fix-last, or None when nothing was changed.
 pub(crate) fn fix_message(o: &FixOutcome) -> Option<Message> {
     if o.nothing_to_fix {
         return Some(Message::plain("Nothing to fix yet"));
@@ -80,6 +80,7 @@ pub(crate) fn fix_message(o: &FixOutcome) -> Option<Message> {
         }
     }
     match (spans.is_empty(), o.copied) {
+        (true, false) if o.replaced => spans.push(("Replaced".into(), text)),
         (true, false) => return None,
         (true, true) => spans.push(("Copied, press Ctrl+V to paste".into(), text)),
         (false, true) => spans.push((" · Copied, press Ctrl+V".into(), text)),
@@ -207,8 +208,9 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_replace_or_a_cancel_says_nothing() {
-        assert_eq!(fix_message(&FixOutcome { replaced: true, ..Default::default() }), None);
+    fn a_plain_replace_says_replaced_and_a_cancel_says_nothing() {
+        let m = fix_message(&FixOutcome { replaced: true, ..Default::default() }).unwrap();
+        assert_eq!(text(&m), "Replaced");
         assert_eq!(fix_message(&FixOutcome::default()), None);
     }
 }

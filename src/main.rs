@@ -696,16 +696,7 @@ fn foreground_caret() -> Option<(f32, f32)> {
 fn after_fix(out: correction::FixOutcome, from_tray: bool, mote: &mut Mote, overlay: &Overlay) -> Option<isize> {
     let to = if out.nothing_to_fix && from_tray { None } else { foreground_caret() };
     let from = out.card.unwrap_or_else(|| overlay.centre_physical());
-    match correction::fix_message(&out) {
-        Some(m) => say(mote, overlay, m, from, to),
-        None => {
-            if let (true, Some(to)) = (out.replaced, to) {
-                mote.launch(from, to);
-                mote.dissolve();
-            }
-            None
-        }
-    }
+    correction::fix_message(&out).and_then(|m| say(mote, overlay, m, from, to))
 }
 
 /// Whether a mic whose stream died is opened again now, or left for the next key-down.

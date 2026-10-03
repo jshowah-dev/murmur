@@ -30,7 +30,7 @@ Out of scope: dictation errors (model failed to load, a broken dictionary or sni
 |---|---|---|
 | Nothing heard (no text came back) | releasing the key | The mote at the caret unfurls "Didn't catch that". With no caret, a mote rises from the pill and unfurls just above it. |
 | Fix-last saved, words learned | Ctrl+Enter | A mote flies from the card's centre to the caret where the correction landed and unfurls "Learned hob → HAWB". Several terms are joined with ", ". |
-| Fix-last saved, nothing learned, replaced | Ctrl+Enter | The mote dissolves into the corrected text with no words, as a normal dictation lands. |
+| Fix-last saved, nothing learned, replaced | Ctrl+Enter | "Replaced" at the caret. (Changed from a wordless dissolve after smoke testing, Jeff 2026-10-02: a silent landing read as no answer.) |
 | Fix-last couldn't replace (older than 60 s, not pasted, window changed, or undo-and-paste failed) | Ctrl+Enter | "Copied, press Ctrl+V to paste", with the text on the clipboard. If something was also learned: "Learned hob → HAWB · Copied, press Ctrl+V". |
 | Fix last, nothing to fix | Shift + talk key | "Nothing to fix yet" at the caret. |
 | Fix last, nothing to fix | tray menu | The same, above the pill. |
