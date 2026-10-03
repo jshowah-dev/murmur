@@ -1,7 +1,7 @@
 //! The carved moment: when you let go of the key, a mote flies from the pill to your caret,
 //! waits there while the speech is transcribed, and dissolves into your words.
 
-use crate::canvas::{self, Canvas};
+use crate::canvas::{self, Canvas, Span};
 use crate::editor_kit::{ease, reduced_motion};
 use crate::motion;
 use anyhow::{anyhow, Result};
@@ -40,45 +40,150 @@ pub(crate) fn arc_point(from: Pt, to: Pt, t: f32) -> Pt {
     )
 }
 
-/// What to draw this frame: where, how opaque, and how large (1 = normal).
+/// What the mote says: runs of text, each in its own colour.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Message(pub Vec<Span>);
+
+impl Message {
+    pub(crate) fn plain(s: &str) -> Message {
+        Message(vec![(s.to_string(), crate::correction_ui::rgb(crate::correction_ui::TEXT))])
+    }
+
+    pub(crate) fn chars(&self) -> usize {
+        self.0.iter().map(|(s, _)| s.chars().count()).sum()
+    }
+}
+
+/// How long a message stays open: long enough to read it.
+pub(crate) fn hold_for(m: &Message) -> Duration {
+    motion::duration::LOCATE.max(motion::duration::READ_PER_CHAR * m.chars() as u32)
+}
+
+/// Where a message is said: at a caret it grows rightward from the caret; above the pill it's centred.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Target {
+    Caret(Pt),
+    Pill(Pt),
+}
+
+/// The landing point for a caret rect: its left edge, halfway down the line.
+pub(crate) fn caret_point(r: RECT) -> Pt {
+    (r.left as f32, (r.top + r.bottom) as f32 / 2.0)
+}
+
+/// Text opacity for capsule openness `open`: the words come in once it's about 70% wide.
+fn words_for(open: f32) -> f32 {
+    ((open - 0.7) / 0.3).clamp(0.0, 1.0)
+}
+
+/// What to draw this frame: where, how opaque, how large (1 = normal), and how far a message
+/// capsule has opened (0 = a dot) and how visible its words are.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Sprite {
     pub at: Pt,
     pub alpha: f32,
     pub radius: f32,
+    pub open: f32,
+    pub words: f32,
+}
+
+/// What a flight does on arrival.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Then {
+    Settle,
+    Dissolve,
+    Say,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Phase {
     Hidden,
-    /// `home`: the words already landed, so dissolve on arrival
-    Flying { from: Pt, to: Pt, start: Instant, home: bool },
+    Flying { from: Pt, to: Pt, start: Instant, then: Then },
     Settled { at: Pt, since: Instant },
+    /// unfurling into the message, then holding it open
+    Speaking { at: Pt, start: Instant },
+    /// pulling back to a dot from openness `open`
+    Furling { at: Pt, start: Instant, open: f32 },
     Leaving { at: Pt, start: Instant, alpha: f32, grow: bool },
 }
 
 pub(crate) struct Flight {
     phase: Phase,
     reduced: bool,
+    message: Option<Message>,
+    centred: bool,
 }
 
 impl Flight {
     pub(crate) fn new(reduced: bool) -> Flight {
-        Flight { phase: Phase::Hidden, reduced }
+        Flight { phase: Phase::Hidden, reduced, message: None, centred: false }
     }
 
     /// Starts a flight from the pill to the caret, replacing whatever was showing.
     pub(crate) fn launch(&mut self, from: Pt, to: Pt, now: Instant) {
-        self.phase = if self.reduced { Phase::Settled { at: to, since: now } } else { Phase::Flying { from, to, start: now, home: false } };
+        self.message = None;
+        self.phase = if self.reduced { Phase::Settled { at: to, since: now } } else { Phase::Flying { from, to, start: now, then: Then::Settle } };
     }
 
     /// The words landed: grow and fade into them. Mid-flight, it finishes the flight first.
     pub(crate) fn dissolve(&mut self, now: Instant) {
-        if let Phase::Flying { home, .. } = &mut self.phase {
-            *home = true;
+        if let Phase::Flying { then, .. } = &mut self.phase {
+            *then = Then::Dissolve;
             return;
         }
         self.leave(now, true);
+    }
+
+    /// Says `m`: a mote already out says it where it is (finishing a flight first); otherwise
+    /// one flies from `from` to the target and says it there.
+    pub(crate) fn say(&mut self, m: Message, from: Pt, to: Target, now: Instant) {
+        self.message = Some(m);
+        self.phase = match self.phase {
+            Phase::Flying { from, to, start, then } => {
+                // a dictation's flight ends at a caret; an earlier message keeps its own placement
+                if then != Then::Say {
+                    self.centred = false;
+                }
+                Phase::Flying { from, to, start, then: Then::Say }
+            }
+            Phase::Settled { at, .. } | Phase::Speaking { at, .. } => {
+                self.centred = false;
+                Phase::Speaking { at, start: now }
+            }
+            _ => {
+                let (at, centred) = match to {
+                    Target::Caret(p) => (p, false),
+                    Target::Pill(p) => (p, true),
+                };
+                self.centred = centred;
+                if self.reduced { Phase::Speaking { at, start: now } } else { Phase::Flying { from, to: at, start: now, then: Then::Say } }
+            }
+        };
+    }
+
+    /// Closes an open message early, from however far it has opened.
+    pub(crate) fn dismiss(&mut self, now: Instant) {
+        match self.phase {
+            Phase::Speaking { at, .. } => {
+                let open = self.sprite(now).map_or(0.0, |s| s.open);
+                self.phase = if self.reduced { Phase::Hidden } else { Phase::Furling { at, start: now, open } };
+            }
+            Phase::Flying { then: Then::Say, .. } => self.leave(now, false),
+            _ => {}
+        }
+    }
+
+    /// Whether a message is on its way, open, or closing.
+    pub(crate) fn is_speaking(&self) -> bool {
+        self.message.is_some() && matches!(self.phase, Phase::Flying { then: Then::Say, .. } | Phase::Speaking { .. } | Phase::Furling { .. })
+    }
+
+    pub(crate) fn message(&self) -> Option<&Message> {
+        self.message.as_ref()
+    }
+
+    pub(crate) fn centred(&self) -> bool {
+        self.centred
     }
 
     /// No words, an error, or you moved on: fade where it is.
@@ -106,24 +211,45 @@ impl Flight {
         let phase = self.phase;
         match phase {
             Phase::Hidden => None,
-            Phase::Flying { from, to, start, home } => {
+            Phase::Flying { from, to, start, then } => {
                 let t = secs(start, FLIGHT);
                 if t >= 1.0 {
                     let landed = start + motion::scaled(FLIGHT);
-                    self.phase = if home {
-                        Phase::Leaving { at: to, start: landed, alpha: 1.0, grow: true }
-                    } else {
-                        Phase::Settled { at: to, since: landed }
+                    self.phase = match then {
+                        Then::Settle => Phase::Settled { at: to, since: landed },
+                        Then::Dissolve => Phase::Leaving { at: to, start: landed, alpha: 1.0, grow: true },
+                        Then::Say => Phase::Speaking { at: to, start: landed },
                     };
                     return self.sprite(now);
                 }
-                Some(Sprite { at: arc_point(from, to, ease(motion::easing::ENTER, t)), alpha: 1.0, radius: 1.0 })
+                Some(Sprite { at: arc_point(from, to, ease(motion::easing::ENTER, t)), alpha: 1.0, radius: 1.0, open: 0.0, words: 0.0 })
+            }
+            Phase::Speaking { at, start } => {
+                let unfurl = if self.reduced { Duration::ZERO } else { motion::scaled(motion::duration::ENTER) };
+                let hold = motion::scaled(self.message.as_ref().map_or(motion::duration::LOCATE, hold_for));
+                let el = now.saturating_duration_since(start);
+                if el >= unfurl + hold {
+                    self.phase = if self.reduced { Phase::Hidden } else { Phase::Furling { at, start: start + unfurl + hold, open: 1.0 } };
+                    return self.sprite(now);
+                }
+                let open = if unfurl.is_zero() { 1.0 } else { ease(motion::easing::ENTER, (el.as_secs_f32() / unfurl.as_secs_f32()).min(1.0)) };
+                Some(Sprite { at, alpha: 1.0, radius: 1.0, open, words: words_for(open) })
+            }
+            Phase::Furling { at, start, open } => {
+                let t = secs(start, motion::duration::EXIT);
+                if t >= 1.0 {
+                    self.phase = Phase::Leaving { at, start: start + motion::scaled(motion::duration::EXIT), alpha: 1.0, grow: true };
+                    return self.sprite(now);
+                }
+                // the words go in the first half; the capsule pulls back over the whole furl
+                let words = (1.0 - 2.0 * t).max(0.0).min(words_for(open));
+                Some(Sprite { at, alpha: 1.0, radius: 1.0, open: open * (1.0 - ease(motion::easing::EXIT, t)), words })
             }
             Phase::Settled { at, since } => {
                 // breathes slowly while the words are on their way
                 let breath = (secs(since, motion::duration::LOCATE) * std::f32::consts::TAU).cos();
                 let alpha = if self.reduced { 1.0 } else { 0.85 + 0.15 * breath };
-                Some(Sprite { at, alpha, radius: 1.0 })
+                Some(Sprite { at, alpha, radius: 1.0, open: 0.0, words: 0.0 })
             }
             Phase::Leaving { at, start, alpha, grow } => {
                 let t = secs(start, motion::duration::EXIT);
@@ -132,7 +258,7 @@ impl Flight {
                     return None;
                 }
                 let e = ease(motion::easing::EXIT, t);
-                Some(Sprite { at, alpha: alpha * (1.0 - e), radius: if grow { 1.0 + 0.6 * e } else { 1.0 } })
+                Some(Sprite { at, alpha: alpha * (1.0 - e), radius: if grow { 1.0 + 0.6 * e } else { 1.0 }, open: 0.0, words: 0.0 })
             }
         }
     }
@@ -142,7 +268,7 @@ impl Flight {
 /// its words (`awaiting` holds its window), and only if that window is still in front.
 pub(crate) fn landing_point(awaiting: Option<isize>, target: isize, foreground: isize, caret: Option<RECT>) -> Option<Pt> {
     let r = caret?;
-    (awaiting == Some(target) && foreground == target).then(|| (r.left as f32, (r.top + r.bottom) as f32 / 2.0))
+    (awaiting == Some(target) && foreground == target).then(|| caret_point(r))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -345,13 +471,13 @@ mod tests {
 
     #[test]
     fn mote_is_a_bright_core_in_a_soft_halo() {
-        let px = render(&Sprite { at: (0.0, 0.0), alpha: 1.0, radius: 1.0 });
+        let px = render(&Sprite { at: (0.0, 0.0), alpha: 1.0, radius: 1.0, open: 0.0, words: 0.0 });
         let mid = (S / 2 * S + S / 2) as usize;
         assert!(px[mid] >> 24 > 0xE0, "core opaque: {:08X}", px[mid]);
         assert_eq!(px[0], 0, "corner clear");
-        let dim = render(&Sprite { at: (0.0, 0.0), alpha: 0.5, radius: 1.0 });
+        let dim = render(&Sprite { at: (0.0, 0.0), alpha: 0.5, radius: 1.0, open: 0.0, words: 0.0 });
         assert!(dim[mid] >> 24 < px[mid] >> 24);
-        let big = render(&Sprite { at: (0.0, 0.0), alpha: 1.0, radius: 1.6 });
+        let big = render(&Sprite { at: (0.0, 0.0), alpha: 1.0, radius: 1.6, open: 0.0, words: 0.0 });
         let ring = (S / 2 * S + S / 2 + 9) as usize;
         assert!(big[ring] >> 24 > px[ring] >> 24, "dissolving spreads out");
     }
@@ -383,5 +509,103 @@ mod tests {
         f.dissolve(t0);
         f.fade(t0);
         assert!(f.sprite(t0).is_none() && !f.is_active());
+    }
+
+    fn msg(s: &str) -> Message {
+        Message::plain(s)
+    }
+
+    #[test]
+    fn hold_reads_at_least_locate_and_grows_with_length() {
+        assert_eq!(hold_for(&msg("Didn't catch that")), motion::duration::LOCATE, "17 chars is under locate");
+        let long = msg("Learned hob → HAWB · Copied, press Ctrl+V");
+        assert_eq!(hold_for(&long), motion::duration::READ_PER_CHAR * long.chars() as u32);
+        assert_eq!(msg("café").chars(), 4, "characters, not bytes");
+    }
+
+    #[test]
+    fn say_flies_unfurls_holds_then_furls_away() {
+        let t0 = Instant::now();
+        let m = msg("Didn't catch that");
+        let hold = hold_for(&m);
+        let mut f = Flight::new(false);
+        f.say(m, PILL, Target::Caret(CARET), t0);
+        let s = f.sprite(t0).unwrap();
+        assert!(close(s.at, PILL) && s.open == 0.0, "starts as a dot at the pill");
+        let open_at = t0 + FLIGHT + motion::duration::ENTER + ms(1);
+        let s = f.sprite(open_at).unwrap();
+        assert_eq!(s.at, CARET);
+        assert!(s.open > 0.99 && s.words > 0.99, "{s:?}");
+        let furling = t0 + FLIGHT + motion::duration::ENTER + hold + motion::duration::EXIT / 2;
+        let s = f.sprite(furling).unwrap();
+        assert!(s.open < 1.0 && s.open > 0.0, "{s:?}");
+        assert!(f.is_speaking());
+        let gone = t0 + FLIGHT + motion::duration::ENTER + hold + motion::duration::EXIT * 2 + ms(2);
+        assert!(f.sprite(gone).is_none());
+        assert!(!f.is_speaking());
+    }
+
+    #[test]
+    fn say_on_a_settled_mote_unfurls_where_it_is() {
+        let t0 = Instant::now();
+        let mut f = Flight::new(false);
+        f.launch(PILL, CARET, t0);
+        let settled = t0 + FLIGHT + ms(10);
+        f.sprite(settled);
+        f.say(msg("Didn't catch that"), PILL, Target::Pill((0.0, 0.0)), settled);
+        let s = f.sprite(settled + motion::duration::ENTER + ms(1)).unwrap();
+        assert_eq!(s.at, CARET, "stays at the caret, ignoring the new target");
+        assert!(s.open > 0.99);
+        assert!(!f.centred(), "a caret message grows rightward from the caret");
+    }
+
+    #[test]
+    fn say_mid_flight_finishes_the_flight_first() {
+        let t0 = Instant::now();
+        let mut f = Flight::new(false);
+        f.launch(PILL, CARET, t0);
+        f.say(msg("Didn't catch that"), PILL, Target::Pill((5.0, 5.0)), t0 + ms(100));
+        assert_eq!(f.sprite(t0 + FLIGHT + ms(1)).unwrap().at, CARET);
+    }
+
+    #[test]
+    fn dismiss_furls_from_where_it_is() {
+        let t0 = Instant::now();
+        let mut f = Flight::new(false);
+        f.launch(PILL, CARET, t0);
+        let settled = t0 + FLIGHT + ms(10);
+        f.sprite(settled);
+        f.say(msg("Nothing to fix yet"), PILL, Target::Caret(CARET), settled);
+        let mid = settled + motion::duration::ENTER / 2;
+        let half = f.sprite(mid).unwrap().open;
+        f.dismiss(mid);
+        let after = f.sprite(mid + ms(10)).unwrap();
+        assert!(after.open < half && after.open > 0.0, "{half} -> {}", after.open);
+        assert!(f.sprite(mid + motion::duration::EXIT * 2 + ms(2)).is_none());
+    }
+
+    #[test]
+    fn reduced_motion_appears_open_and_still_holds() {
+        let t0 = Instant::now();
+        let m = msg("Didn't catch that");
+        let hold = hold_for(&m);
+        let mut f = Flight::new(true);
+        f.say(m, PILL, Target::Pill(CARET), t0);
+        let s = f.sprite(t0).unwrap();
+        assert_eq!(s.at, CARET, "no flight");
+        assert!(s.open == 1.0 && s.words == 1.0, "no stretch");
+        assert!(f.centred(), "a pill message is centred");
+        assert!(f.sprite(t0 + hold - ms(1)).is_some());
+        assert!(f.sprite(t0 + hold + ms(1)).is_none());
+    }
+
+    #[test]
+    fn a_new_launch_replaces_a_message() {
+        let t0 = Instant::now();
+        let mut f = Flight::new(false);
+        f.say(msg("Didn't catch that"), PILL, Target::Caret(CARET), t0);
+        f.launch(PILL, CARET, t0 + ms(50));
+        assert!(!f.is_speaking());
+        assert!(f.message().is_none());
     }
 }

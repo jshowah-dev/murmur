@@ -24,8 +24,13 @@ pub(crate) const MUTED: Color32 = Color32::from_rgb(0x99, 0x99, 0x99);
 pub(crate) const GREEN: Color32 = Color32::from_rgb(0x60, 0xD0, 0x60);
 pub(crate) const AMBER: Color32 = Color32::from_rgb(0xF5, 0xC5, 0x4A);
 const AMBER_BG: Color32 = Color32::from_rgba_premultiplied(0x36, 0x2B, 0x10, 0x38);
-const SPOKEN: Color32 = Color32::from_rgb(0xD9, 0x8C, 0x7A);
+pub(crate) const SPOKEN: Color32 = Color32::from_rgb(0xD9, 0x8C, 0x7A);
 const FADE: f32 = 0.12;
+
+/// A palette colour as 0xRRGGBB, for the GDI-drawn windows.
+pub(crate) fn rgb(c: Color32) -> u32 {
+    (c.r() as u32) << 16 | (c.g() as u32) << 8 | c.b() as u32
+}
 
 /// Byte ranges of `after`, each flagged true when it is a word the user changed relative to `before`.
 pub fn changed_spans(before: &str, after: &str) -> Vec<(Range<usize>, bool)> {
