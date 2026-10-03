@@ -10,7 +10,11 @@ use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOPMOST, SWP_NO
 const WIDTH: f32 = 540.0;
 const MAX_LIST: f32 = 460.0;
 const HOVER: Color32 = Color32::from_rgb(0x2A, 0x2A, 0x2A);
-const FLASH: Duration = Duration::from_millis(1000);
+
+/// How long "Copied" shows on a row after a copy.
+fn flash() -> Duration {
+    crate::motion::scaled(crate::motion::duration::CONFIRM)
+}
 
 fn ago(secs: u64) -> String {
     match secs {
@@ -65,10 +69,10 @@ impl HistoryApp {
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
 
-        let flashing = self.copied.filter(|(_, at)| at.elapsed() < FLASH);
+        let flashing = self.copied.filter(|(_, at)| at.elapsed() < flash());
         if let Some((_, at)) = flashing {
             // one wake-up to clear the flash; never a repaint loop (it starves the overlay and tray)
-            ctx.request_repaint_after(FLASH.saturating_sub(at.elapsed()));
+            ctx.request_repaint_after(flash().saturating_sub(at.elapsed()));
         }
 
         let card = Frame::new()
@@ -183,6 +187,11 @@ pub fn show(items: Vec<(String, Instant)>, key: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copied_flash_lasts_the_confirm_token() {
+        assert_eq!(flash(), crate::motion::scaled(crate::motion::duration::CONFIRM));
+    }
 
     /// Past the frame that takes focus, so a test doesn't.
     fn app() -> HistoryApp {
