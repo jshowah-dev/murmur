@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::HiDpi::GetDpiForSystem;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, RegisterClassW, SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE,
     SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
@@ -301,6 +302,57 @@ fn render(s: &Sprite) -> Vec<u32> {
     c.into_bgra()
 }
 
+/// The mote's core diameter, which a message capsule grows from.
+const DOT: f32 = 5.0;
+/// Room around the capsule for its rim and the fading halo.
+const MARGIN: f32 = 8.0;
+
+/// A message capsule's centre and size, physical pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TagBox {
+    pub cx: f32,
+    pub cy: f32,
+    pub w: f32,
+    pub h: f32,
+    pub pad: f32,
+}
+
+/// The capsule for text of size `text` at openness `open`: the dot at `at` when closed; open,
+/// it sits above the line, its left edge at the caret (or centred over a pill target).
+fn tag_box(at: Pt, open: f32, text: (i32, i32), scale: f32, centred: bool) -> TagBox {
+    let pad = 12.0 * scale;
+    let (full_w, full_h) = (text.0 as f32 + 2.0 * pad, 26.0 * scale);
+    let lerp = |a: f32, b: f32| a + (b - a) * open;
+    let (w, h) = (lerp(DOT, full_w), lerp(DOT, full_h));
+    let lift = full_h / 2.0 + 16.0 * scale;
+    let cx = if centred { at.0 } else { at.0 - DOT / 2.0 + w / 2.0 };
+    TagBox { cx, cy: at.1 - lift * open, w, h, pad }
+}
+
+/// Top-left for a `w`×`h` window at (x, y), pulled inside `work`.
+fn fit(x: i32, y: i32, w: i32, h: i32, work: RECT) -> (i32, i32) {
+    (x.clamp(work.left, (work.right - w).max(work.left)), y.clamp(work.top, (work.bottom - h).max(work.top)))
+}
+
+/// A frame of a speaking mote, `w`×`h`, with the capsule centred at `centre`.
+fn render_tag(s: &Sprite, m: &Message, b: &TagBox, centre: Pt, w: i32, h: i32, font: i32, text_h: i32) -> Vec<u32> {
+    let mut c = Canvas::new(w, h);
+    let (cx, cy) = centre;
+    let dot = 1.0 - s.open;
+    if dot > 0.0 {
+        c.halo(cx, cy, 12.0 * s.radius, 0x60D060, 0.5 * s.alpha * dot);
+    }
+    c.capsule(cx - b.w / 2.0, cy - b.h / 2.0, b.w, b.h, 0x202020, 0.9 * s.alpha);
+    if dot > 0.0 {
+        let core = DOT * s.radius;
+        c.capsule(cx - core / 2.0, cy - core / 2.0, core, core, 0xE8FFE8, s.alpha * dot);
+    }
+    if s.words > 0.0 {
+        c.text(cx - b.w / 2.0 + b.pad, cy - text_h as f32 / 2.0, &m.0, font, s.words * s.alpha);
+    }
+    c.into_bgra()
+}
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
 }
@@ -311,6 +363,8 @@ pub(crate) struct Mote {
     hwnd: HWND,
     flight: Flight,
     shown: bool,
+    /// physical pixels per 96-dpi pixel, for the message's size
+    scale: f32,
 }
 
 impl Mote {
@@ -331,7 +385,8 @@ impl Mote {
                 None, None, Some(hinst.into()), None,
             )?)
         })?;
-        Ok(Mote { hwnd, flight: Flight::new(reduced_motion()), shown: false })
+        let scale = crate::caret::physical(|| unsafe { GetDpiForSystem() }) as f32 / 96.0;
+        Ok(Mote { hwnd, flight: Flight::new(reduced_motion()), shown: false, scale })
     }
 
     pub(crate) fn launch(&mut self, from: Pt, to: Pt) {
@@ -350,13 +405,41 @@ impl Mote {
         self.flight.is_active()
     }
 
+    pub(crate) fn say(&mut self, m: Message, from: Pt, to: Target) {
+        self.flight.say(m, from, to, Instant::now());
+    }
+
+    pub(crate) fn dismiss(&mut self) {
+        self.flight.dismiss(Instant::now());
+    }
+
+    pub(crate) fn is_speaking(&self) -> bool {
+        self.flight.is_speaking()
+    }
+
+    /// The frame for `s`: (x, y, w, h, pixels), physical pixels.
+    fn frame(&self, s: &Sprite) -> (i32, i32, i32, i32, Vec<u32>) {
+        let Some(m) = self.flight.message().filter(|_| s.open > 0.0) else {
+            let (x, y) = ((s.at.0 - S as f32 / 2.0).round() as i32, (s.at.1 - S as f32 / 2.0).round() as i32);
+            return (x, y, S, S, render(s));
+        };
+        let font = (16.0 * self.scale).round() as i32;
+        let text = canvas::measure(&m.0, font);
+        let b = tag_box(s.at, s.open, text, self.scale, self.flight.centred());
+        let (w, h) = (((b.w + 2.0 * MARGIN).ceil() as i32).max(S), ((b.h + 2.0 * MARGIN).ceil() as i32).max(S));
+        let (x0, y0) = ((b.cx - w as f32 / 2.0).round() as i32, (b.cy - h as f32 / 2.0).round() as i32);
+        let at = RECT { left: s.at.0 as i32, top: s.at.1 as i32, right: s.at.0 as i32 + 1, bottom: s.at.1 as i32 + 1 };
+        let (x, y) = fit(x0, y0, w, h, crate::caret::work_area(&crate::caret::Anchor::Area(at)));
+        let px = render_tag(s, m, &b, (b.cx - x as f32, b.cy - y as f32), w, h, font, text.1);
+        (x, y, w, h, px)
+    }
+
     /// Draws this frame of the flight, or hides the window once it's over.
     pub(crate) fn animate(&mut self) {
         match self.flight.sprite(Instant::now()) {
             Some(s) => {
-                let px = render(&s);
-                let (x, y) = ((s.at.0 - S as f32 / 2.0).round() as i32, (s.at.1 - S as f32 / 2.0).round() as i32);
-                crate::caret::physical(|| canvas::push(self.hwnd, x, y, S, S, &px));
+                let (x, y, w, h, px) = self.frame(&s);
+                crate::caret::physical(|| canvas::push(self.hwnd, x, y, w, h, &px));
                 if !self.shown {
                     unsafe {
                         let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
@@ -607,5 +690,30 @@ mod tests {
         f.launch(PILL, CARET, t0 + ms(50));
         assert!(!f.is_speaking());
         assert!(f.message().is_none());
+    }
+
+    #[test]
+    fn a_closed_tag_is_the_dot_and_an_open_one_sits_above_the_caret() {
+        let at = (400.0, 300.0);
+        let dot = tag_box(at, 0.0, (100, 18), 1.0, false);
+        assert_eq!((dot.cx, dot.cy), at);
+        assert_eq!((dot.w, dot.h), (DOT, DOT));
+        let open = tag_box(at, 1.0, (100, 18), 1.0, false);
+        assert!((open.cx - open.w / 2.0 - (at.0 - DOT / 2.0)).abs() < 1e-3, "left edge stays at the caret");
+        assert_eq!(open.w, 100.0 + 2.0 * open.pad);
+        assert!(open.cy + open.h / 2.0 < at.1, "entirely above the caret's middle: {open:?}");
+        let centred = tag_box(at, 1.0, (100, 18), 1.0, true);
+        assert_eq!(centred.cx, at.0);
+        let big = tag_box(at, 1.0, (100, 18), 2.0, false);
+        assert!(big.h > open.h && big.pad > open.pad, "scales with DPI");
+    }
+
+    #[test]
+    fn fit_keeps_the_tag_on_screen() {
+        let work = RECT { left: 0, top: 0, right: 1920, bottom: 1040 };
+        assert_eq!(fit(1850, 500, 200, 40, work), (1720, 500), "pulled in from the right edge");
+        assert_eq!(fit(-30, -10, 200, 40, work), (0, 0));
+        let second = RECT { left: 1920, top: 0, right: 3840, bottom: 1040 };
+        assert_eq!(fit(1900, 500, 200, 40, second).0, 1920);
     }
 }

@@ -242,6 +242,15 @@ impl Overlay {
         })
     }
 
+    /// The pill's top centre in physical pixels: where a message goes when there's no caret.
+    pub fn above_physical(&self) -> (f32, f32) {
+        crate::caret::physical(|| unsafe {
+            let mut r = RECT::default();
+            let _ = GetWindowRect(self.hwnd, &mut r);
+            ((r.left + r.right) as f32 / 2.0, r.top as f32)
+        })
+    }
+
     pub fn hwnd(&self) -> HWND {
         self.hwnd
     }
