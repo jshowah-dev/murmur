@@ -113,21 +113,25 @@ pub(crate) struct Flight {
     reduced: bool,
     message: Option<Message>,
     centred: bool,
+    /// the message holds until dismissed instead of for its read time
+    sticky: bool,
 }
 
 impl Flight {
     pub(crate) fn new(reduced: bool) -> Flight {
-        Flight { phase: Phase::Hidden, reduced, message: None, centred: false }
+        Flight { phase: Phase::Hidden, reduced, message: None, centred: false, sticky: false }
     }
 
     /// Starts a flight from the pill to the caret, replacing whatever was showing.
     pub(crate) fn launch(&mut self, from: Pt, to: Pt, now: Instant) {
+        self.sticky = false;
         self.message = None;
         self.phase = if self.reduced { Phase::Settled { at: to, since: now } } else { Phase::Flying { from, to, start: now, then: Then::Settle } };
     }
 
     /// The words landed: grow and fade into them. Mid-flight, it finishes the flight first.
     pub(crate) fn dissolve(&mut self, now: Instant) {
+        self.sticky = false;
         if let Phase::Flying { then, .. } = &mut self.phase {
             *then = Then::Dissolve;
             return;
@@ -138,6 +142,7 @@ impl Flight {
     /// Says `m`: a mote already out says it where it is (finishing a flight first); otherwise
     /// one flies from `from` to the target and says it there.
     pub(crate) fn say(&mut self, m: Message, from: Pt, to: Target, now: Instant) {
+        self.sticky = false;
         self.message = Some(m);
         self.phase = match self.phase {
             Phase::Flying { from, to, start, then } => {
@@ -162,8 +167,15 @@ impl Flight {
         };
     }
 
+    /// Says `m` like `say`, but it stays open until dismissed (or replaced).
+    pub(crate) fn say_until_dismissed(&mut self, m: Message, from: Pt, to: Target, now: Instant) {
+        self.say(m, from, to, now);
+        self.sticky = true;
+    }
+
     /// Closes an open message early, from however far it has opened.
     pub(crate) fn dismiss(&mut self, now: Instant) {
+        self.sticky = false;
         match self.phase {
             Phase::Speaking { at, .. } => {
                 let open = self.sprite(now).map_or(0.0, |s| s.open);
@@ -196,6 +208,7 @@ impl Flight {
     }
 
     fn leave(&mut self, now: Instant, grow: bool) {
+        self.sticky = false;
         if self.reduced {
             self.phase = Phase::Hidden;
             return;
@@ -232,7 +245,7 @@ impl Flight {
                 let unfurl = if self.reduced { Duration::ZERO } else { motion::scaled(motion::duration::ENTER) };
                 let hold = motion::scaled(self.message.as_ref().map_or(motion::duration::LOCATE, hold_for));
                 let el = now.saturating_duration_since(start);
-                if el >= unfurl + hold {
+                if !self.sticky && el >= unfurl + hold {
                     self.phase = if self.reduced { Phase::Hidden } else { Phase::Furling { at, start: start + unfurl + hold, open: 1.0 } };
                     return self.sprite(now);
                 }
@@ -424,6 +437,11 @@ impl Mote {
     pub(crate) fn say(&mut self, m: Message, from: Pt, to: Target) {
         self.layout = None;
         self.flight.say(m, from, to, Instant::now());
+    }
+
+    pub(crate) fn say_until_dismissed(&mut self, m: Message, from: Pt, to: Target) {
+        self.layout = None;
+        self.flight.say_until_dismissed(m, from, to, Instant::now());
     }
 
     pub(crate) fn dismiss(&mut self) {
@@ -729,6 +747,63 @@ mod tests {
         assert!(f.centred(), "a pill message is centred");
         assert!(f.sprite(t0 + hold - ms(1)).is_some());
         assert!(f.sprite(t0 + hold + ms(1)).is_none());
+    }
+
+    #[test]
+    fn a_sticky_message_holds_until_dismissed() {
+        let t0 = Instant::now();
+        let m = msg("Hold Right Ctrl and talk");
+        let hold = hold_for(&m);
+        let mut f = Flight::new(false);
+        f.say_until_dismissed(m, PILL, Target::Pill(CARET), t0);
+        let late = t0 + FLIGHT + motion::duration::ENTER + hold * 10;
+        let s = f.sprite(late).unwrap();
+        assert!(s.open == 1.0 && s.words == 1.0, "still open long after its read time: {s:?}");
+        assert!(f.is_speaking());
+        f.dismiss(late);
+        assert!(f.sprite(late + motion::duration::EXIT * 2 + ms(5)).is_none(), "dismiss furls and dissolves it");
+    }
+
+    #[test]
+    fn a_message_after_a_sticky_one_times_out() {
+        let t0 = Instant::now();
+        let mut f = Flight::new(false);
+        f.say_until_dismissed(msg("Hold Right Ctrl and talk"), PILL, Target::Pill(CARET), t0);
+        let t1 = t0 + FLIGHT + ms(500);
+        f.sprite(t1);
+        let m = msg("Didn't catch that");
+        let hold = hold_for(&m);
+        f.say(m, PILL, Target::Pill(CARET), t1);
+        assert!(f.sprite(t1 + motion::duration::ENTER + hold + motion::duration::EXIT * 2 + ms(10)).is_none());
+    }
+
+    #[test]
+    fn fade_clears_sticky() {
+        let t0 = Instant::now();
+        let mut f = Flight::new(false);
+        f.say_until_dismissed(msg("Hold Right Ctrl and talk"), PILL, Target::Pill(CARET), t0);
+        f.sprite(t0 + FLIGHT + ms(300));
+        f.fade(t0 + FLIGHT + ms(300));
+        let t1 = t0 + FLIGHT + ms(300) + motion::duration::EXIT + ms(5);
+        assert!(f.sprite(t1).is_none());
+        let m = msg("Replaced");
+        let hold = hold_for(&m);
+        f.say(m, PILL, Target::Pill(CARET), t1);
+        assert!(f.sprite(t1 + FLIGHT + motion::duration::ENTER + hold + motion::duration::EXIT * 2 + ms(10)).is_none(), "not sticky");
+    }
+
+    #[test]
+    fn reduced_motion_sticky_appears_open_and_stays() {
+        let t0 = Instant::now();
+        let m = msg("Hold Right Ctrl and talk");
+        let hold = hold_for(&m);
+        let mut f = Flight::new(true);
+        f.say_until_dismissed(m, PILL, Target::Pill(CARET), t0);
+        let s = f.sprite(t0).unwrap();
+        assert!(s.at == CARET && s.open == 1.0, "no flight, no stretch: {s:?}");
+        assert!(f.sprite(t0 + hold * 10).is_some());
+        f.dismiss(t0 + hold * 10);
+        assert!(f.sprite(t0 + hold * 10 + ms(1)).is_none());
     }
 
     #[test]
