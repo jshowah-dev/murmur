@@ -31,6 +31,8 @@ struct HistoryApp {
     /// those frames must show the same card, or it blinks out and back.
     closing: bool,
     height: f32,
+    /// the talk key's label, for the empty state
+    key: String,
 }
 
 impl eframe::App for HistoryApp {
@@ -80,7 +82,8 @@ impl HistoryApp {
                     ui.add_space(6.0);
                     let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
                     ui.painter().circle_filled(dot.center(), 4.0, GREEN);
-                    ui.label(egui::RichText::new("History · click to copy").size(12.0).color(MUTED));
+                    let head = if self.items.is_empty() { "History" } else { "History · click to copy" };
+                    ui.label(egui::RichText::new(head).size(12.0).color(MUTED));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(6.0);
                         keycap(ui, "Esc");
@@ -88,6 +91,13 @@ impl HistoryApp {
                     });
                 });
                 ui.add_space(6.0);
+                if self.items.is_empty() {
+                    ui.horizontal(|ui| {
+                        ui.add_space(14.0);
+                        ui.label(egui::RichText::new(format!("Nothing dictated yet. Hold {} and speak.", self.key)).size(15.0).color(TEXT));
+                    });
+                    ui.add_space(6.0);
+                }
                 egui::ScrollArea::vertical().max_height(MAX_LIST).auto_shrink([false, true]).show(ui, |ui| {
                     for (i, (text, at)) in self.items.iter().enumerate() {
                         let id = ui.id().with(("row", i));
@@ -142,7 +152,7 @@ impl HistoryApp {
 }
 
 /// Shows recent dictations, newest first, centred on screen. Blocks until closed.
-pub fn show(items: Vec<(String, Instant)>) {
+pub fn show(items: Vec<(String, Instant)>, key: String) {
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Murmur — history")
@@ -162,7 +172,7 @@ pub fn show(items: Vec<(String, Instant)>) {
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
             load_system_font(&cc.egui_ctx);
             let hwnd = hwnd_of(cc).unwrap_or_default();
-            Ok(Box::new(HistoryApp { items, hwnd, frame: 0, was_focused: false, copied: None, closing: false, height: 0.0 }))
+            Ok(Box::new(HistoryApp { items, hwnd, frame: 0, was_focused: false, copied: None, closing: false, height: 0.0, key }))
         }),
     );
     if let Err(e) = r {
@@ -176,7 +186,7 @@ mod tests {
 
     /// Past the frame that takes focus, so a test doesn't.
     fn app() -> HistoryApp {
-        HistoryApp { items: vec![("hello there".into(), Instant::now())], hwnd: HWND::default(), frame: 5, was_focused: false, copied: None, closing: false, height: 0.0 }
+        HistoryApp { items: vec![("hello there".into(), Instant::now())], hwnd: HWND::default(), frame: 5, was_focused: false, copied: None, closing: false, height: 0.0, key: "Right Ctrl".into() }
     }
 
     /// Runs one frame, returning the text drawn and whether the window asked to close.
@@ -219,5 +229,14 @@ mod tests {
         assert_eq!(ago(60), "1 min ago");
         assert_eq!(ago(3599), "59 min ago");
         assert_eq!(ago(7200), "2 h ago");
+    }
+
+    #[test]
+    fn nothing_dictated_says_how_to_start() {
+        let ctx = egui::Context::default();
+        let mut app = HistoryApp { items: Vec::new(), key: "Right Ctrl".into(), ..app() };
+        let (text, _) = frame(&ctx, &mut app, vec![]);
+        assert!(text.iter().any(|t| t == "Nothing dictated yet. Hold Right Ctrl and speak."), "{text:?}");
+        assert!(!text.iter().any(|t| t.contains("click to copy")), "nothing to copy: {text:?}");
     }
 }

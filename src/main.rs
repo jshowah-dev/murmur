@@ -354,12 +354,8 @@ fn main() -> Result<()> {
                     while hk_rx.try_recv().is_ok() {}
                 }
                 TrayEvent::History => {
-                    if history.last().is_none() {
-                        tray.notify("History", "nothing dictated yet");
-                    } else {
-                        history_ui::show(history.newest_first().map(|e| (e.cleaned.clone(), e.at)).collect());
-                        while hk_rx.try_recv().is_ok() {}
-                    }
+                    history_ui::show(history.newest_first().map(|e| (e.cleaned.clone(), e.at)).collect(), cfg.ptt_key_label());
+                    while hk_rx.try_recv().is_ok() {}
                 }
                 TrayEvent::EditDictionary => open_editor(&tray, editor::Tab::Dictionary),
                 TrayEvent::EditSnippets => open_editor(&tray, editor::Tab::Snippets),
