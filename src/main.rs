@@ -144,7 +144,10 @@ fn download_model(models: PathBuf, tx: crossbeam_channel::Sender<UpdateMsg>) {
             log::info!("model upgrade: installed {}", dir.display());
             UpdateMsg::ModelReady
         }
-        Err(e) => UpdateMsg::ModelFailed(e.to_string()),
+        Err(e) => {
+            log::error!("model upgrade: {e}");
+            UpdateMsg::ModelFailed(e.advice())
+        }
     });
 }
 
@@ -203,18 +206,26 @@ fn main() -> Result<()> {
     let model_dir = cfg.model_dir_path();
     let mut model_missing = !model_fetch::is_installed(&model_dir);
     let default_dir = cfg.model_dir == Config::default().model_dir;
-    let plan = setup_ui::plan(model_missing, default_dir, setup_ui::welcome_marker().exists());
+    let welcomed = setup_ui::welcome_marker().exists();
+    let plan = setup_ui::plan(model_missing, default_dir, welcomed);
+    // where the setup card faded to a dot, for the mote that carries it to the pill
+    let mut card_at = None;
     if plan != setup_ui::Plan::Skip {
         let models = model_dir.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| model_dir.clone());
-        match setup_ui::run(models, plan, cfg.ptt_key_label()) {
+        match setup_ui::run(models, plan) {
             // re-checked: the unpacked folder must be the one model_dir names
-            setup_ui::SetupOutcome::Installed => model_missing = !model_fetch::is_installed(&model_dir),
+            setup_ui::SetupOutcome::Installed { from } => {
+                model_missing = !model_fetch::is_installed(&model_dir);
+                card_at = from;
+            }
             setup_ui::SetupOutcome::Quit => {
                 log::info!("model setup not finished; exiting");
                 return Ok(());
             }
         }
     }
+    // until the first dictation with words: quitting before trying brings it back next launch
+    let mut invite_open = setup_ui::invites(welcomed, model_missing);
     let mut history = History::new(25);
 
     let (hk_tx, hk_rx) = unbounded::<HotkeyEvent>();
@@ -257,7 +268,10 @@ fn main() -> Result<()> {
     // The mic stays open while not paused: a rolling buffer of the last PRE_ROLL_SAMPLES is
     // fed to the pipeline ahead of the live audio on key-down, so the first consonant is not
     // lost to device start-up latency.
-    let mut capture = if cfg.mic_always_on { open_mic(&audio_tx, &lost_tx, &tray) } else { None };
+    let mic_start = mic_at_start(cfg.mic_always_on, invite_open && card_at.is_some());
+    let mut capture = if mic_start == MicStart::Now { open_mic(&audio_tx, &lost_tx, &tray) } else { None };
+    // when the deferred mic opens: once the dot has flown to the pill and opened
+    let mut mic_due = (mic_start == MicStart::AfterCarry).then(|| Instant::now() + motion::scaled(mote::FLIGHT + motion::duration::ENTER));
     let mut mic_used = Instant::now();
     let mut ring: VecDeque<f32> = VecDeque::with_capacity(PRE_ROLL_SAMPLES * 2);
     let mut forwarding = false;
@@ -268,6 +282,12 @@ fn main() -> Result<()> {
     let mut resting_tick: u32 = 0;
     let mut output_mute = audio_out::OutputMute::new();
     overlay.set(OverlayState::Idle);
+    // where the invitation was said, to follow the pill when it moves
+    let mut invite_at = overlay.above_physical();
+    if invite_open {
+        let from = card_at.unwrap_or_else(|| overlay.centre_physical());
+        mote.say_until_dismissed(invite(&cfg.ptt_key_label()), from, Target::Pill(invite_at));
+    }
 
     // only reachable with a custom model_dir: the default one is set up above
     if model_missing {
@@ -300,6 +320,14 @@ fn main() -> Result<()> {
         if said_in.is_some_and(|w| w != inject::foreground_hwnd()) {
             mote.dismiss();
             said_in = None;
+        }
+        if mic_due.is_some_and(|t| Instant::now() >= t) {
+            mic_due = None;
+            // a key-down may have opened it already; a pause opens it again on resume
+            if capture.is_none() && !paused {
+                capture = open_mic(&audio_tx, &lost_tx, &tray);
+                mic_used = Instant::now();
+            }
         }
         // the stream died (device unplugged, or the default input changed): open the current default
         if lost_rx.try_recv().is_ok() {
@@ -341,6 +369,10 @@ fn main() -> Result<()> {
                     tray.set_paused(paused);
                     overlay.set(resting(paused));
                     if paused {
+                        // a paused key does nothing, so nothing should invite it
+                        if mote.is_speaking() {
+                            mote.dismiss();
+                        }
                         capture.take();
                         ring.clear();
                     } else if cfg.mic_always_on {
@@ -369,8 +401,13 @@ fn main() -> Result<()> {
                             log::error!("save ptt key: {e:#}");
                             tray.notify("Murmur", &format!("Couldn't save the push-to-talk key, so it lasts until Murmur restarts: {e}"));
                         }
+                        let inviting = mote.is_saying(&invite(&cfg.ptt_key_label()));
                         cfg.ptt_key = name;
                         tray.set_ptt_label(&cfg.ptt_key_label());
+                        // the invitation names the key, so it names the new one
+                        if inviting {
+                            mote.say_until_dismissed(invite(&cfg.ptt_key_label()), invite_at, Target::Pill(invite_at));
+                        }
                     }
                     set_ptt(&ptt_vks, cfg.ptt_vks());
                     while hk_rx.try_recv().is_ok() {}
@@ -557,6 +594,9 @@ fn main() -> Result<()> {
                     if heard {
                         history.push(e);
                     }
+                    if heard && std::mem::take(&mut invite_open) {
+                        setup_ui::mark_welcomed();
+                    }
                 }
                 PipelineMsg::Error(s) => {
                     overlay.set(resting(paused));
@@ -617,7 +657,6 @@ fn main() -> Result<()> {
                     tray.notify("New speech model ready", "It's used from the next start.");
                 }
                 UpdateMsg::ModelFailed(why) => {
-                    log::error!("model upgrade: {why}");
                     tray.set_model(Some(&model_offer_label()), true);
                     tray.notify("Speech model download failed", &why);
                 }
@@ -626,6 +665,13 @@ fn main() -> Result<()> {
         resting_tick = resting_tick.wrapping_add(1);
         if resting_tick % 64 == 0 {
             overlay.refresh_resting();
+            let m = invite(&cfg.ptt_key_label());
+            if let Some((from, to)) = follow_pill(invite_at, overlay.above_physical()).filter(|_| mote.is_saying(&m)) {
+                // closed here, then carried over: a fresh flight from where it was
+                mote.dismiss();
+                mote.say_until_dismissed(m, from, Target::Pill(to));
+                invite_at = to;
+            }
             let mins = cfg.idle_unload_minutes;
             if mins > 0 && capture.is_some() && !forwarding && mic_used.elapsed() > Duration::from_secs(mins * 60) {
                 log::info!("closing mic after idle");
@@ -643,6 +689,35 @@ fn main() -> Result<()> {
 const PRE_ROLL_SAMPLES: usize = 8_000;
 
 const UNHEARD: &str = "Didn't catch that";
+
+/// What the pill says on first run until you first press the key.
+fn invite(key: &str) -> Message {
+    use correction_ui::{rgb, GREEN, TEXT};
+    Message(vec![("Hold ".into(), rgb(TEXT)), (key.to_string(), rgb(GREEN)), (" and talk".into(), rgb(TEXT))])
+}
+
+/// The pill moved (it follows the foreground window's monitor): carry the invitation from
+/// where it was said to above the pill's new place.
+fn follow_pill(said_at: (f32, f32), above: (f32, f32)) -> Option<((f32, f32), (f32, f32))> {
+    ((said_at.0 - above.0).abs() > 1.0 || (said_at.1 - above.1).abs() > 1.0).then_some((said_at, above))
+}
+
+#[derive(Debug, PartialEq)]
+enum MicStart {
+    Now,
+    /// once the card's dot has reached the pill: a Bluetooth mic can take a second to open,
+    /// and the loop that draws the mote waits on it
+    AfterCarry,
+    Never,
+}
+
+fn mic_at_start(always_on: bool, carried: bool) -> MicStart {
+    match (always_on, carried) {
+        (false, _) => MicStart::Never,
+        (true, false) => MicStart::Now,
+        (true, true) => MicStart::AfterCarry,
+    }
+}
 
 /// Where "Didn't catch that" goes when a dictation ends with no words.
 #[derive(Debug, PartialEq)]
@@ -832,5 +907,29 @@ mod tests {
         let p = big_log("keep");
         drop(open_log(&p, false).unwrap());
         assert_eq!(std::fs::metadata(&p).unwrap().len(), MAX_LOG_BYTES + 1);
+    }
+
+    #[test]
+    fn the_invitation_follows_the_pill_to_another_monitor() {
+        assert_eq!(follow_pill((960.0, 1000.0), (960.4, 1000.0)), None, "same place");
+        assert_eq!(follow_pill((960.0, 1000.0), (2880.0, 1000.0)), Some(((960.0, 1000.0), (2880.0, 1000.0))));
+    }
+
+    #[test]
+    fn the_mic_waits_for_the_carry_on_first_run() {
+        assert_eq!(mic_at_start(true, false), MicStart::Now);
+        assert_eq!(mic_at_start(true, true), MicStart::AfterCarry, "opening it would stall the card's dot mid-handover");
+        assert_eq!(mic_at_start(false, true), MicStart::Never);
+        assert_eq!(mic_at_start(false, false), MicStart::Never);
+    }
+
+    #[test]
+    fn the_invitation_names_the_key_in_green() {
+        let m = invite("Right Ctrl");
+        let text: String = m.0.iter().map(|(s, _)| s.as_str()).collect();
+        assert_eq!(text, "Hold Right Ctrl and talk");
+        let key = m.0.iter().find(|(s, _)| s == "Right Ctrl").expect("the key is its own run");
+        assert_eq!(key.1, correction_ui::rgb(correction_ui::GREEN));
+        assert!(m.0.iter().filter(|(s, _)| s != "Right Ctrl").all(|(_, c)| *c == correction_ui::rgb(correction_ui::TEXT)));
     }
 }
