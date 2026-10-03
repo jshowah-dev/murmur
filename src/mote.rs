@@ -131,9 +131,9 @@ impl Flight {
 
     /// The words landed: grow and fade into them. Mid-flight, it finishes the flight first.
     pub(crate) fn dissolve(&mut self, now: Instant) {
-        self.sticky = false;
         if let Phase::Flying { then, .. } = &mut self.phase {
             *then = Then::Dissolve;
+            self.sticky = false;
             return;
         }
         self.leave(now, true);
@@ -152,10 +152,12 @@ impl Flight {
                 }
                 Phase::Flying { from, to, start, then: Then::Say }
             }
-            Phase::Settled { at, .. } | Phase::Speaking { at, .. } => {
+            Phase::Settled { at, .. } => {
                 self.centred = false;
                 Phase::Speaking { at, start: now }
             }
+            // an open message is replaced where it is, keeping its placement
+            Phase::Speaking { at, .. } => Phase::Speaking { at, start: now },
             _ => {
                 let (at, centred) = match to {
                     Target::Caret(p) => (p, false),
@@ -175,10 +177,11 @@ impl Flight {
 
     /// Closes an open message early, from however far it has opened.
     pub(crate) fn dismiss(&mut self, now: Instant) {
-        self.sticky = false;
         match self.phase {
             Phase::Speaking { at, .. } => {
+                // read while still sticky: unstuck, a message past its read time is already gone
                 let open = self.sprite(now).map_or(0.0, |s| s.open);
+                self.sticky = false;
                 // the call above may have run the phase on already (furling, or gone); leave that be
                 if matches!(self.phase, Phase::Speaking { .. }) {
                     self.phase = if self.reduced { Phase::Hidden } else { Phase::Furling { at, start: now, open } };
@@ -187,6 +190,7 @@ impl Flight {
             Phase::Flying { then: Then::Say, .. } => self.leave(now, false),
             _ => {}
         }
+        self.sticky = false;
     }
 
     /// Whether a message is on its way, open, or closing.
@@ -196,6 +200,11 @@ impl Flight {
 
     pub(crate) fn message(&self) -> Option<&Message> {
         self.message.as_ref()
+    }
+
+    /// Whether `m` is the message on its way, open, or closing.
+    pub(crate) fn is_saying(&self, m: &Message) -> bool {
+        self.is_speaking() && self.message.as_ref() == Some(m)
     }
 
     pub(crate) fn centred(&self) -> bool {
@@ -208,14 +217,16 @@ impl Flight {
     }
 
     fn leave(&mut self, now: Instant, grow: bool) {
-        self.sticky = false;
         if self.reduced {
+            self.sticky = false;
             self.phase = Phase::Hidden;
             return;
         }
+        // read while still sticky, as in `dismiss`
         if let Some(s) = self.sprite(now) {
             self.phase = Phase::Leaving { at: s.at, start: now, alpha: s.alpha, grow };
         }
+        self.sticky = false;
     }
 
     pub(crate) fn is_active(&self) -> bool {
@@ -450,6 +461,10 @@ impl Mote {
 
     pub(crate) fn is_speaking(&self) -> bool {
         self.flight.is_speaking()
+    }
+
+    pub(crate) fn is_saying(&self, m: &Message) -> bool {
+        self.flight.is_saying(m)
     }
 
     /// The frame for `s`: (x, y, w, h, pixels), physical pixels; None when it's the one already
@@ -762,6 +777,55 @@ mod tests {
         assert!(f.is_speaking());
         f.dismiss(late);
         assert!(f.sprite(late + motion::duration::EXIT * 2 + ms(5)).is_none(), "dismiss furls and dissolves it");
+    }
+
+    #[test]
+    fn dismissing_a_sticky_message_furls_it_instead_of_popping() {
+        let t0 = Instant::now();
+        let m = msg("Hold Right Ctrl and talk");
+        let late = t0 + FLIGHT + motion::duration::ENTER + hold_for(&m) * 10;
+        let mut f = Flight::new(false);
+        f.say_until_dismissed(m, PILL, Target::Pill(CARET), t0);
+        // the loop draws every frame, so the flight has landed and opened by now
+        f.sprite(late);
+        f.dismiss(late);
+        let s = f.sprite(late + ms(1)).expect("still furling");
+        assert!(s.open > 0.5, "furls from fully open: {s:?}");
+    }
+
+    #[test]
+    fn fading_a_sticky_message_fades_from_where_it_is() {
+        let t0 = Instant::now();
+        let m = msg("Hold Right Ctrl and talk");
+        let late = t0 + FLIGHT + motion::duration::ENTER + hold_for(&m) * 10;
+        let mut f = Flight::new(false);
+        f.say_until_dismissed(m, PILL, Target::Pill(CARET), t0);
+        f.sprite(late);
+        f.fade(late);
+        let s = f.sprite(late + ms(1)).expect("still fading");
+        assert!(s.alpha > 0.5, "{s:?}");
+    }
+
+    #[test]
+    fn a_message_replacing_one_above_the_pill_stays_centred() {
+        let t0 = Instant::now();
+        let mut f = Flight::new(false);
+        f.say_until_dismissed(msg("Hold Right Ctrl and talk"), PILL, Target::Pill(CARET), t0);
+        let t1 = t0 + FLIGHT + ms(300);
+        f.sprite(t1);
+        f.say(msg("Nothing to fix yet"), PILL, Target::Pill(CARET), t1);
+        assert!(f.centred(), "keeps the pill's centred placement");
+    }
+
+    #[test]
+    fn is_saying_names_the_message_on_screen() {
+        let t0 = Instant::now();
+        let mut f = Flight::new(false);
+        let invite = msg("Hold Right Ctrl and talk");
+        f.say_until_dismissed(invite.clone(), PILL, Target::Pill(CARET), t0);
+        assert!(f.is_saying(&invite));
+        f.say(msg("Nothing to fix yet"), PILL, Target::Pill(CARET), t0 + ms(10));
+        assert!(!f.is_saying(&invite), "replaced");
     }
 
     #[test]

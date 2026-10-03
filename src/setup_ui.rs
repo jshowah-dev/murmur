@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{HWND, RECT};
-use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsIconic};
 
 const MB: u64 = 1024 * 1024;
 const TICK: Duration = Duration::from_millis(250);
@@ -107,12 +107,24 @@ fn fade_alpha(el: Duration) -> Option<f32> {
     (t < 1.0).then(|| 1.0 - ease(motion::easing::EXIT, t))
 }
 
+/// The mote's core and halo radii in points: the mote draws them in physical pixels, unscaled.
+fn dot_radii(pixels_per_point: f32) -> (f32, f32) {
+    (2.5 / pixels_per_point, 12.0 / pixels_per_point)
+}
+
+/// Where the mote starts: the card's centre, physical pixels. Not from a minimized window,
+/// whose rect is parked far off-screen.
+fn hand_back(rect: Option<RECT>, minimized: bool) -> Option<Pt> {
+    let r = rect.filter(|_| !minimized)?;
+    Some(((r.left + r.right) as f32 / 2.0, (r.top + r.bottom) as f32 / 2.0))
+}
+
 /// The mote's dot, drawn where the card was: a pale core in a soft green halo (`mote::render`).
 fn dot(painter: &egui::Painter, c: Pos2, alpha: f32) {
     use egui::epaint::{Mesh, Vertex, WHITE_UV};
     // the halo falls off as 0.5 * (1 - d/r)^2, as the mote's canvas draws it: sampled on rings,
     // linear between them
-    const R: f32 = 12.0;
+    let (core, r) = dot_radii(painter.ctx().pixels_per_point());
     const SEG: usize = 32;
     const RINGS: [f32; 5] = [0.0, 0.25, 0.5, 0.75, 1.0];
     let green = |f: f32| Color32::from_rgba_unmultiplied(0x60, 0xD0, 0x60, (0.5 * alpha * (1.0 - f).powi(2) * 255.0) as u8);
@@ -120,7 +132,7 @@ fn dot(painter: &egui::Painter, c: Pos2, alpha: f32) {
     for &f in &RINGS {
         for s in 0..SEG {
             let a = s as f32 / SEG as f32 * std::f32::consts::TAU;
-            mesh.vertices.push(Vertex { pos: c + egui::vec2(a.cos(), a.sin()) * R * f, uv: WHITE_UV, color: green(f) });
+            mesh.vertices.push(Vertex { pos: c + egui::vec2(a.cos(), a.sin()) * r * f, uv: WHITE_UV, color: green(f) });
         }
     }
     for ring in 0..RINGS.len() - 1 {
@@ -132,7 +144,7 @@ fn dot(painter: &egui::Painter, c: Pos2, alpha: f32) {
         }
     }
     painter.add(mesh);
-    painter.circle_filled(c, 2.5, Color32::from_rgba_unmultiplied(0xE8, 0xFF, 0xE8, (alpha * 255.0) as u8));
+    painter.circle_filled(c, core, Color32::from_rgba_unmultiplied(0xE8, 0xFF, 0xE8, (alpha * 255.0) as u8));
 }
 
 struct SetupApp {
@@ -183,12 +195,12 @@ impl SetupApp {
         }
     }
 
-    /// The window's centre, physical pixels: the card fills it.
-    fn centre_physical(&self) -> Pt {
+    /// The window's centre, physical pixels (the card fills it), if it's on screen.
+    fn card_centre(&self) -> Option<Pt> {
         crate::caret::physical(|| unsafe {
             let mut r = RECT::default();
-            let _ = GetWindowRect(self.hwnd, &mut r);
-            ((r.left + r.right) as f32 / 2.0, (r.top + r.bottom) as f32 / 2.0)
+            let rect = GetWindowRect(self.hwnd, &mut r).ok().map(|_| r);
+            hand_back(rect, IsIconic(self.hwnd).as_bool())
         })
     }
 
@@ -269,7 +281,7 @@ impl SetupApp {
                 Some(_) => ctx.request_repaint(),
                 None => {
                     if !self.closing {
-                        self.from.set(Some(self.centre_physical()));
+                        self.from.set(self.card_centre());
                     }
                     self.close(&ctx);
                 }
@@ -287,7 +299,7 @@ impl SetupApp {
         }
     }
 
-    /// The card's contents. Every stage keeps the same rows, so the card never changes height.
+    /// The card's contents. Each stage but Failed keeps the same rows, so the card holds its height from download to Ready.
     fn body(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, retry: &mut bool) {
         let installed = matches!(self.stage, Stage::Ready(_) | Stage::Closing(_));
         let intro = if installed {
@@ -582,15 +594,29 @@ mod tests {
     }
 
     #[test]
-    fn the_faded_card_closes_once_and_hands_back_its_centre() {
+    fn the_faded_card_closes_once() {
         let ctx = egui::Context::default();
         let mut a = app(Stage::Closing(Instant::now() - motion::scaled(motion::duration::EXIT) * 2));
         a.installed.store(true, Ordering::SeqCst);
         let (_, close) = frame(&ctx, &mut a, vec![]);
         assert!(close);
-        assert!(a.from.get().is_some(), "the mote starts where the card was");
         let (_, close) = frame(&ctx, &mut a, vec![]);
         assert!(!close, "asks to close once");
+    }
+
+    #[test]
+    fn the_card_hands_back_its_centre_only_when_on_screen() {
+        let r = RECT { left: 100, top: 200, right: 580, bottom: 360 };
+        assert_eq!(hand_back(Some(r), false), Some((340.0, 280.0)));
+        assert_eq!(hand_back(Some(r), true), None, "minimized: its rect is parked off-screen");
+        assert_eq!(hand_back(None, false), None, "no window rect");
+    }
+
+    #[test]
+    fn the_dot_is_the_motes_size_in_physical_pixels() {
+        assert_eq!(dot_radii(1.0), (2.5, 12.0));
+        let (core, halo) = dot_radii(1.5);
+        assert!((core - 2.5 / 1.5).abs() < 1e-6 && (halo - 8.0).abs() < 1e-6, "{core} {halo}");
     }
 
     #[test]
