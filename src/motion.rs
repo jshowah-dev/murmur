@@ -8,6 +8,7 @@ pub mod duration {
     pub const FILL: std::time::Duration = std::time::Duration::from_millis(400);
     pub const CONFIRM: std::time::Duration = std::time::Duration::from_millis(1000);
     pub const LOCATE: std::time::Duration = std::time::Duration::from_millis(1200);
+    pub const READ_PER_CHAR: std::time::Duration = std::time::Duration::from_millis(60);
 }
 pub mod easing {
     pub const STANDARD: [f32; 4] = [0.25, 0.1, 0.25, 1.0];
