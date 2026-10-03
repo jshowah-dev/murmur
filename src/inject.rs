@@ -138,25 +138,32 @@ fn record(hwnd: isize, method: InjectMethod) -> InjectRecord {
     InjectRecord { hwnd, at: Instant::now(), method }
 }
 
-/// Save clipboard text, set ours, Ctrl+V, restore. Falls back to unicode typing when the clipboard is unavailable.
+/// Save clipboard text, set ours, Ctrl+V, restore. Types the text in when the clipboard can't be opened or written.
 pub fn paste(text: &str) -> Result<InjectRecord> {
+    // None: the clipboard can't be used, so type the text in instead
     let saved = match Clipboard::open() {
         Ok(_c) => {
             let saved = read_text_locked();
-            if let Err(e) = write_text_locked(text) {
-                if let Some(prev) = &saved {
-                    let _ = write_text_locked(prev);
+            match write_text_locked(text) {
+                Ok(()) => Some(saved),
+                Err(e) => {
+                    log::warn!("{e}; falling back to unicode typing");
+                    if let Some(prev) = &saved {
+                        let _ = write_text_locked(prev);
+                    }
+                    None
                 }
-                return Err(e);
             }
-            saved
         }
         Err(e) => {
             log::warn!("{e}; falling back to unicode typing");
-            let hwnd = foreground_hwnd();
-            type_unicode(text);
-            return Ok(record(hwnd, InjectMethod::Typed));
+            None
         }
+    };
+    let Some(saved) = saved else {
+        let hwnd = foreground_hwnd();
+        type_unicode(text);
+        return Ok(record(hwnd, InjectMethod::Typed));
     };
     sleep(Duration::from_millis(30));
     let hwnd = foreground_hwnd();
