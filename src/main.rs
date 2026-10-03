@@ -30,7 +30,7 @@ use crossbeam_channel::unbounded;
 use dictionary::Dictionary;
 use history::History;
 use hotkey::HotkeyEvent;
-use mote::{landing_point, on_done, Landing, Mote};
+use mote::{landing_point, on_done, Landing, Message, Mote, Target};
 use overlay::{Overlay, OverlayState};
 use pipeline::{PipelineCmd, PipelineMsg};
 use std::sync::{Arc, Mutex};
@@ -235,6 +235,14 @@ fn main() -> Result<()> {
     let (caret_tx, caret_rx) = unbounded::<(isize, Option<RECT>)>();
     // the window a finished dictation's words will land in, until they do
     let mut awaiting: Option<isize> = None;
+    // a Release sent Stop, so the dictation's Done should carry words
+    let mut expect_words = false;
+    // the caret lookup for the last Release hasn't come back yet
+    let mut caret_pending = false;
+    // "Didn't catch that" waiting on that lookup
+    let mut unheard_pending = false;
+    // the window a caret message is about; leaving it closes the message
+    let mut said_in: Option<isize> = None;
     let tray = Tray::create(&cfg.ptt_key_label())?;
     let (up_tx, up_rx) = unbounded::<UpdateMsg>();
     let checker_tx = up_tx.clone();
@@ -289,6 +297,10 @@ fn main() -> Result<()> {
             awaiting = None;
         }
         mote.animate();
+        if said_in.is_some_and(|w| w != inject::foreground_hwnd()) {
+            mote.dismiss();
+            said_in = None;
+        }
         // the stream died (device unplugged, or the default input changed): open the current default
         if lost_rx.try_recv().is_ok() {
             capture.take();
@@ -337,7 +349,8 @@ fn main() -> Result<()> {
                     }
                 }
                 TrayEvent::FixLast => {
-                    let _ = correction::fix_last(&mut history, &dict, &tray);
+                    let out = correction::fix_last(&mut history, &dict, &tray);
+                    said_in = after_fix(out, true, &mut mote, &overlay);
                     while hk_rx.try_recv().is_ok() {}
                 }
                 TrayEvent::History => {
@@ -418,6 +431,11 @@ fn main() -> Result<()> {
         while let Ok(ev) = hk_rx.try_recv() {
             match ev {
                 HotkeyEvent::Down if !paused => {
+                    // a new dictation closes the last message
+                    if mote.is_speaking() {
+                        mote.dismiss();
+                    }
+                    said_in = None;
                     if capture.is_none() {
                         capture = open_mic(&audio_tx, &lost_tx, &tray);
                     }
@@ -443,6 +461,8 @@ fn main() -> Result<()> {
                 }
                 HotkeyEvent::Cancel => {
                     awaiting = None;
+                    expect_words = false;
+                    unheard_pending = false;
                     mote.fade();
                     output_mute.restore();
                     forwarding = false;
@@ -470,6 +490,8 @@ fn main() -> Result<()> {
                     if dictating {
                         let target = inject::foreground_hwnd();
                         awaiting = Some(target);
+                        expect_words = true;
+                        caret_pending = true;
                         let tx = caret_tx.clone();
                         // UIA can take tens of ms; the loop mustn't wait for it
                         std::thread::spawn(move || {
@@ -486,14 +508,20 @@ fn main() -> Result<()> {
                 }
                 HotkeyEvent::FixLast => {
                     log::info!("fix-last hotkey");
-                    let _ = correction::fix_last(&mut history, &dict, &tray);
+                    let out = correction::fix_last(&mut history, &dict, &tray);
+                    said_in = after_fix(out, false, &mut mote, &overlay);
                     while hk_rx.try_recv().is_ok() {}
                 }
                 _ => {}
             }
         }
         while let Ok((target, caret)) = caret_rx.try_recv() {
-            if let Some(to) = landing_point(awaiting, target, inject::foreground_hwnd(), caret) {
+            caret_pending = false;
+            let to = landing_point(awaiting, target, inject::foreground_hwnd(), caret);
+            if std::mem::take(&mut unheard_pending) {
+                awaiting = None;
+                said_in = say(&mut mote, &overlay, Message::plain(UNHEARD), overlay.centre_physical(), to);
+            } else if let Some(to) = to {
                 mote.launch(overlay.centre_physical(), to);
                 overlay.set_quiet(true);
             }
@@ -504,20 +532,39 @@ fn main() -> Result<()> {
                 PipelineMsg::Done(e) => {
                     overlay.set(resting(paused));
                     overlay.set_quiet(false);
-                    let same = awaiting.take().is_some_and(|t| t == inject::foreground_hwnd());
-                    match on_done(mote.is_active(), !e.cleaned.is_empty(), same) {
-                        Landing::Dissolve => mote.dissolve(),
-                        Landing::Fade => mote.fade(),
-                        Landing::Pulse => overlay.pulse(),
-                        Landing::Nothing => {}
+                    let heard = !e.cleaned.is_empty();
+                    let finished = std::mem::take(&mut expect_words);
+                    match unheard(finished && !heard, mote.is_active(), caret_pending) {
+                        Some(Unheard::WaitForCaret) => unheard_pending = true,
+                        Some(Unheard::Here) => {
+                            // the mote is at (or flying to) the caret: it says it there, whatever the target
+                            awaiting = None;
+                            mote.say(Message::plain(UNHEARD), overlay.centre_physical(), Target::Pill(overlay.above_physical()));
+                            said_in = Some(inject::foreground_hwnd());
+                        }
+                        Some(Unheard::AbovePill) => {
+                            awaiting = None;
+                            said_in = say(&mut mote, &overlay, Message::plain(UNHEARD), overlay.centre_physical(), None);
+                        }
+                        None => {
+                            let same = awaiting.take().is_some_and(|t| t == inject::foreground_hwnd());
+                            match on_done(mote.is_active(), heard, same) {
+                                Landing::Dissolve => mote.dissolve(),
+                                Landing::Fade => mote.fade(),
+                                Landing::Pulse => overlay.pulse(),
+                                Landing::Nothing => {}
+                            }
+                        }
                     }
-                    if !e.cleaned.is_empty() {
+                    if heard {
                         history.push(e);
                     }
                 }
                 PipelineMsg::Error(s) => {
                     overlay.set(resting(paused));
                     awaiting = None;
+                    expect_words = false;
+                    unheard_pending = false;
                     mote.fade();
                     overlay.set_quiet(false);
                     forwarding = false;
@@ -596,6 +643,72 @@ fn main() -> Result<()> {
 
 /// Audio kept while idle and prepended on key-down: 500 ms at 16 kHz.
 const PRE_ROLL_SAMPLES: usize = 8_000;
+
+const UNHEARD: &str = "Didn't catch that";
+
+/// Where "Didn't catch that" goes when a dictation ends with no words.
+#[derive(Debug, PartialEq)]
+enum Unheard {
+    /// the mote is already out: it says it where it is
+    Here,
+    /// the caret is still being looked up: say it once it's known
+    WaitForCaret,
+    AbovePill,
+}
+
+/// Only a finished dictation (`expect_words`: a Release sent Stop) is unheard; a cancelled
+/// hold ends with no words too, and says nothing.
+fn unheard(expect_words: bool, mote_active: bool, caret_pending: bool) -> Option<Unheard> {
+    if !expect_words {
+        return None;
+    }
+    Some(if mote_active {
+        Unheard::Here
+    } else if caret_pending {
+        Unheard::WaitForCaret
+    } else {
+        Unheard::AbovePill
+    })
+}
+
+/// The mote says `m`, flying from `from` to `to`, or to just above the pill with no caret.
+/// Returns the window a caret message is about, for `said_in`.
+fn say(mote: &mut Mote, overlay: &Overlay, m: Message, from: (f32, f32), to: Option<(f32, f32)>) -> Option<isize> {
+    match to {
+        Some(p) => {
+            mote.say(m, from, Target::Caret(p));
+            Some(inject::foreground_hwnd())
+        }
+        None => {
+            mote.say(m, from, Target::Pill(overlay.above_physical()));
+            None
+        }
+    }
+}
+
+/// The caret in the window in front, if it has one.
+fn foreground_caret() -> Option<(f32, f32)> {
+    match caret::find(HWND(inject::foreground_hwnd() as *mut _)) {
+        Some(caret::Anchor::Caret(r)) => Some(mote::caret_point(r)),
+        _ => None,
+    }
+}
+
+/// Answers fix-last at the caret. From the tray with nothing to fix, above the pill instead.
+fn after_fix(out: correction::FixOutcome, from_tray: bool, mote: &mut Mote, overlay: &Overlay) -> Option<isize> {
+    let to = if out.nothing_to_fix && from_tray { None } else { foreground_caret() };
+    let from = out.card.unwrap_or_else(|| overlay.centre_physical());
+    match correction::fix_message(&out) {
+        Some(m) => say(mote, overlay, m, from, to),
+        None => {
+            if let (true, Some(to)) = (out.replaced, to) {
+                mote.launch(from, to);
+                mote.dissolve();
+            }
+            None
+        }
+    }
+}
 
 /// Whether a mic whose stream died is opened again now, or left for the next key-down.
 fn reopen_after_loss(paused: bool, always_on: bool, forwarding: bool) -> bool {
@@ -677,6 +790,14 @@ mod tests {
         assert!(!reopen_after_loss(false, false, false));
         assert!(!reopen_after_loss(true, true, false));
         assert!(!reopen_after_loss(true, false, true));
+    }
+
+    #[test]
+    fn only_a_finished_dictation_with_no_words_is_unheard() {
+        assert_eq!(unheard(false, true, false), None, "a cancelled hold (tap, Esc, Shift) says nothing");
+        assert_eq!(unheard(true, true, false), Some(Unheard::Here), "the mote is out: it says it where it is");
+        assert_eq!(unheard(true, false, true), Some(Unheard::WaitForCaret), "the caret lookup is still running");
+        assert_eq!(unheard(true, false, false), Some(Unheard::AbovePill), "no caret found");
     }
 
     #[test]
