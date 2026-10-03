@@ -63,6 +63,31 @@ impl fmt::Display for FetchError {
     }
 }
 
+impl FetchError {
+    /// What the setup card and the tray say: what happened and what to do. The raw detail is
+    /// `Display`, for the log.
+    pub fn advice(&self) -> String {
+        match self {
+            FetchError::Interrupted(_) => {
+                "The download stopped partway. Check your connection, then Retry picks up where it left off.".into()
+            }
+            FetchError::Http(n) => format!("The model's host isn't answering right now (error {n}). Retry in a few minutes."),
+            FetchError::ChecksumMismatch => "The download arrived damaged. Retry fetches it again from the start.".into(),
+            FetchError::Unpack(_) => "The model downloaded but wouldn't unpack. Retry unpacks it again.".into(),
+            FetchError::Cancelled => "Cancelled".into(),
+            FetchError::Io(e) => match e.kind() {
+                std::io::ErrorKind::StorageFull => {
+                    "Not enough disk space. Murmur needs about 1.2 GB free on the drive with your user folder. Free some up, then Retry.".into()
+                }
+                std::io::ErrorKind::PermissionDenied => {
+                    "Windows blocked Murmur from saving the model in your AppData folder. Retry, or restart and try again.".into()
+                }
+                _ => "Couldn't save the model to disk. Retry, or check the log in %APPDATA%\\Murmur.".into(),
+            },
+        }
+    }
+}
+
 impl std::error::Error for FetchError {}
 
 impl From<std::io::Error> for FetchError {
@@ -364,6 +389,32 @@ mod tests {
         assert_eq!(FetchError::ChecksumMismatch.to_string(), "Download corrupted; Retry starts it over");
         assert_eq!(FetchError::Unpack("tar exit 2".into()).to_string(), "Couldn't unpack the model (tar exit 2)");
         assert!(FetchError::Interrupted("timed out".into()).to_string().starts_with("Download interrupted"));
+    }
+
+    #[test]
+    fn advice_says_what_to_do() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(
+            FetchError::Interrupted("os error 10054".into()).advice(),
+            "The download stopped partway. Check your connection, then Retry picks up where it left off."
+        );
+        assert_eq!(FetchError::Http(503).advice(), "The model's host isn't answering right now (error 503). Retry in a few minutes.");
+        assert_eq!(FetchError::ChecksumMismatch.advice(), "The download arrived damaged. Retry fetches it again from the start.");
+        assert_eq!(FetchError::Unpack("tar exit 2".into()).advice(), "The model downloaded but wouldn't unpack. Retry unpacks it again.");
+        assert_eq!(
+            FetchError::Io(Error::from(ErrorKind::StorageFull)).advice(),
+            "Not enough disk space. Murmur needs about 1.2 GB free on the drive with your user folder. Free some up, then Retry."
+        );
+        assert_eq!(
+            FetchError::Io(Error::from(ErrorKind::PermissionDenied)).advice(),
+            "Windows blocked Murmur from saving the model in your AppData folder. Retry, or restart and try again."
+        );
+        assert_eq!(
+            FetchError::Io(Error::other("boom")).advice(),
+            "Couldn't save the model to disk. Retry, or check the log in %APPDATA%\\Murmur."
+        );
+        // Windows' disk-full codes reach us as StorageFull
+        assert!(FetchError::Io(Error::from_raw_os_error(112)).advice().starts_with("Not enough disk space"));
     }
 
     #[derive(Clone, Copy, PartialEq)]
