@@ -51,7 +51,7 @@ Murmur lives in the system tray (teal microphone; grey when paused). Right-click
 | Menu item | What it does |
 |---|---|
 | Pause / Resume | Stop listening for the hotkey |
-| Fix last (Left Shift+PTT) | Edit the last dictation |
+| Fix last dictation (Shift + push-to-talk key) | Edit the last dictation |
 | History… | Browse recent dictations |
 | Dictionary… | Add, edit, delete and test dictionary terms |
 | Snippets… | Add, edit, delete and test snippets |
