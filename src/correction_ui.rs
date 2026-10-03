@@ -1,4 +1,4 @@
-use crate::caret;
+use crate::{caret, editor_kit, motion};
 use eframe::egui::{
     self, text::CCursor, text::LayoutJob, text::TextFormat, Color32, CornerRadius, FontData, FontFamily, FontId, Frame, Key,
     Margin, Modifiers, Stroke, TextEdit, ViewportCommand,
@@ -10,7 +10,7 @@ use similar::{ChangeTag, TextDiff};
 use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowRect, SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
@@ -25,7 +25,15 @@ pub(crate) const GREEN: Color32 = Color32::from_rgb(0x60, 0xD0, 0x60);
 pub(crate) const AMBER: Color32 = Color32::from_rgb(0xF5, 0xC5, 0x4A);
 const AMBER_BG: Color32 = Color32::from_rgba_premultiplied(0x36, 0x2B, 0x10, 0x38);
 pub(crate) const SPOKEN: Color32 = Color32::from_rgb(0xD9, 0x8C, 0x7A);
-const FADE: f32 = 0.12;
+
+/// The dialog's opacity `elapsed` after it opened: the kit's enter motion, or fully there under reduced motion.
+fn fade_in(elapsed: Duration, reduced: bool) -> f32 {
+    if reduced {
+        return 1.0;
+    }
+    let x = (elapsed.as_secs_f32() / motion::scaled(motion::duration::ENTER).as_secs_f32()).min(1.0);
+    if x < 1.0 { editor_kit::ease(motion::easing::ENTER, x) } else { 1.0 }
+}
 
 /// A palette colour as 0xRRGGBB, for the GDI-drawn windows.
 pub(crate) fn rgb(c: Color32) -> u32 {
@@ -72,6 +80,7 @@ struct FixApp {
     hwnd: HWND,
     frame: u32,
     opened: Instant,
+    reduced_motion: bool,
     height: f32,
     out: Rc<RefCell<Option<String>>>,
     card: Rc<RefCell<Option<(f32, f32)>>>,
@@ -138,11 +147,11 @@ impl eframe::App for FixApp {
 
         // Short fade-in, then repaint only on input: continuous repainting starves the
         // overlay and tray windows that share this thread.
-        let t = (self.opened.elapsed().as_secs_f32() / FADE).min(1.0);
-        if t < 1.0 {
+        let opacity = fade_in(self.opened.elapsed(), self.reduced_motion);
+        if opacity < 1.0 {
             ctx.request_repaint();
         }
-        ui.set_opacity(1.0 - (1.0 - t).powi(3));
+        ui.set_opacity(opacity);
         ui.visuals_mut().text_cursor.stroke.color = AMBER;
         ui.visuals_mut().selection.bg_fill = Color32::from_rgb(0x1C, 0x6E, 0x73);
 
@@ -304,6 +313,7 @@ pub fn show(initial: &str, heard_at: Option<Instant>, dict: Dictionary, target: 
                 hwnd,
                 frame: 0,
                 opened: Instant::now(),
+                reduced_motion: editor_kit::reduced_motion(),
                 height: 0.0,
                 out: app_out,
                 card: app_card,
@@ -321,6 +331,21 @@ pub fn show(initial: &str, heard_at: Option<Instant>, dict: Dictionary, target: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reduced_motion_opens_fully_opaque() {
+        assert_eq!(fade_in(Duration::ZERO, true), 1.0);
+    }
+
+    #[test]
+    fn fade_in_runs_over_the_enter_token() {
+        let d = motion::scaled(motion::duration::ENTER);
+        assert!(fade_in(Duration::ZERO, false) < 0.01);
+        let (a, b) = (fade_in(d / 4, false), fade_in(d / 2, false));
+        assert!(0.0 < a && a < b && b < 1.0, "{a} {b}");
+        assert_eq!(fade_in(d, false), 1.0);
+        assert_eq!(fade_in(d * 3, false), 1.0);
+    }
 
     fn marked(before: &str, after: &str) -> Vec<(String, bool)> {
         changed_spans(before, after).into_iter().map(|(r, c)| (after[r].to_string(), c)).collect()
