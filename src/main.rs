@@ -194,6 +194,9 @@ fn main() -> Result<()> {
         log::error!("{e:#}");
         problems.push(notice::file_problem(&snippets::path(), &e, notice::Effect::SnippetsOff));
     }
+    // read now, so a broken file is reported with the others and not after the first dictation
+    let mut snippet_file = snippets::SnippetFile::new(snippets::path());
+    problems.extend(snippet_file.refresh());
     // Before anything else starts: the pipeline loads the model as soon as it's spawned.
     let model_state = config::resolve_model(&mut cfg, model_fetch::is_installed);
     if let config::ModelState::Switched { old } = &model_state {
@@ -238,7 +241,7 @@ fn main() -> Result<()> {
     // shared with the hotkey thread, so the picker can change the key while Murmur runs
     let ptt_vks = Arc::new(Mutex::new(cfg.ptt_vks()));
     hotkey::spawn(ptt_vks.clone(), cfg.hands_free_max(), hk_tx);
-    pipeline::spawn(cfg.clone(), dict.clone(), cmd_rx, msg_tx);
+    pipeline::spawn(cfg.clone(), dict.clone(), snippet_file, cmd_rx, msg_tx);
 
     let mut overlay = Overlay::create()?;
     let mut mote = Mote::create()?;
@@ -485,7 +488,7 @@ fn main() -> Result<()> {
                     let _ = cmd_tx.send(PipelineCmd::Audio(ring.drain(..).collect()));
                     forwarding = true;
                 }
-                HotkeyEvent::Press if !paused => {
+                HotkeyEvent::Press if listens_on_press(paused, forwarding) => {
                     listening = true;
                     overlay.set(OverlayState::Listening(0.0));
                 }
@@ -775,6 +778,12 @@ fn after_fix(out: correction::FixOutcome, from_tray: bool, mote: &mut Mote, over
     correction::fix_message(&out).and_then(|m| say(mote, overlay, m, from, to))
 }
 
+/// Whether a held key shows Listening: only once its key-down started a dictation. A mic that
+/// failed to open, or a pause, leaves nothing to listen to.
+fn listens_on_press(paused: bool, forwarding: bool) -> bool {
+    !paused && forwarding
+}
+
 /// Whether a mic whose stream died is opened again now, or left for the next key-down.
 fn reopen_after_loss(paused: bool, always_on: bool, forwarding: bool) -> bool {
     !paused && (always_on || forwarding)
@@ -865,6 +874,14 @@ mod tests {
         assert!(!reopen_after_loss(false, false, false));
         assert!(!reopen_after_loss(true, true, false));
         assert!(!reopen_after_loss(true, false, true));
+    }
+
+    #[test]
+    fn a_held_key_shows_listening_only_when_the_dictation_started() {
+        assert!(listens_on_press(false, true));
+        // the mic failed on key-down, so nothing is being heard
+        assert!(!listens_on_press(false, false));
+        assert!(!listens_on_press(true, true));
     }
 
     #[test]

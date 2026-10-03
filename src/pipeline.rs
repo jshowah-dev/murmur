@@ -5,7 +5,7 @@ use crate::dictionary::{self, Dictionary, DictionaryFile};
 use crate::history::Entry;
 use crate::inject;
 use crate::notice::{self, FileProblem};
-use crate::snippets::{self, SnippetFile};
+use crate::snippets::SnippetFile;
 use crate::stt::Recognizer;
 use crate::vad::Vad;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
@@ -188,11 +188,11 @@ impl State {
     }
 }
 
-pub fn spawn(cfg: Config, dict: Arc<Mutex<Dictionary>>, rx: Receiver<PipelineCmd>, tx: Sender<PipelineMsg>) -> JoinHandle<()> {
+pub fn spawn(cfg: Config, dict: Arc<Mutex<Dictionary>>, snippets: SnippetFile, rx: Receiver<PipelineCmd>, tx: Sender<PipelineMsg>) -> JoinHandle<()> {
     thread::Builder::new()
         .name("pipeline".into())
         .spawn(move || {
-            let mut st = State { cfg, dict, snippets: SnippetFile::new(snippets::path()), dict_file: DictionaryFile::new(dictionary::path()), tx, vad: None, rec: None, speech: vec![], speech_samples: 0, texts: vec![], recording: false, last_used: Instant::now() };
+            let mut st = State { cfg, dict, snippets, dict_file: DictionaryFile::new(dictionary::path()), tx, vad: None, rec: None, speech: vec![], speech_samples: 0, texts: vec![], recording: false, last_used: Instant::now() };
             // Spec § Error handling: a panic is logged and the loop restarts; the tray survives.
             loop {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut st, &rx)));

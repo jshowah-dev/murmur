@@ -141,11 +141,13 @@ pub struct SnippetFile {
     path: PathBuf,
     mtime: Option<SystemTime>,
     pub current: Snippets,
+    /// `current` came from the file, so a bad edit keeps something
+    loaded: bool,
 }
 
 impl SnippetFile {
     pub fn new(path: PathBuf) -> Self {
-        SnippetFile { path, mtime: None, current: Snippets::default() }
+        SnippetFile { path, mtime: None, current: Snippets::default(), loaded: false }
     }
 
     /// Reload if the file changed since the last check. Returns what was wrong, once per bad edit.
@@ -157,17 +159,20 @@ impl SnippetFile {
         self.mtime = mtime;
         if mtime.is_none() {
             self.current = Snippets::default();
+            self.loaded = false;
             return None;
         }
         match std::fs::read_to_string(&self.path).map_err(anyhow::Error::from).and_then(|s| Snippets::from_toml(&s)) {
             Ok(s) => {
                 log::info!("loaded {} snippets", s.snippets.len());
                 self.current = s;
+                self.loaded = true;
                 None
             }
             Err(e) => {
                 log::error!("snippets.toml: {e:#}");
-                Some(crate::notice::file_problem(&self.path, &e, crate::notice::Effect::KeepingSnippets))
+                let effect = if self.loaded { crate::notice::Effect::KeepingSnippets } else { crate::notice::Effect::SnippetsOff };
+                Some(crate::notice::file_problem(&self.path, &e, effect))
             }
         }
     }
@@ -178,14 +183,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_broken_reload_names_the_line_and_keeps_the_snippets() {
+    fn a_broken_file_says_snippets_are_off_until_a_good_one_was_loaded() {
         let p = std::env::temp_dir().join(format!("murmur-snippets-{}-reload-line.toml", std::process::id()));
         std::fs::write(&p, "# a\n# b\n# c\nbroken\n").unwrap();
         let mut f = SnippetFile::new(p.clone());
+        // broken from the start: there are no previous snippets to keep
         let got = f.refresh().unwrap();
         assert_eq!(got.line, Some(4));
-        assert_eq!(got.effect, crate::notice::Effect::KeepingSnippets);
+        assert_eq!(got.effect, crate::notice::Effect::SnippetsOff);
         assert_eq!(f.refresh(), None);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&p, "").unwrap();
+        assert_eq!(f.refresh(), None);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&p, "# a\n# b\n# c\nbroken\n").unwrap();
+        assert_eq!(f.refresh().unwrap().effect, crate::notice::Effect::KeepingSnippets);
         let _ = std::fs::remove_file(&p);
     }
 

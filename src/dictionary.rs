@@ -317,7 +317,13 @@ impl DictionaryFile {
             }
             Err(e) => {
                 log::error!("dictionary.toml: {e:#}");
-                Some(crate::notice::file_problem(&self.path, &e, crate::notice::Effect::KeepingTerms))
+                // after a failed startup there are no previous terms to keep
+                let effect = if shared.lock().unwrap_or_else(|e| e.into_inner()).loaded_cleanly {
+                    crate::notice::Effect::KeepingTerms
+                } else {
+                    crate::notice::Effect::CorrectionsOff
+                };
+                Some(crate::notice::file_problem(&self.path, &e, effect))
             }
         }
     }
@@ -495,6 +501,18 @@ mod tests {
         let (d, stamp) = Dictionary::load_stamped(&p).unwrap();
         assert!(d.terms.is_empty());
         assert_eq!(stamp, None);
+    }
+
+    #[test]
+    fn a_broken_reload_after_a_failed_startup_says_corrections_are_off() {
+        let p = temp_path("reload-unloaded");
+        std::fs::write(&p, "[[term]\nbroken").unwrap();
+        let shared = std::sync::Mutex::new(Dictionary::empty_unloaded());
+        let mut f = DictionaryFile::new(p.clone());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&p, "# a\n# b\n# c\nbroken\n").unwrap();
+        // no good terms were ever loaded, so none are kept
+        assert_eq!(f.refresh(&shared).unwrap().effect, crate::notice::Effect::CorrectionsOff);
     }
 
     #[test]
