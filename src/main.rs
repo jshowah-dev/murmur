@@ -144,7 +144,10 @@ fn download_model(models: PathBuf, tx: crossbeam_channel::Sender<UpdateMsg>) {
             log::info!("model upgrade: installed {}", dir.display());
             UpdateMsg::ModelReady
         }
-        Err(e) => UpdateMsg::ModelFailed(e.to_string()),
+        Err(e) => {
+            log::error!("model upgrade: {e}");
+            UpdateMsg::ModelFailed(e.advice())
+        }
     });
 }
 
@@ -203,18 +206,26 @@ fn main() -> Result<()> {
     let model_dir = cfg.model_dir_path();
     let mut model_missing = !model_fetch::is_installed(&model_dir);
     let default_dir = cfg.model_dir == Config::default().model_dir;
-    let plan = setup_ui::plan(model_missing, default_dir, setup_ui::welcome_marker().exists());
+    let welcomed = setup_ui::welcome_marker().exists();
+    let plan = setup_ui::plan(model_missing, default_dir, welcomed);
+    // where the setup card faded to a dot, for the mote that carries it to the pill
+    let mut card_at = None;
     if plan != setup_ui::Plan::Skip {
         let models = model_dir.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| model_dir.clone());
         match setup_ui::run(models, plan) {
             // re-checked: the unpacked folder must be the one model_dir names
-            setup_ui::SetupOutcome::Installed { .. } => model_missing = !model_fetch::is_installed(&model_dir),
+            setup_ui::SetupOutcome::Installed { from } => {
+                model_missing = !model_fetch::is_installed(&model_dir);
+                card_at = from;
+            }
             setup_ui::SetupOutcome::Quit => {
                 log::info!("model setup not finished; exiting");
                 return Ok(());
             }
         }
     }
+    // until the first dictation with words: quitting before trying brings it back next launch
+    let mut invite_open = setup_ui::invites(welcomed, model_missing);
     let mut history = History::new(25);
 
     let (hk_tx, hk_rx) = unbounded::<HotkeyEvent>();
@@ -268,6 +279,10 @@ fn main() -> Result<()> {
     let mut resting_tick: u32 = 0;
     let mut output_mute = audio_out::OutputMute::new();
     overlay.set(OverlayState::Idle);
+    if invite_open {
+        let from = card_at.unwrap_or_else(|| overlay.centre_physical());
+        mote.say_until_dismissed(invite(&cfg.ptt_key_label()), from, Target::Pill(overlay.above_physical()));
+    }
 
     // only reachable with a custom model_dir: the default one is set up above
     if model_missing {
@@ -341,6 +356,10 @@ fn main() -> Result<()> {
                     tray.set_paused(paused);
                     overlay.set(resting(paused));
                     if paused {
+                        // a paused key does nothing, so nothing should invite it
+                        if mote.is_speaking() {
+                            mote.dismiss();
+                        }
                         capture.take();
                         ring.clear();
                     } else if cfg.mic_always_on {
@@ -557,6 +576,9 @@ fn main() -> Result<()> {
                     if heard {
                         history.push(e);
                     }
+                    if heard && std::mem::take(&mut invite_open) {
+                        setup_ui::mark_welcomed();
+                    }
                 }
                 PipelineMsg::Error(s) => {
                     overlay.set(resting(paused));
@@ -617,7 +639,6 @@ fn main() -> Result<()> {
                     tray.notify("New speech model ready", "It's used from the next start.");
                 }
                 UpdateMsg::ModelFailed(why) => {
-                    log::error!("model upgrade: {why}");
                     tray.set_model(Some(&model_offer_label()), true);
                     tray.notify("Speech model download failed", &why);
                 }
@@ -643,6 +664,12 @@ fn main() -> Result<()> {
 const PRE_ROLL_SAMPLES: usize = 8_000;
 
 const UNHEARD: &str = "Didn't catch that";
+
+/// What the pill says on first run until you first press the key.
+fn invite(key: &str) -> Message {
+    use correction_ui::{rgb, GREEN, TEXT};
+    Message(vec![("Hold ".into(), rgb(TEXT)), (key.to_string(), rgb(GREEN)), (" and talk".into(), rgb(TEXT))])
+}
 
 /// Where "Didn't catch that" goes when a dictation ends with no words.
 #[derive(Debug, PartialEq)]
@@ -832,5 +859,15 @@ mod tests {
         let p = big_log("keep");
         drop(open_log(&p, false).unwrap());
         assert_eq!(std::fs::metadata(&p).unwrap().len(), MAX_LOG_BYTES + 1);
+    }
+
+    #[test]
+    fn the_invitation_names_the_key_in_green() {
+        let m = invite("Right Ctrl");
+        let text: String = m.0.iter().map(|(s, _)| s.as_str()).collect();
+        assert_eq!(text, "Hold Right Ctrl and talk");
+        let key = m.0.iter().find(|(s, _)| s == "Right Ctrl").expect("the key is its own run");
+        assert_eq!(key.1, correction_ui::rgb(correction_ui::GREEN));
+        assert!(m.0.iter().filter(|(s, _)| s != "Right Ctrl").all(|(_, c)| *c == correction_ui::rgb(correction_ui::TEXT)));
     }
 }
