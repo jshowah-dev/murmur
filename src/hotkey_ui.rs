@@ -1,4 +1,4 @@
-//! The push-to-talk key picker: press the key you want to hold to talk, Enter to keep it.
+//! The push-to-talk key picker: press the key you want to hold to talk. Enter or clicking away keeps it, Esc cancels.
 
 use crate::correction_ui::{hwnd_of, keycap, load_system_font, AMBER, BG, BORDER, MUTED, TEXT};
 use crate::hotkey::down;
@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::time::Duration;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_SHIFT;
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SetWindowPos,HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
+use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
 
 const WIDTH: f32 = 380.0;
 const POLL: Duration = Duration::from_millis(30);
@@ -56,6 +56,23 @@ fn in_use(key: Key) -> bool {
     use Key::*;
     let modifier = matches!(key, ControlLeft | ControlRight | AltLeft | AltRight | ShiftLeft | ShiftRight | SuperLeft | SuperRight);
     !modifier && ptt_vk_of(key.name()).is_none()
+}
+
+#[derive(Clone, Copy)]
+enum Close {
+    Enter,
+    /// clicking another window
+    Away,
+    Esc,
+}
+
+/// The keys to switch to when the picker closes `how` with `picked` on the card. Clicking away
+/// keeps them, so a key picked without pressing Enter isn't lost; only Esc cancels.
+fn kept(how: Close, picked: Option<Vec<u16>>) -> Option<Vec<u16>> {
+    match how {
+        Close::Enter | Close::Away => picked,
+        Close::Esc => None,
+    }
 }
 
 struct PickerApp {
@@ -115,19 +132,24 @@ impl eframe::App for PickerApp {
                 let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
             }
         }
-        // Esc or clicking another window closes it
+        // Esc, Enter or clicking another window closes it
         // winit can miss the focus event when the window brings itself to the front, so ask Windows too
         let focused = ctx.input(|i| i.focused) || unsafe { GetForegroundWindow() } == self.hwnd;
         self.was_focused |= focused;
         let changed = self.picked.clone().filter(|vks| ptt_name_of(vks) != ptt_name_of(&self.current));
         if !self.closing {
-            if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) || (self.was_focused && !focused) {
-                self.closing = true;
+            let close = if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+                Some(Close::Esc)
+            } else if self.was_focused && !focused {
+                Some(Close::Away)
             } else if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
-                self.chosen.set(changed.clone());
+                Some(Close::Enter)
+            } else {
+                None
+            };
+            if let Some(how) = close {
+                self.chosen.set(kept(how, changed.clone()));
                 self.closing = true;
-            }
-            if self.closing {
                 ctx.send_viewport_cmd(ViewportCommand::Close);
             }
         }
@@ -263,5 +285,13 @@ mod tests {
         assert!(!in_use(Key::F13));
         assert!(in_use(Key::Enter));
         assert!(in_use(Key::A));
+    }
+
+    #[test]
+    fn only_esc_throws_a_picked_key_away() {
+        let picked = Some(vec![0xA3]);
+        assert_eq!(kept(Close::Enter, picked.clone()), picked);
+        assert_eq!(kept(Close::Away, picked.clone()), picked, "clicking away keeps what's on the card");
+        assert_eq!(kept(Close::Esc, picked), None);
     }
 }
