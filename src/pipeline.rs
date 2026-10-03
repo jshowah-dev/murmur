@@ -4,7 +4,8 @@ use crate::context::{self, Profile};
 use crate::dictionary::{self, Dictionary, DictionaryFile};
 use crate::history::Entry;
 use crate::inject;
-use crate::snippets::{self, SnippetFile};
+use crate::notice::{self, FileProblem};
+use crate::snippets::SnippetFile;
 use crate::stt::Recognizer;
 use crate::vad::Vad;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
@@ -23,7 +24,10 @@ pub enum PipelineCmd {
 pub enum PipelineMsg {
     Processing,
     Done(Entry),
+    /// Said above the pill: the dictation couldn't go ahead.
     Error(String),
+    /// A settings file changed and is broken; the previous version stays in use.
+    FileProblem(FileProblem),
 }
 
 const MIN_SPEECH_SAMPLES: usize = 16_000 * 300 / 1000;
@@ -100,7 +104,8 @@ impl State {
 
     fn start(&mut self) {
         if let Err(e) = self.ensure_loaded() {
-            let _ = self.tx.send(PipelineMsg::Error(e.to_string()));
+            log::error!("load model: {e:#}");
+            let _ = self.tx.send(PipelineMsg::Error(notice::MODEL_LOAD.into()));
             return;
         }
         self.vad.as_mut().unwrap().reset();
@@ -144,11 +149,11 @@ impl State {
             return;
         }
         log::debug!("raw: {raw}");
-        if let Some(e) = self.snippets.refresh() {
-            let _ = self.tx.send(PipelineMsg::Error(e));
+        if let Some(p) = self.snippets.refresh() {
+            let _ = self.tx.send(PipelineMsg::FileProblem(p));
         }
-        if let Some(e) = self.dict_file.refresh(&self.dict) {
-            let _ = self.tx.send(PipelineMsg::Error(e));
+        if let Some(p) = self.dict_file.refresh(&self.dict) {
+            let _ = self.tx.send(PipelineMsg::FileProblem(p));
         }
         // read now, as the text is about to be pasted: the profile belongs to the window that receives it
         let profile = if self.cfg.format_by_context { context::detect(&self.cfg) } else { Profile::Plain };
@@ -157,13 +162,8 @@ impl State {
             let d = self.dict.lock().unwrap_or_else(|e| e.into_inner());
             cleanup::clean(&raw, &d, &self.snippets.current, &self.cfg, profile)
         };
-        let inject = match inject::paste(&cleaned) {
-            Ok(r) => Some(r),
-            Err(e) => {
-                let _ = self.tx.send(PipelineMsg::Error(format!("paste failed: {e}")));
-                None
-            }
-        };
+        // paste falls back to typing the text in, so an error here is only logged
+        let inject = inject::paste(&cleaned).map_err(|e| log::error!("paste: {e:#}")).ok();
         log::info!("dictated {} chars, release_to_text_ms={}", cleaned.chars().count(), stop_start.elapsed().as_millis());
         let _ = self.tx.send(PipelineMsg::Done(Entry { raw, cleaned, inject, at: Instant::now() }));
     }
@@ -188,11 +188,11 @@ impl State {
     }
 }
 
-pub fn spawn(cfg: Config, dict: Arc<Mutex<Dictionary>>, rx: Receiver<PipelineCmd>, tx: Sender<PipelineMsg>) -> JoinHandle<()> {
+pub fn spawn(cfg: Config, dict: Arc<Mutex<Dictionary>>, snippets: SnippetFile, rx: Receiver<PipelineCmd>, tx: Sender<PipelineMsg>) -> JoinHandle<()> {
     thread::Builder::new()
         .name("pipeline".into())
         .spawn(move || {
-            let mut st = State { cfg, dict, snippets: SnippetFile::new(snippets::path()), dict_file: DictionaryFile::new(dictionary::path()), tx, vad: None, rec: None, speech: vec![], speech_samples: 0, texts: vec![], recording: false, last_used: Instant::now() };
+            let mut st = State { cfg, dict, snippets, dict_file: DictionaryFile::new(dictionary::path()), tx, vad: None, rec: None, speech: vec![], speech_samples: 0, texts: vec![], recording: false, last_used: Instant::now() };
             // Spec § Error handling: a panic is logged and the loop restarts; the tray survives.
             loop {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut st, &rx)));
@@ -200,7 +200,7 @@ pub fn spawn(cfg: Config, dict: Arc<Mutex<Dictionary>>, rx: Receiver<PipelineCmd
                     Ok(()) => break,
                     Err(_) => {
                         log::error!("pipeline panicked; restarting");
-                        let _ = st.tx.send(PipelineMsg::Error("pipeline error, restarted".into()));
+                        let _ = st.tx.send(PipelineMsg::Error(notice::RESTARTED.into()));
                         st.recording = false;
                         st.vad = None;
                         st.rec = None;

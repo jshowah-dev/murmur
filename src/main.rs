@@ -1,6 +1,6 @@
 #![windows_subsystem = "windows"]
 
-use murmur_lib::{audio, cleanup, config, context, dictionary, history, model_fetch, snippets, stt, update, vad};
+use murmur_lib::{audio, cleanup, config, context, dictionary, history, model_fetch, notice, snippets, stt, update, vad};
 mod about_ui;
 mod audio_out;
 mod autostart;
@@ -170,12 +170,12 @@ fn main() -> Result<()> {
         }
         m
     };
-    let mut startup_errors: Vec<String> = Vec::new();
+    let mut problems: Vec<notice::FileProblem> = Vec::new();
     let mut cfg = match Config::load_or_create() {
         Ok(c) => c,
         Err(e) => {
             log::error!("{e:#}");
-            startup_errors.push(format!("config: {e}"));
+            problems.push(notice::file_problem(&config::config_dir().join("config.toml"), &e, notice::Effect::Defaults));
             Config::default()
         }
     };
@@ -186,14 +186,17 @@ fn main() -> Result<()> {
         Ok(d) => d,
         Err(e) => {
             log::error!("{e:#}");
-            startup_errors.push(format!("dictionary: {e}"));
+            problems.push(notice::file_problem(&dictionary::path(), &e, notice::Effect::CorrectionsOff));
             Dictionary::empty_unloaded()
         }
     }));
     if let Err(e) = snippets::ensure_file() {
         log::error!("{e:#}");
-        startup_errors.push(format!("snippets: {e}"));
+        problems.push(notice::file_problem(&snippets::path(), &e, notice::Effect::SnippetsOff));
     }
+    // read now, so a broken file is reported with the others and not after the first dictation
+    let mut snippet_file = snippets::SnippetFile::new(snippets::path());
+    problems.extend(snippet_file.refresh());
     // Before anything else starts: the pipeline loads the model as soon as it's spawned.
     let model_state = config::resolve_model(&mut cfg, model_fetch::is_installed);
     if let config::ModelState::Switched { old } = &model_state {
@@ -238,7 +241,7 @@ fn main() -> Result<()> {
     // shared with the hotkey thread, so the picker can change the key while Murmur runs
     let ptt_vks = Arc::new(Mutex::new(cfg.ptt_vks()));
     hotkey::spawn(ptt_vks.clone(), cfg.hands_free_max(), hk_tx);
-    pipeline::spawn(cfg.clone(), dict.clone(), cmd_rx, msg_tx);
+    pipeline::spawn(cfg.clone(), dict.clone(), snippet_file, cmd_rx, msg_tx);
 
     let mut overlay = Overlay::create()?;
     let mut mote = Mote::create()?;
@@ -269,7 +272,8 @@ fn main() -> Result<()> {
     // fed to the pipeline ahead of the live audio on key-down, so the first consonant is not
     // lost to device start-up latency.
     let mic_start = mic_at_start(cfg.mic_always_on, invite_open && card_at.is_some());
-    let mut capture = if mic_start == MicStart::Now { open_mic(&audio_tx, &lost_tx, &tray) } else { None };
+    let mut capture = if mic_start == MicStart::Now { open_mic(&audio_tx, &lost_tx) } else { None };
+    let mic_failed = mic_start == MicStart::Now && capture.is_none();
     // when the deferred mic opens: once the dot has flown to the pill and opened
     let mut mic_due = (mic_start == MicStart::AfterCarry).then(|| Instant::now() + motion::scaled(mote::FLIGHT + motion::duration::ENTER));
     let mut mic_used = Instant::now();
@@ -290,19 +294,17 @@ fn main() -> Result<()> {
     }
 
     // only reachable with a custom model_dir: the default one is set up above
-    if model_missing {
+    let model_gone = model_missing.then(|| {
         log::error!("model missing at {} (LOCALAPPDATA={:?})", model_dir.display(), std::env::var("LOCALAPPDATA"));
-        tray.notify("Model missing", &format!("Model missing at {}", model_dir.display()));
-    }
-    for msg in &startup_errors {
-        tray.notify("Startup", msg);
-    }
-    if model_state == config::ModelState::UpgradeAvailable {
-        tray.notify(
-            &format!("A new speech model is available ({} MB)", model_fetch::parakeet().size / 1_000_000),
-            "Download from the tray menu.",
-        );
+        notice::model_missing_balloon(&model_dir, &config::config_dir().join("config.toml"))
+    });
+    let upgrade = (model_state == config::ModelState::UpgradeAvailable).then(|| {
         tray.set_model(Some(&model_offer_label()), true);
+        notice::upgrade_balloon(model_fetch::parakeet().size / 1_000_000)
+    });
+    let mic = mic_failed.then(|| notice::mic_balloon(&cfg.ptt_key_label()));
+    for b in notice::startup(&problems, mic, model_gone, upgrade) {
+        tray.show(&b);
     }
 
     'main: loop {
@@ -325,7 +327,7 @@ fn main() -> Result<()> {
             mic_due = None;
             // a key-down may have opened it already; a pause opens it again on resume
             if capture.is_none() && !paused {
-                capture = open_mic(&audio_tx, &lost_tx, &tray);
+                capture = open_mic_or_balloon(&audio_tx, &lost_tx, &tray, &cfg.ptt_key_label());
                 mic_used = Instant::now();
             }
         }
@@ -341,7 +343,7 @@ fn main() -> Result<()> {
             }
             if reopen_after_loss(paused, cfg.mic_always_on, forwarding) {
                 log::info!("mic lost; reopening on the default input");
-                capture = open_mic(&audio_tx, &lost_tx, &tray);
+                capture = open_mic_or_balloon(&audio_tx, &lost_tx, &tray, &cfg.ptt_key_label());
             }
         }
         while let Ok(chunk) = audio_rx.try_recv() {
@@ -376,12 +378,12 @@ fn main() -> Result<()> {
                         capture.take();
                         ring.clear();
                     } else if cfg.mic_always_on {
-                        capture = open_mic(&audio_tx, &lost_tx, &tray);
+                        capture = open_mic_or_balloon(&audio_tx, &lost_tx, &tray, &cfg.ptt_key_label());
                         mic_used = Instant::now();
                     }
                 }
                 TrayEvent::FixLast => {
-                    let out = correction::fix_last(&mut history, &dict, &tray);
+                    let out = correction::fix_last(&mut history, &dict);
                     said_in = after_fix(out, true, &mut mote, &overlay);
                     while hk_rx.try_recv().is_ok() {}
                 }
@@ -472,10 +474,11 @@ fn main() -> Result<()> {
                     // a lookup still out from the last release must not answer for this dictation
                     unheard_pending = false;
                     if capture.is_none() {
-                        capture = open_mic(&audio_tx, &lost_tx, &tray);
-                    }
-                    if capture.is_none() {
-                        continue;
+                        capture = open_mic(&audio_tx, &lost_tx);
+                        if capture.is_none() {
+                            said_in = say(&mut mote, &overlay, Message::plain(notice::MIC), overlay.centre_physical(), None);
+                            continue;
+                        }
                     }
                     mic_used = Instant::now();
                     if cfg.mute_output {
@@ -485,7 +488,7 @@ fn main() -> Result<()> {
                     let _ = cmd_tx.send(PipelineCmd::Audio(ring.drain(..).collect()));
                     forwarding = true;
                 }
-                HotkeyEvent::Press if !paused => {
+                HotkeyEvent::Press if listens_on_press(paused, forwarding) => {
                     listening = true;
                     overlay.set(OverlayState::Listening(0.0));
                 }
@@ -543,7 +546,7 @@ fn main() -> Result<()> {
                 }
                 HotkeyEvent::FixLast => {
                     log::info!("fix-last hotkey");
-                    let out = correction::fix_last(&mut history, &dict, &tray);
+                    let out = correction::fix_last(&mut history, &dict);
                     said_in = after_fix(out, false, &mut mote, &overlay);
                     while hk_rx.try_recv().is_ok() {}
                 }
@@ -603,14 +606,15 @@ fn main() -> Result<()> {
                     awaiting = None;
                     expect_words = false;
                     unheard_pending = false;
-                    mote.fade();
                     overlay.set_quiet(false);
                     forwarding = false;
                     listening = false;
                     locked = false;
                     while audio_rx.try_recv().is_ok() {}
-                    tray.notify("Murmur", &s);
+                    said_in = say(&mut mote, &overlay, Message::plain(&s), overlay.centre_physical(), None);
                 }
+                // the dictation goes on with the previous version, so its landing is left alone
+                PipelineMsg::FileProblem(p) => tray.show(&notice::reload_balloon(&p)),
             }
         }
         while let Ok(m) = up_rx.try_recv() {
@@ -774,24 +778,40 @@ fn after_fix(out: correction::FixOutcome, from_tray: bool, mote: &mut Mote, over
     correction::fix_message(&out).and_then(|m| say(mote, overlay, m, from, to))
 }
 
+/// Whether a held key shows Listening: only once its key-down started a dictation. A mic that
+/// failed to open, or a pause, leaves nothing to listen to.
+fn listens_on_press(paused: bool, forwarding: bool) -> bool {
+    !paused && forwarding
+}
+
 /// Whether a mic whose stream died is opened again now, or left for the next key-down.
 fn reopen_after_loss(paused: bool, always_on: bool, forwarding: bool) -> bool {
     !paused && (always_on || forwarding)
 }
 
-fn open_mic(
-    audio_tx: &crossbeam_channel::Sender<Vec<f32>>,
-    lost_tx: &crossbeam_channel::Sender<()>,
-    tray: &Tray,
-) -> Option<audio::Capture> {
+fn open_mic(audio_tx: &crossbeam_channel::Sender<Vec<f32>>, lost_tx: &crossbeam_channel::Sender<()>) -> Option<audio::Capture> {
     match audio::Capture::start(audio_tx.clone(), lost_tx.clone()) {
         Ok(c) => Some(c),
         Err(e) => {
-            log::error!("open mic: {e}");
-            tray.notify("Microphone", &e.to_string());
+            log::error!("open mic: {e:#}");
             None
         }
     }
+}
+
+/// Opens the mic where nobody just pressed the key (a resume, a lost device, the deferred
+/// first-run open), so a failure goes to the corner.
+fn open_mic_or_balloon(
+    audio_tx: &crossbeam_channel::Sender<Vec<f32>>,
+    lost_tx: &crossbeam_channel::Sender<()>,
+    tray: &Tray,
+    key: &str,
+) -> Option<audio::Capture> {
+    let c = open_mic(audio_tx, lost_tx);
+    if c.is_none() {
+        tray.show(&notice::mic_balloon(key));
+    }
+    c
 }
 
 fn resting(paused: bool) -> OverlayState {
@@ -854,6 +874,14 @@ mod tests {
         assert!(!reopen_after_loss(false, false, false));
         assert!(!reopen_after_loss(true, true, false));
         assert!(!reopen_after_loss(true, false, true));
+    }
+
+    #[test]
+    fn a_held_key_shows_listening_only_when_the_dictation_started() {
+        assert!(listens_on_press(false, true));
+        // the mic failed on key-down, so nothing is being heard
+        assert!(!listens_on_press(false, false));
+        assert!(!listens_on_press(true, true));
     }
 
     #[test]

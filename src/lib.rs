@@ -7,6 +7,7 @@ pub mod dictionary_edit;
 pub mod email;
 pub mod history;
 pub mod model_fetch;
+pub mod notice;
 pub mod phonetic;
 pub mod snippets;
 pub mod snippets_edit;

@@ -3,7 +3,6 @@ use crate::dictionary::Dictionary;
 use crate::history::{History, InjectMethod};
 use crate::inject;
 use crate::mote::Message;
-use crate::tray::Tray;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use windows::Win32::Foundation::HWND;
@@ -41,6 +40,8 @@ pub struct FixOutcome {
     pub copied: bool,
     /// the correction replaced the dictation in place
     pub replaced: bool,
+    /// dictionary.toml couldn't be read, so nothing was learned
+    pub not_learned: Option<crate::notice::FileProblem>,
     /// the card's centre when it closed, physical pixels
     pub card: Option<(f32, f32)>,
 }
@@ -65,6 +66,9 @@ pub(crate) fn fix_message(o: &FixOutcome) -> Option<Message> {
     }
     let (text, muted) = (rgb(TEXT), rgb(MUTED));
     let mut spans = Vec::new();
+    if let Some(p) = &o.not_learned {
+        spans.push((crate::notice::not_learned(p), text));
+    }
     if !o.learned.is_empty() {
         spans.push(("Learned ".to_string(), text));
         for (i, (spoken, written)) in o.learned.iter().take(NAMED).enumerate() {
@@ -84,12 +88,14 @@ pub(crate) fn fix_message(o: &FixOutcome) -> Option<Message> {
         (true, false) => return None,
         (true, true) => spans.push(("Copied, press Ctrl+V to paste".into(), text)),
         (false, true) => spans.push((" · Copied, press Ctrl+V".into(), text)),
+        // "Learned …" already says the edit landed; "Not learned" doesn't
+        (false, false) if o.replaced && o.learned.is_empty() => spans.push((" · Replaced".into(), text)),
         (false, false) => {}
     }
     Some(Message(spans))
 }
 
-pub fn fix_last(history: &mut History, dict: &Arc<Mutex<Dictionary>>, tray: &Tray) -> FixOutcome {
+pub fn fix_last(history: &mut History, dict: &Arc<Mutex<Dictionary>>) -> FixOutcome {
     let Some(last) = history.last().cloned() else {
         return FixOutcome { nothing_to_fix: true, ..Default::default() };
     };
@@ -117,8 +123,8 @@ pub fn fix_last(history: &mut History, dict: &Arc<Mutex<Dictionary>>, tray: &Tra
                 out.learned = l.iter().map(|t| (t.spoken.last().cloned().unwrap_or_default(), t.written.clone())).collect();
             }
             Err(e) => {
-                log::error!("reload dictionary: {e}");
-                tray.notify("Dictionary", "not loaded — fix dictionary.toml before corrections are saved");
+                log::error!("reload dictionary: {e:#}");
+                out.not_learned = Some(crate::notice::file_problem(&crate::dictionary::path(), &e, crate::notice::Effect::CorrectionsOff));
             }
         }
     }
@@ -165,6 +171,25 @@ mod tests {
 
     fn learned(n: usize) -> Vec<(String, String)> {
         (0..n).map(|i| (format!("hob{i}"), format!("HAWB{i}"))).collect()
+    }
+
+    fn unreadable(line: Option<usize>) -> Option<crate::notice::FileProblem> {
+        Some(crate::notice::FileProblem {
+            path: "C:\\m\\dictionary.toml".into(),
+            line,
+            reason: "expected `=`.".into(),
+            effect: crate::notice::Effect::CorrectionsOff,
+        })
+    }
+
+    #[test]
+    fn not_learned_comes_first_then_what_happened_to_the_text() {
+        let m = fix_message(&FixOutcome { not_learned: unreadable(Some(12)), replaced: true, ..Default::default() }).unwrap();
+        assert_eq!(text(&m), "Not learned: dictionary.toml line 12 has a mistake · Replaced");
+        let m = fix_message(&FixOutcome { not_learned: unreadable(Some(12)), copied: true, ..Default::default() }).unwrap();
+        assert_eq!(text(&m), "Not learned: dictionary.toml line 12 has a mistake · Copied, press Ctrl+V");
+        let m = fix_message(&FixOutcome { not_learned: unreadable(None), ..Default::default() }).unwrap();
+        assert_eq!(text(&m), "Not learned: dictionary.toml can't be read");
     }
 
     #[test]
