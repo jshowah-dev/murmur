@@ -148,8 +148,8 @@ impl SnippetFile {
         SnippetFile { path, mtime: None, current: Snippets::default() }
     }
 
-    /// Reload if the file changed since the last check. Returns an error message once per bad edit.
-    pub fn refresh(&mut self) -> Option<String> {
+    /// Reload if the file changed since the last check. Returns what was wrong, once per bad edit.
+    pub fn refresh(&mut self) -> Option<crate::notice::FileProblem> {
         let mtime = std::fs::metadata(&self.path).and_then(|m| m.modified()).ok();
         if mtime == self.mtime {
             return None;
@@ -167,7 +167,7 @@ impl SnippetFile {
             }
             Err(e) => {
                 log::error!("snippets.toml: {e:#}");
-                Some(format!("snippets.toml not loaded, keeping the previous snippets: {e}"))
+                Some(crate::notice::file_problem(&self.path, &e, crate::notice::Effect::KeepingSnippets))
             }
         }
     }
@@ -176,6 +176,18 @@ impl SnippetFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_broken_reload_names_the_line_and_keeps_the_snippets() {
+        let p = std::env::temp_dir().join(format!("murmur-snippets-{}-reload-line.toml", std::process::id()));
+        std::fs::write(&p, "# a\n# b\n# c\nbroken\n").unwrap();
+        let mut f = SnippetFile::new(p.clone());
+        let got = f.refresh().unwrap();
+        assert_eq!(got.line, Some(4));
+        assert_eq!(got.effect, crate::notice::Effect::KeepingSnippets);
+        assert_eq!(f.refresh(), None);
+        let _ = std::fs::remove_file(&p);
+    }
 
     fn set(pairs: &[(&str, &str)]) -> Snippets {
         Snippets { snippets: pairs.iter().map(|(t, x)| Snippet { trigger: t.to_string(), text: x.to_string() }).collect() }

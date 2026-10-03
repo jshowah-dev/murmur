@@ -1,5 +1,7 @@
+use crate::notice::Balloon;
 use anyhow::Result;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tray_icon::menu::{CheckMenuItem, ContextMenu, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
@@ -37,6 +39,8 @@ pub struct Tray {
     /// whether (model, update) are in the menu
     shown: Cell<(bool, bool)>,
     ids: [(MenuId, TrayEvent); 12],
+    /// what a click on the balloon on screen does
+    click: RefCell<BalloonClick>,
 }
 
 /// Menu position of "About Murmur" before any optional item is added.
@@ -100,12 +104,18 @@ impl Tray {
         if !unsafe { SetWindowSubclass(HWND(_icon.window_handle() as *mut _), Some(balloon_proc), 1, 0) }.as_bool() {
             log::warn!("balloon clicks unavailable: SetWindowSubclass failed");
         }
-        Ok(Tray { _icon, menu, pause, ptt, autostart, update, model, shown: Cell::new((false, false)), ids })
+        Ok(Tray { _icon, menu, pause, ptt, autostart, update, model, shown: Cell::new((false, false)), ids, click: RefCell::new(BalloonClick::Nothing) })
     }
 
     pub fn poll(&self) -> Option<TrayEvent> {
-        if BALLOON_CLICKED.swap(false, Ordering::Relaxed) && UPDATE_BALLOON.load(Ordering::Relaxed) {
-            return Some(TrayEvent::BalloonUpdate);
+        if BALLOON_CLICKED.swap(false, Ordering::Relaxed) {
+            let (ev, open) = on_click(&self.click.borrow());
+            for p in &open {
+                open_in_notepad(p);
+            }
+            if ev.is_some() {
+                return ev;
+            }
         }
         let ev = MenuEvent::receiver().try_recv().ok()?;
         self.ids.iter().find(|(id, _)| *id == ev.id).map(|(_, e)| *e)
@@ -170,17 +180,22 @@ impl Tray {
     }
 
     pub fn notify(&self, title: &str, body: &str) {
-        self.show_balloon(title, body, false);
+        self.show_balloon(title, body, BalloonClick::Nothing);
     }
 
-    /// The "update available" balloon: the only one whose click does something (`BalloonUpdate`).
+    /// The "update available" balloon: a click raises `BalloonUpdate`.
     pub fn notify_update(&self, title: &str, body: &str) {
-        self.show_balloon(title, body, true);
+        self.show_balloon(title, body, BalloonClick::Update);
     }
 
-    fn show_balloon(&self, title: &str, body: &str, update: bool) {
+    /// A notice; a click opens its files.
+    pub fn show(&self, b: &Balloon) {
+        self.show_balloon(&b.title, &b.body, click_for(b));
+    }
+
+    fn show_balloon(&self, title: &str, body: &str, click: BalloonClick) {
         // a click belongs to the balloon on screen, which is the last one shown
-        UPDATE_BALLOON.store(update, Ordering::Relaxed);
+        *self.click.borrow_mut() = click;
         let ok = balloon(&self._icon, title, body);
         log::info!("notify: {title}: {body} (balloon accepted: {ok})");
         if !ok {
@@ -202,10 +217,36 @@ fn relabel(item: &MenuItem, label: Option<&str>, enabled: bool) -> bool {
     label.is_some()
 }
 
+/// What a click on the balloon on screen does. It belongs to the last balloon shown.
+#[derive(Debug, Clone, PartialEq)]
+enum BalloonClick {
+    Nothing,
+    Update,
+    Open(Vec<PathBuf>),
+}
+
+fn click_for(b: &Balloon) -> BalloonClick {
+    if b.open.is_empty() { BalloonClick::Nothing } else { BalloonClick::Open(b.open.clone()) }
+}
+
+/// The event a click raises, and the files it opens.
+fn on_click(c: &BalloonClick) -> (Option<TrayEvent>, Vec<PathBuf>) {
+    match c {
+        BalloonClick::Nothing => (None, vec![]),
+        BalloonClick::Update => (Some(TrayEvent::BalloonUpdate), vec![]),
+        BalloonClick::Open(paths) => (None, paths.clone()),
+    }
+}
+
+/// Notepad: always there, and it shows the line number a notice names.
+fn open_in_notepad(p: &Path) {
+    if let Err(e) = std::process::Command::new("notepad.exe").arg(p).spawn() {
+        log::error!("open {}: {e}", p.display());
+    }
+}
+
 /// Set by `balloon_proc`, taken by `poll`.
 static BALLOON_CLICKED: AtomicBool = AtomicBool::new(false);
-/// Whether the last balloon shown was the "update available" one.
-static UPDATE_BALLOON: AtomicBool = AtomicBool::new(false);
 /// tray-icon's private callback message (`WM_USER_TRAYICON`, tray-icon 0.25) and shellapi.h's
 /// NIN_BALLOONUSERCLICK, which arrives as its lparam. If tray-icon renumbers, clicks just stop working.
 const TRAY_CALLBACK: u32 = 6002;
@@ -275,6 +316,19 @@ mod tests {
         assert_eq!(tray_px(120), 20);
         assert_eq!(tray_px(144), 24);
         assert_eq!(tray_px(192), 32);
+    }
+
+    #[test]
+    fn a_click_does_what_the_last_balloon_offers() {
+        let files = vec![PathBuf::from("C:\\m\\config.toml"), PathBuf::from("C:\\m\\dictionary.toml")];
+        assert_eq!(on_click(&BalloonClick::Nothing), (None, vec![]));
+        assert_eq!(on_click(&BalloonClick::Update), (Some(TrayEvent::BalloonUpdate), vec![]));
+        assert_eq!(on_click(&BalloonClick::Open(files.clone())), (None, files));
+        assert_eq!(click_for(&Balloon { title: "t".into(), body: "b".into(), open: vec![] }), BalloonClick::Nothing);
+        assert_eq!(
+            click_for(&Balloon { title: "t".into(), body: "b".into(), open: vec![PathBuf::from("C:\\m\\config.toml")] }),
+            BalloonClick::Open(vec![PathBuf::from("C:\\m\\config.toml")])
+        );
     }
 
     #[test]

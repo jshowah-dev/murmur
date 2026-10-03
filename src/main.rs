@@ -1,6 +1,6 @@
 #![windows_subsystem = "windows"]
 
-use murmur_lib::{audio, cleanup, config, context, dictionary, history, model_fetch, snippets, stt, update, vad};
+use murmur_lib::{audio, cleanup, config, context, dictionary, history, model_fetch, notice, snippets, stt, update, vad};
 mod about_ui;
 mod audio_out;
 mod autostart;
@@ -603,14 +603,15 @@ fn main() -> Result<()> {
                     awaiting = None;
                     expect_words = false;
                     unheard_pending = false;
-                    mote.fade();
                     overlay.set_quiet(false);
                     forwarding = false;
                     listening = false;
                     locked = false;
                     while audio_rx.try_recv().is_ok() {}
-                    tray.notify("Murmur", &s);
+                    said_in = say(&mut mote, &overlay, Message::plain(&s), overlay.centre_physical(), None);
                 }
+                // the dictation goes on with the previous version, so its landing is left alone
+                PipelineMsg::FileProblem(p) => tray.show(&notice::reload_balloon(&p)),
             }
         }
         while let Ok(m) = up_rx.try_recv() {

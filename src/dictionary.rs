@@ -289,8 +289,8 @@ impl DictionaryFile {
         DictionaryFile { path, stamp }
     }
 
-    /// Reload if the file changed since the last check. Returns an error message once per bad edit.
-    pub fn refresh(&mut self, shared: &std::sync::Mutex<Dictionary>) -> Option<String> {
+    /// Reload if the file changed since the last check. Returns what was wrong, once per bad edit.
+    pub fn refresh(&mut self, shared: &std::sync::Mutex<Dictionary>) -> Option<crate::notice::FileProblem> {
         let stamp = file_stamp(&self.path);
         if stamp == self.stamp {
             return None;
@@ -317,7 +317,7 @@ impl DictionaryFile {
             }
             Err(e) => {
                 log::error!("dictionary.toml: {e:#}");
-                Some(format!("dictionary.toml not loaded, keeping the previous terms: {e}"))
+                Some(crate::notice::file_problem(&self.path, &e, crate::notice::Effect::KeepingTerms))
             }
         }
     }
@@ -495,6 +495,23 @@ mod tests {
         let (d, stamp) = Dictionary::load_stamped(&p).unwrap();
         assert!(d.terms.is_empty());
         assert_eq!(stamp, None);
+    }
+
+    #[test]
+    fn a_broken_reload_names_the_line_and_keeps_the_terms() {
+        let p = temp_path("reload-line");
+        dict().save_to(&p).unwrap();
+        let shared = std::sync::Mutex::new(dict());
+        let mut f = DictionaryFile::new(p.clone());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&p, "# a\n# b\n# c\nbroken\n").unwrap();
+        let got = f.refresh(&shared).unwrap();
+        assert_eq!(got.line, Some(4));
+        assert_eq!(got.effect, crate::notice::Effect::KeepingTerms);
+        assert_eq!(got.path, p);
+        // deleted while running: nothing to report
+        std::fs::remove_file(&p).unwrap();
+        assert_eq!(f.refresh(&shared), None);
     }
 
     #[test]
