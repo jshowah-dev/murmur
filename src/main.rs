@@ -337,7 +337,7 @@ fn main() -> Result<()> {
                     }
                 }
                 TrayEvent::FixLast => {
-                    correction::fix_last(&mut history, &dict, &tray);
+                    let _ = correction::fix_last(&mut history, &dict, &tray);
                     while hk_rx.try_recv().is_ok() {}
                 }
                 TrayEvent::History => {
@@ -486,7 +486,7 @@ fn main() -> Result<()> {
                 }
                 HotkeyEvent::FixLast => {
                     log::info!("fix-last hotkey");
-                    correction::fix_last(&mut history, &dict, &tray);
+                    let _ = correction::fix_last(&mut history, &dict, &tray);
                     while hk_rx.try_recv().is_ok() {}
                 }
                 _ => {}

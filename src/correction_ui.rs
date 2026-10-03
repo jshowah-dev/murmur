@@ -74,11 +74,18 @@ struct FixApp {
     opened: Instant,
     height: f32,
     out: Rc<RefCell<Option<String>>>,
+    card: Rc<RefCell<Option<(f32, f32)>>>,
 }
 
 impl FixApp {
     fn close(&self, ctx: &egui::Context, result: Option<String>) {
         *self.out.borrow_mut() = result;
+        // where the card was, for the mote that carries the result to the caret
+        *self.card.borrow_mut() = Some(caret::physical(|| unsafe {
+            let mut r = RECT::default();
+            let _ = GetWindowRect(self.hwnd, &mut r);
+            ((r.left + r.right) as f32 / 2.0, (r.top + r.bottom) as f32 / 2.0)
+        }));
         ctx.send_viewport_cmd(ViewportCommand::Close);
     }
 
@@ -248,12 +255,14 @@ pub(crate) fn hwnd_of(cc: &eframe::CreationContext) -> Option<HWND> {
 }
 
 /// Shows the fix-last dialog next to where `initial` was dictated. Blocks until the user
-/// replaces (Some(edited)) or cancels (None).
-pub fn show(initial: &str, heard_at: Option<Instant>, dict: Dictionary, target: HWND) -> Option<String> {
+/// replaces (Some(edited)) or cancels (None); also returns the card's centre, physical pixels.
+pub fn show(initial: &str, heard_at: Option<Instant>, dict: Dictionary, target: HWND) -> (Option<String>, Option<(f32, f32)>) {
     // read the caret now, while the target app still has focus
     let anchor = caret::find(target);
     log::info!("fix-last anchor: {anchor:?}");
     let out = Rc::new(RefCell::new(None));
+    let card = Rc::new(RefCell::new(None));
+    let app_card = card.clone();
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Murmur — fix last")
@@ -297,6 +306,7 @@ pub fn show(initial: &str, heard_at: Option<Instant>, dict: Dictionary, target: 
                 opened: Instant::now(),
                 height: 0.0,
                 out: app_out,
+                card: app_card,
             }))
         }),
     );
@@ -304,7 +314,8 @@ pub fn show(initial: &str, heard_at: Option<Instant>, dict: Dictionary, target: 
         log::error!("fix-last dialog: {e}");
     }
     let result = out.borrow_mut().take();
-    result
+    let at = card.borrow_mut().take();
+    (result, at)
 }
 
 #[cfg(test)]
