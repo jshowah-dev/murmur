@@ -432,6 +432,8 @@ fn main() -> Result<()> {
                         mote.dismiss();
                     }
                     said_in = None;
+                    // a lookup still out from the last release must not answer for this dictation
+                    unheard_pending = false;
                     if capture.is_none() {
                         capture = open_mic(&audio_tx, &lost_tx, &tray);
                     }
@@ -533,7 +535,7 @@ fn main() -> Result<()> {
                     match unheard(finished && !heard, mote.is_active(), caret_pending) {
                         Some(Unheard::WaitForCaret) => unheard_pending = true,
                         Some(Unheard::Here) => {
-                            // the mote is at (or flying to) the caret: it says it there, whatever the target
+                            // the mote is at (or flying to) the caret: it says it there; if it's already fading, say starts a fresh flight to the pill target
                             awaiting = None;
                             mote.say(Message::plain(UNHEARD), overlay.centre_physical(), Target::Pill(overlay.above_physical()));
                             said_in = Some(inject::foreground_hwnd());

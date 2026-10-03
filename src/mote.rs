@@ -167,7 +167,10 @@ impl Flight {
         match self.phase {
             Phase::Speaking { at, .. } => {
                 let open = self.sprite(now).map_or(0.0, |s| s.open);
-                self.phase = if self.reduced { Phase::Hidden } else { Phase::Furling { at, start: now, open } };
+                // the call above may have run the phase on already (furling, or gone); leave that be
+                if matches!(self.phase, Phase::Speaking { .. }) {
+                    self.phase = if self.reduced { Phase::Hidden } else { Phase::Furling { at, start: now, open } };
+                }
             }
             Phase::Flying { then: Then::Say, .. } => self.leave(now, false),
             _ => {}
@@ -335,7 +338,7 @@ fn fit(x: i32, y: i32, w: i32, h: i32, work: RECT) -> (i32, i32) {
 }
 
 /// A frame of a speaking mote, `w`×`h`, with the capsule centred at `centre`.
-fn render_tag(s: &Sprite, m: &Message, b: &TagBox, centre: Pt, w: i32, h: i32, font: i32, text_h: i32) -> Vec<u32> {
+fn render_tag(s: &Sprite, m: &Message, b: &TagBox, centre: Pt, w: i32, h: i32, font: i32, text: (i32, i32)) -> Vec<u32> {
     let mut c = Canvas::new(w, h);
     let (cx, cy) = centre;
     let dot = 1.0 - s.open;
@@ -348,13 +351,21 @@ fn render_tag(s: &Sprite, m: &Message, b: &TagBox, centre: Pt, w: i32, h: i32, f
         c.capsule(cx - core / 2.0, cy - core / 2.0, core, core, 0xE8FFE8, s.alpha * dot);
     }
     if s.words > 0.0 {
-        c.text(cx - b.w / 2.0 + b.pad, cy - text_h as f32 / 2.0, &m.0, font, s.words * s.alpha);
+        c.text(cx - b.w / 2.0 + b.pad, cy - text.1 as f32 / 2.0, &m.0, font, text, s.words * s.alpha);
     }
     c.into_bgra()
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+}
+
+/// Records a frame's inputs in `last`; whether they differ from the frame before.
+fn changed(last: &mut Option<(Sprite, i32, i32, i32, i32)>, s: &Sprite, x: i32, y: i32, w: i32, h: i32) -> bool {
+    let now = Some((*s, x, y, w, h));
+    let differs = *last != now;
+    *last = now;
+    differs
 }
 
 /// The mote's own click-through window. It's created and moved in physical pixels, the space
@@ -365,6 +376,10 @@ pub(crate) struct Mote {
     shown: bool,
     /// physical pixels per 96-dpi pixel, for the message's size
     scale: f32,
+    /// the current message's font size, text size and work area, measured once per message
+    layout: Option<(i32, (i32, i32), RECT)>,
+    /// the last frame pushed, to skip an identical one
+    last: Option<(Sprite, i32, i32, i32, i32)>,
 }
 
 impl Mote {
@@ -386,10 +401,11 @@ impl Mote {
             )?)
         })?;
         let scale = crate::caret::physical(|| unsafe { GetDpiForSystem() }) as f32 / 96.0;
-        Ok(Mote { hwnd, flight: Flight::new(reduced_motion()), shown: false, scale })
+        Ok(Mote { hwnd, flight: Flight::new(reduced_motion()), shown: false, scale, layout: None, last: None })
     }
 
     pub(crate) fn launch(&mut self, from: Pt, to: Pt) {
+        self.layout = None;
         self.flight.launch(from, to, Instant::now());
     }
 
@@ -406,6 +422,7 @@ impl Mote {
     }
 
     pub(crate) fn say(&mut self, m: Message, from: Pt, to: Target) {
+        self.layout = None;
         self.flight.say(m, from, to, Instant::now());
     }
 
@@ -417,29 +434,32 @@ impl Mote {
         self.flight.is_speaking()
     }
 
-    /// The frame for `s`: (x, y, w, h, pixels), physical pixels.
-    fn frame(&self, s: &Sprite) -> (i32, i32, i32, i32, Vec<u32>) {
+    /// The frame for `s`: (x, y, w, h, pixels), physical pixels; None when it's the one already
+    /// on screen (a held message is the same frame every tick).
+    fn frame(&mut self, s: &Sprite) -> Option<(i32, i32, i32, i32, Vec<u32>)> {
         let Some(m) = self.flight.message().filter(|_| s.open > 0.0) else {
             let (x, y) = ((s.at.0 - S as f32 / 2.0).round() as i32, (s.at.1 - S as f32 / 2.0).round() as i32);
-            return (x, y, S, S, render(s));
+            return changed(&mut self.last, s, x, y, S, S).then(|| (x, y, S, S, render(s)));
         };
-        let font = (16.0 * self.scale).round() as i32;
-        let text = canvas::measure(&m.0, font);
+        let (font, text, work) = *self.layout.get_or_insert_with(|| {
+            let font = (16.0 * self.scale).round() as i32;
+            let at = RECT { left: s.at.0 as i32, top: s.at.1 as i32, right: s.at.0 as i32 + 1, bottom: s.at.1 as i32 + 1 };
+            (font, canvas::measure(&m.0, font), crate::caret::work_area(&crate::caret::Anchor::Area(at)))
+        });
         let b = tag_box(s.at, s.open, text, self.scale, self.flight.centred());
         let (w, h) = (((b.w + 2.0 * MARGIN).ceil() as i32).max(S), ((b.h + 2.0 * MARGIN).ceil() as i32).max(S));
         let (x0, y0) = ((b.cx - w as f32 / 2.0).round() as i32, (b.cy - h as f32 / 2.0).round() as i32);
-        let at = RECT { left: s.at.0 as i32, top: s.at.1 as i32, right: s.at.0 as i32 + 1, bottom: s.at.1 as i32 + 1 };
-        let (x, y) = fit(x0, y0, w, h, crate::caret::work_area(&crate::caret::Anchor::Area(at)));
-        let px = render_tag(s, m, &b, (b.cx - x as f32, b.cy - y as f32), w, h, font, text.1);
-        (x, y, w, h, px)
+        let (x, y) = fit(x0, y0, w, h, work);
+        changed(&mut self.last, s, x, y, w, h).then(|| (x, y, w, h, render_tag(s, m, &b, (b.cx - x as f32, b.cy - y as f32), w, h, font, text)))
     }
 
     /// Draws this frame of the flight, or hides the window once it's over.
     pub(crate) fn animate(&mut self) {
         match self.flight.sprite(Instant::now()) {
             Some(s) => {
-                let (x, y, w, h, px) = self.frame(&s);
-                crate::caret::physical(|| canvas::push(self.hwnd, x, y, w, h, &px));
+                if let Some((x, y, w, h, px)) = self.frame(&s) {
+                    crate::caret::physical(|| canvas::push(self.hwnd, x, y, w, h, &px));
+                }
                 if !self.shown {
                     unsafe {
                         let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
@@ -453,6 +473,8 @@ impl Mote {
                     let _ = ShowWindow(self.hwnd, SW_HIDE);
                 }
                 self.shown = false;
+                self.layout = None;
+                self.last = None;
             }
             None => {}
         }
@@ -665,6 +687,33 @@ mod tests {
         let after = f.sprite(mid + ms(10)).unwrap();
         assert!(after.open < half && after.open > 0.0, "{half} -> {}", after.open);
         assert!(f.sprite(mid + motion::duration::EXIT * 2 + ms(2)).is_none());
+    }
+
+    #[test]
+    fn dismiss_after_the_message_has_run_its_course_leaves_no_ghost() {
+        let t0 = Instant::now();
+        let m = msg("Nothing to fix yet");
+        let hold = hold_for(&m);
+        let mut f = Flight::new(false);
+        f.launch(PILL, CARET, t0);
+        let settled = t0 + FLIGHT + ms(10);
+        f.sprite(settled);
+        f.say(m, PILL, Target::Caret(CARET), settled);
+        // nothing polled the sprite since, so the phase is still Speaking
+        f.dismiss(settled + motion::duration::ENTER + hold + motion::duration::EXIT * 2 + ms(5));
+        assert!(f.sprite(settled + motion::duration::ENTER + hold + motion::duration::EXIT * 2 + ms(10)).is_none());
+    }
+
+    #[test]
+    fn an_identical_frame_is_skipped_until_something_changes() {
+        let s = Sprite { at: CARET, alpha: 1.0, radius: 1.0, open: 1.0, words: 1.0 };
+        let mut last = None;
+        assert!(changed(&mut last, &s, 10, 20, 100, 40), "first frame always draws");
+        assert!(!changed(&mut last, &s, 10, 20, 100, 40), "the held frame repeats");
+        assert!(changed(&mut last, &Sprite { open: 0.9, ..s }, 10, 20, 100, 40));
+        assert!(changed(&mut last, &Sprite { open: 0.9, ..s }, 11, 20, 100, 40), "moved");
+        last = None;
+        assert!(changed(&mut last, &s, 11, 20, 100, 40), "hiding clears it");
     }
 
     #[test]

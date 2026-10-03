@@ -85,8 +85,10 @@ impl Canvas {
 
     /// Draw `spans` left to right with the top-left at (x, y), each in its own colour at `alpha`.
     /// GDI draws white on black with grayscale antialiasing, so any channel is the coverage.
-    pub(crate) fn text(&mut self, x: f32, y: f32, spans: &[Span], px: i32, alpha: f32) {
-        let (tw, th) = measure(spans, px);
+    /// `size` is what `measure` gave for these spans at `px`, so callers that already have it
+    /// don't pay for it twice.
+    pub(crate) fn text(&mut self, x: f32, y: f32, spans: &[Span], px: i32, size: (i32, i32), alpha: f32) {
+        let (tw, th) = size;
         if tw <= 0 || th <= 0 || alpha <= 0.0 {
             return;
         }
@@ -262,7 +264,7 @@ mod tests {
         let (w, h) = measure(&spans, 16);
         assert!(w > 20 && h >= 16, "{w}x{h}");
         let mut c = Canvas::new(w, h);
-        c.text(0.0, 0.0, &spans, 16, 1.0);
+        c.text(0.0, 0.0, &spans, 16, (w, h), 1.0);
         let px = c.into_bgra();
         let cols = |r: std::ops::Range<i32>| px.iter().enumerate().filter(|(i, _)| r.contains(&(*i as i32 % w))).map(|(_, p)| *p).collect::<Vec<_>>();
         assert!(cols(0..w / 3).iter().any(|p| (p >> 16) & 0xFF > 0x80 && p & 0xFF == 0), "red on the left");
@@ -285,7 +287,7 @@ mod tests {
         let (w, h) = measure(&spans, 16);
         let draw = |a: f32| {
             let mut c = Canvas::new(w, h);
-            c.text(0.0, 0.0, &spans, 16, a);
+            c.text(0.0, 0.0, &spans, 16, (w, h), a);
             c.into_bgra().iter().map(|p| p >> 24).max().unwrap()
         };
         assert!(draw(0.5) < draw(1.0));

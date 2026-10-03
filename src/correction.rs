@@ -48,6 +48,16 @@ pub struct FixOutcome {
 /// Terms named in a "Learned" message; any more are counted.
 const NAMED: usize = 2;
 
+/// Longest a term can run in a message, ellipsis included, so the capsule stays on screen.
+const TERM_MAX: usize = 24;
+
+fn shorten(term: &str) -> String {
+    if term.chars().count() <= TERM_MAX {
+        return term.to_string();
+    }
+    term.chars().take(TERM_MAX - 1).chain(['…']).collect()
+}
+
 /// What the mote says after fix-last, or None when the landing says it all.
 pub(crate) fn fix_message(o: &FixOutcome) -> Option<Message> {
     if o.nothing_to_fix {
@@ -61,9 +71,9 @@ pub(crate) fn fix_message(o: &FixOutcome) -> Option<Message> {
             if i > 0 {
                 spans.push((", ".into(), muted));
             }
-            spans.push((spoken.clone(), rgb(SPOKEN)));
+            spans.push((shorten(spoken), rgb(SPOKEN)));
             spans.push((" → ".into(), muted));
-            spans.push((written.clone(), rgb(AMBER)));
+            spans.push((shorten(written), rgb(AMBER)));
         }
         if o.learned.len() > NAMED {
             spans.push((format!(" +{} more", o.learned.len() - NAMED), muted));
@@ -177,6 +187,17 @@ mod tests {
         assert_eq!(text(&m), "Copied, press Ctrl+V to paste");
         let m = fix_message(&FixOutcome { copied: true, learned: learned(1), ..Default::default() }).unwrap();
         assert_eq!(text(&m), "Learned hob0 → HAWB0 · Copied, press Ctrl+V");
+    }
+
+    #[test]
+    fn a_long_term_is_cut_to_keep_the_capsule_on_screen() {
+        let long = "W".repeat(40);
+        let m = fix_message(&FixOutcome { learned: vec![("hob".into(), long.clone())], replaced: true, ..Default::default() }).unwrap();
+        let cut = format!("{}…", "W".repeat(23));
+        assert_eq!(text(&m), format!("Learned hob → {cut}"));
+        assert_eq!(cut.chars().count(), 24);
+        let m = fix_message(&FixOutcome { learned: vec![("é".repeat(30), "ok".into())], replaced: true, ..Default::default() }).unwrap();
+        assert!(text(&m).starts_with(&format!("Learned {}… → ok", "é".repeat(23))), "chars, not bytes");
     }
 
     #[test]
