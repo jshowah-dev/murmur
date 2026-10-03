@@ -83,6 +83,8 @@ struct Look {
     pulse: f32,
     /// a mote carries the "working" signal, so the processing dots step back
     quiet: bool,
+    /// which processing dot is lit, 0..3
+    dot: u32,
 }
 
 /// How far out the resting pill notices the cursor.
@@ -97,6 +99,12 @@ fn nearness(cursor: (i32, i32), pill: RECT) -> (f32, f32) {
     let strength = (1.0 - dx.hypot(dy) / NEAR_PX).max(0.0);
     let along = ((x - pill.left) as f32 / (pill.right - pill.left).max(1) as f32).clamp(0.0, 1.0);
     (strength, along)
+}
+
+/// The processing dot lit `elapsed` into processing: one step per emphasis beat, so the dots
+/// keep moving however long the words take, with nothing else changing.
+fn processing_dot(elapsed: Duration) -> u32 {
+    (elapsed.as_millis() / motion::scaled(motion::duration::EMPHASIS).as_millis().max(1)) as u32 % 3
 }
 
 /// Linear progress after `dt`: toward 1 over `up` while `on`, back toward 0 over `down`
@@ -149,8 +157,8 @@ fn size(g: f32) -> (i32, i32) {
 pub struct Overlay {
     hwnd: HWND,
     state: OverlayState,
-    tick: u32,
     look: Look,
+    processing_at: Option<Instant>,
     pulse_at: Option<Instant>,
     stepped_at: Instant,
     reduced: bool,
@@ -202,7 +210,7 @@ impl Overlay {
                 0, 0, W, H,
                 None, None, Some(hinst.into()), None,
             )?;
-            Ok(Overlay { hwnd, state: OverlayState::Idle, tick: 0, look: Look::default(), pulse_at: None, stepped_at: Instant::now(), reduced: reduced_motion() })
+            Ok(Overlay { hwnd, state: OverlayState::Idle, look: Look::default(), processing_at: None, pulse_at: None, stepped_at: Instant::now(), reduced: reduced_motion() })
         }
     }
 
@@ -220,7 +228,7 @@ impl Overlay {
     }
 
     fn paint(&mut self) {
-        let (w, h, pixels) = render(self.state, self.tick, self.look);
+        let (w, h, pixels) = render(self.state, self.look);
         let (x, y) = self.target_position(w, h);
         canvas::push(self.hwnd, x, y, w, h, &pixels);
     }
@@ -240,13 +248,17 @@ impl Overlay {
 
     pub fn set(&mut self, state: OverlayState) {
         let was_resting = self.state.is_resting();
+        if state != OverlayState::Processing {
+            self.processing_at = None;
+        } else if self.state != OverlayState::Processing {
+            self.processing_at = Some(Instant::now());
+        }
         self.state = state;
         if !state.is_resting() {
             // the live pill is click-through, so no leave message will come
             HOVERED.store(false, Ordering::Relaxed);
             self.look.hover = 0.0;
         }
-        self.tick = self.tick.wrapping_add(1);
         self.paint();
         unsafe {
             if was_resting != state.is_resting() {
@@ -303,6 +315,7 @@ impl Overlay {
             }
             None => 0.0,
         };
+        look.dot = self.processing_at.map_or(0, |t0| processing_dot(now - t0));
         if look != self.look {
             self.look = look;
             self.paint();
@@ -355,7 +368,7 @@ impl Overlay {
 
 /// Paint `state` into premultiplied BGRA pixels, row-major, `w * h` long. The size follows
 /// `look.grow`; `look.hover` wakes the resting pill (full body opacity plus the "more" dots).
-fn render(state: OverlayState, tick: u32, look: Look) -> (i32, i32, Vec<u32>) {
+fn render(state: OverlayState, look: Look) -> (i32, i32, Vec<u32>) {
     let grow = ease(motion::easing::STANDARD, look.grow.clamp(0.0, 1.0));
     let hover = if state.is_resting() { ease(motion::easing::STANDARD, look.hover.clamp(0.0, 1.0)) } else { 0.0 };
     let (w, h) = size(grow);
@@ -403,9 +416,8 @@ fn render(state: OverlayState, tick: u32, look: Look) -> (i32, i32, Vec<u32>) {
         }
         OverlayState::Processing => {
             let show = grow * grow;
-            let on = (tick / 4) % 3;
             for i in 0..3 {
-                let rgb = if i == on { 0xFFFFFF } else { 0x707070 };
+                let rgb = if i == look.dot { 0xFFFFFF } else { 0x707070 };
                 c.capsule(wf / 2.0 - 18.0 + i as f32 * 14.0, hf / 2.0 - 3.0, 6.0, 6.0, rgb, show * if look.quiet { 0.3 } else { 1.0 });
             }
         }
@@ -429,7 +441,7 @@ mod tests {
         assert_eq!(size(1.0), (W, H));
         let (w, h) = size(0.5);
         assert!(w > IDLE_W && w < W && h > IDLE_H && h < H, "{w}x{h}");
-        let (w, h, _) = render(OverlayState::Listening(0.0), 0, Look { grow: 0.0, ..Default::default() });
+        let (w, h, _) = render(OverlayState::Listening(0.0), Look { grow: 0.0, ..Default::default() });
         assert_eq!((w, h), (IDLE_W, IDLE_H), "a live state starts from the resting size");
     }
 
@@ -462,8 +474,8 @@ mod tests {
     fn ribbon_swells_with_the_voice_and_stays_inside() {
         let quiet = Look { grow: 1.0, level: 0.0, ..Default::default() };
         let loud = Look { grow: 1.0, level: 1.0, ..Default::default() };
-        let (w, h, px_q) = render(OverlayState::Listening(0.0), 0, quiet);
-        let (_, _, px_l) = render(OverlayState::Listening(1.0), 0, loud);
+        let (w, h, px_q) = render(OverlayState::Listening(0.0), quiet);
+        let (_, _, px_l) = render(OverlayState::Listening(1.0), loud);
         let green = |p: u32| (p >> 8) & 0xFF;
         // first blob's column, 7 px above the middle: body when quiet, ribbon when loud
         let at = |y: i32| (y * w + 24) as usize;
@@ -478,7 +490,7 @@ mod tests {
 
     #[test]
     fn locked_ribbon_leaves_the_red_dot_alone() {
-        let (w, h, px) = render(OverlayState::Locked(1.0), 0, Look { grow: 1.0, level: 1.0, ..Default::default() });
+        let (w, h, px) = render(OverlayState::Locked(1.0), Look { grow: 1.0, level: 1.0, ..Default::default() });
         let p = px[((h / 2) * w + W - 25) as usize];
         assert!((p >> 16) & 0xFF > (p >> 8) & 0xFF, "red dot overdrawn: {p:08X}");
     }
@@ -497,38 +509,51 @@ mod tests {
     #[test]
     fn glow_gathers_on_the_cursor_side() {
         let near = Look { near: 1.0, near_x: 0.0, ..Default::default() };
-        let (w, h, px) = render(OverlayState::Idle, 0, near);
+        let (w, h, px) = render(OverlayState::Idle, near);
         let green = |p: u32| (p >> 8) & 0xFF;
         let row = (h / 2) * w;
         assert!(green(px[(row + 5) as usize]) > green(px[(row + w - 6) as usize]) + 8);
-        let (_, _, plain) = render(OverlayState::Idle, 0, Look::default());
+        let (_, _, plain) = render(OverlayState::Idle, Look::default());
         assert_ne!(px, plain);
     }
 
     #[test]
     fn live_pill_ignores_the_cursor() {
         let live = Look { grow: 1.0, ..Default::default() };
-        let (_, _, a) = render(OverlayState::Listening(0.0), 0, live);
-        let (_, _, b) = render(OverlayState::Listening(0.0), 0, Look { near: 1.0, near_x: 0.0, hover: 1.0, ..live });
+        let (_, _, a) = render(OverlayState::Listening(0.0), live);
+        let (_, _, b) = render(OverlayState::Listening(0.0), Look { near: 1.0, near_x: 0.0, hover: 1.0, ..live });
         assert_eq!(a, b);
     }
 
     #[test]
     fn landing_pulse_blooms_around_the_dot() {
-        let (w, h, calm) = render(OverlayState::Idle, 0, Look::default());
-        let (_, _, pulse) = render(OverlayState::Idle, 0, Look { pulse: 0.5, ..Default::default() });
+        let (w, h, calm) = render(OverlayState::Idle, Look::default());
+        let (_, _, pulse) = render(OverlayState::Idle, Look { pulse: 0.5, ..Default::default() });
         let green = |p: u32| (p >> 8) & 0xFF;
         let beside = ((h / 2) * w + w / 2 + 4) as usize;
         assert!(green(pulse[beside]) > green(calm[beside]) + 0x10, "{:08X} vs {:08X}", pulse[beside], calm[beside]);
-        let (_, _, over) = render(OverlayState::Idle, 0, Look { pulse: 0.0, ..Default::default() });
+        let (_, _, over) = render(OverlayState::Idle, Look { pulse: 0.0, ..Default::default() });
         assert_eq!(over, calm);
+    }
+
+    #[test]
+    fn processing_dots_step_with_time_alone() {
+        let d = motion::scaled(motion::duration::EMPHASIS);
+        assert_eq!(processing_dot(Duration::ZERO), 0);
+        assert_eq!(processing_dot(d), 1);
+        assert_eq!(processing_dot(d * 2), 2);
+        assert_eq!(processing_dot(d * 3), 0);
+        let live = Look { grow: 1.0, ..Default::default() };
+        let (_, _, first) = render(OverlayState::Processing, live);
+        let (_, _, second) = render(OverlayState::Processing, Look { dot: 1, ..live });
+        assert_ne!(first, second, "the lit dot moved");
     }
 
     #[test]
     fn quiet_dims_the_processing_dots() {
         let live = Look { grow: 1.0, ..Default::default() };
-        let (w, h, loud) = render(OverlayState::Processing, 0, live);
-        let (_, _, quiet) = render(OverlayState::Processing, 0, Look { quiet: true, ..live });
+        let (w, h, loud) = render(OverlayState::Processing, live);
+        let (_, _, quiet) = render(OverlayState::Processing, Look { quiet: true, ..live });
         let lit = ((h / 2) * w + w / 2 - 15) as usize;
         assert!(((quiet[lit] >> 16) & 0xFF) + 0x40 < ((loud[lit] >> 16) & 0xFF));
     }
@@ -539,7 +564,7 @@ mod tests {
 
     #[test]
     fn body_is_opaque_inside_and_clear_at_corners() {
-        let (w, _, px) = render(OverlayState::Listening(0.0), 0, look_for(OverlayState::Listening(0.0)));
+        let (w, _, px) = render(OverlayState::Listening(0.0), look_for(OverlayState::Listening(0.0)));
         assert_eq!(alpha(px[(4 * w + w / 2) as usize]), 0xE6);
         assert_eq!(px[0], 0);
         assert_eq!(px[(w - 1) as usize], 0);
@@ -548,7 +573,7 @@ mod tests {
     #[test]
     fn rim_is_antialiased() {
         for state in [OverlayState::Idle, OverlayState::Listening(0.0)] {
-            let (_, _, px) = render(state, 0, look_for(state));
+            let (_, _, px) = render(state, look_for(state));
             let (_, _, body) = state.geometry();
             assert!(px.iter().any(|&p| alpha(p) > 0 && alpha(p) < body), "{state:?} has no partial rim pixels");
         }
@@ -557,7 +582,7 @@ mod tests {
     #[test]
     fn pixels_are_premultiplied() {
         for state in [OverlayState::Idle, OverlayState::Paused, OverlayState::Listening(0.7), OverlayState::Locked(0.4), OverlayState::Processing] {
-            let (_, _, px) = render(state, 0, look_for(state));
+            let (_, _, px) = render(state, look_for(state));
             for p in px {
                 let a = alpha(p);
                 assert!((p >> 16) & 0xFF <= a && (p >> 8) & 0xFF <= a && p & 0xFF <= a, "{state:?}: {p:08X}");
@@ -567,8 +592,8 @@ mod tests {
 
     #[test]
     fn hovered_pill_brightens_and_shows_more_dots() {
-        let (w, h, rest) = render(OverlayState::Idle, 0, look_for(OverlayState::Idle));
-        let (_, _, hover) = render(OverlayState::Idle, 0, Look { hover: 1.0, ..Default::default() });
+        let (w, h, rest) = render(OverlayState::Idle, look_for(OverlayState::Idle));
+        let (_, _, hover) = render(OverlayState::Idle, Look { hover: 1.0, ..Default::default() });
         let at = |x: f32| ((h / 2) * w + x as i32) as usize;
         // body between the green dot and the "more" dots
         assert_eq!(alpha(rest[at(w as f32 / 2.0 - 8.0)]), 0x80);
@@ -608,10 +633,10 @@ mod tests {
 
     #[test]
     fn locked_dot_is_red_and_idle_dot_is_green() {
-        let (w, h, px) = render(OverlayState::Locked(0.0), 0, look_for(OverlayState::Locked(0.0)));
+        let (w, h, px) = render(OverlayState::Locked(0.0), look_for(OverlayState::Locked(0.0)));
         let p = px[((h / 2) * w + W - 25) as usize];
         assert!((p >> 16) & 0xFF > p & 0xFF, "locked dot not red: {p:08X}");
-        let (w, h, px) = render(OverlayState::Idle, 0, look_for(OverlayState::Idle));
+        let (w, h, px) = render(OverlayState::Idle, look_for(OverlayState::Idle));
         let p = px[((h / 2) * w + w / 2) as usize];
         assert!((p >> 8) & 0xFF > (p >> 16) & 0xFF, "idle dot not green: {p:08X}");
     }

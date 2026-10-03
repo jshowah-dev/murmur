@@ -27,6 +27,9 @@ struct HistoryApp {
     frame: u32,
     was_focused: bool,
     copied: Option<(usize, Instant)>,
+    /// Set once the window has been asked to close. It's drawn a few more times before it goes:
+    /// those frames must show the same card, or it blinks out and back.
+    closing: bool,
     height: f32,
 }
 
@@ -36,6 +39,13 @@ impl eframe::App for HistoryApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
+        self.draw(ui);
+    }
+}
+
+impl HistoryApp {
+    /// The whole window, apart from eframe itself, so tests can drive it.
+    fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.frame += 1;
         if self.frame == 2 {
@@ -48,9 +58,9 @@ impl eframe::App for HistoryApp {
         // Esc or clicking another window closes it
         let focused = ctx.input(|i| i.focused);
         self.was_focused |= focused;
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) || (self.was_focused && !focused) {
+        if !self.closing && (ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) || (self.was_focused && !focused)) {
+            self.closing = true;
             ctx.send_viewport_cmd(ViewportCommand::Close);
-            return;
         }
 
         let flashing = self.copied.filter(|(_, at)| at.elapsed() < FLASH);
@@ -152,7 +162,7 @@ pub fn show(items: Vec<(String, Instant)>) {
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
             load_system_font(&cc.egui_ctx);
             let hwnd = hwnd_of(cc).unwrap_or_default();
-            Ok(Box::new(HistoryApp { items, hwnd, frame: 0, was_focused: false, copied: None, height: 0.0 }))
+            Ok(Box::new(HistoryApp { items, hwnd, frame: 0, was_focused: false, copied: None, closing: false, height: 0.0 }))
         }),
     );
     if let Err(e) = r {
@@ -163,6 +173,43 @@ pub fn show(items: Vec<(String, Instant)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Past the frame that takes focus, so a test doesn't.
+    fn app() -> HistoryApp {
+        HistoryApp { items: vec![("hello there".into(), Instant::now())], hwnd: HWND::default(), frame: 5, was_focused: false, copied: None, closing: false, height: 0.0 }
+    }
+
+    /// Runs one frame, returning the text drawn and whether the window asked to close.
+    fn frame(ctx: &egui::Context, app: &mut HistoryApp, events: Vec<egui::Event>) -> (Vec<String>, bool) {
+        fn walk(shape: &egui::epaint::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::epaint::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                egui::epaint::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let input = egui::RawInput { events, ..Default::default() };
+        let out = ctx.run_ui(input, |ui| app.draw(ui));
+        let mut text = Vec::new();
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut text));
+        let close = out.viewport_output.values().any(|v| v.commands.contains(&ViewportCommand::Close));
+        (text, close)
+    }
+
+    #[test]
+    fn the_card_stays_drawn_while_it_closes() {
+        let ctx = egui::Context::default();
+        let mut app = app();
+        frame(&ctx, &mut app, vec![]);
+        let esc = egui::Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE };
+        let (text, close) = frame(&ctx, &mut app, vec![esc]);
+        assert!(close);
+        assert!(text.iter().any(|t| t == "hello there"), "closing frame drew {text:?}");
+        // a redraw already queued, before the window goes
+        let (text, close) = frame(&ctx, &mut app, vec![]);
+        assert!(!close, "asks to close once");
+        assert!(text.iter().any(|t| t == "hello there"), "next frame drew {text:?}");
+    }
 
     #[test]
     fn ago_buckets() {
