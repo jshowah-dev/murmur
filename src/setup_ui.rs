@@ -1,18 +1,31 @@
+//! First-run window: the model download as a Murmur card, then "Ready", then the card fades to
+//! a dot that the mote carries to the pill (see `main.rs`, where the invitation is said).
+
 use crate::config;
-use crate::correction_ui::{load_system_font, MUTED, TEXT};
+use crate::correction_ui::{hwnd_of, load_system_font, BG, BORDER, MUTED, TEXT};
+use crate::editor_kit::{ease, reduced_motion};
+use crate::motion;
+use crate::mote::Pt;
 use crossbeam_channel::{Receiver, Sender};
-use eframe::egui::{self, Margin, ViewportCommand};
+use eframe::egui::{self, Color32, CornerRadius, Frame, Key, Margin, Modifiers, Pos2, RichText, Stroke, ViewportCommand};
 use murmur_lib::model_fetch::{self, FetchError, Fetcher};
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use windows::Win32::Foundation::{HWND, RECT};
+use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
 const MB: u64 = 1024 * 1024;
 const TICK: Duration = Duration::from_millis(250);
+const WIDTH: f32 = 480.0;
 
 pub enum SetupOutcome {
-    Installed,
+    /// `from`: where the card faded to a dot, physical pixels; None when it didn't (no card,
+    /// reduced motion, or no invitation to carry).
+    Installed { from: Option<Pt> },
     Quit,
 }
 
@@ -34,20 +47,22 @@ pub fn plan(model_missing: bool, default_dir: bool, welcomed: bool) -> Plan {
     }
 }
 
-/// Written once the "you're ready" screen has been dismissed, so it shows on the first launch only.
+/// Whether the pill invites a first dictation: never welcomed, and there's a model to dictate with.
+pub fn invites(welcomed: bool, model_missing: bool) -> bool {
+    !welcomed && !model_missing
+}
+
+/// Written on the first dictation with words, so the invitation stops coming back.
 pub fn welcome_marker() -> PathBuf {
     config::config_dir().join("welcomed")
 }
 
-fn mark_welcomed() {
+pub fn mark_welcomed() {
     let path = welcome_marker();
     if let Err(e) = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&path, "")) {
         log::error!("write {}: {e}", path.display());
     }
 }
-
-const SIZE_DOWNLOAD: [f32; 2] = [480.0, 170.0];
-const SIZE_READY: [f32; 2] = [480.0, 250.0];
 
 enum Msg {
     Progress(u64),
@@ -56,11 +71,68 @@ enum Msg {
     Failed(String),
 }
 
+#[derive(Debug, Clone, PartialEq)]
 enum Stage {
     Downloading(u64),
     Unpacking(u64),
+    /// what to do, from `FetchError::advice`
     Failed(String),
-    Ready,
+    /// installed: "Ready" for a beat, since then
+    Ready(Instant),
+    /// fading to a dot at the card's centre, since then
+    Closing(Instant),
+}
+
+#[derive(Debug, PartialEq)]
+enum Next {
+    Hold,
+    Fade,
+    Close,
+}
+
+/// What the Ready beat does `el` after it began.
+fn after_ready(el: Duration, reduced: bool) -> Next {
+    if el < motion::scaled(motion::duration::LOCATE) {
+        Next::Hold
+    } else if reduced {
+        Next::Close
+    } else {
+        Next::Fade
+    }
+}
+
+/// The card's opacity `el` into the fade; None once only the dot is left.
+fn fade_alpha(el: Duration) -> Option<f32> {
+    let t = el.as_secs_f32() / motion::scaled(motion::duration::EXIT).as_secs_f32();
+    (t < 1.0).then(|| 1.0 - ease(motion::easing::EXIT, t))
+}
+
+/// The mote's dot, drawn where the card was: a pale core in a soft green halo (`mote::render`).
+fn dot(painter: &egui::Painter, c: Pos2, alpha: f32) {
+    use egui::epaint::{Mesh, Vertex, WHITE_UV};
+    // the halo falls off as 0.5 * (1 - d/r)^2, as the mote's canvas draws it: sampled on rings,
+    // linear between them
+    const R: f32 = 12.0;
+    const SEG: usize = 32;
+    const RINGS: [f32; 5] = [0.0, 0.25, 0.5, 0.75, 1.0];
+    let green = |f: f32| Color32::from_rgba_unmultiplied(0x60, 0xD0, 0x60, (0.5 * alpha * (1.0 - f).powi(2) * 255.0) as u8);
+    let mut mesh = Mesh::default();
+    for &f in &RINGS {
+        for s in 0..SEG {
+            let a = s as f32 / SEG as f32 * std::f32::consts::TAU;
+            mesh.vertices.push(Vertex { pos: c + egui::vec2(a.cos(), a.sin()) * R * f, uv: WHITE_UV, color: green(f) });
+        }
+    }
+    for ring in 0..RINGS.len() - 1 {
+        for s in 0..SEG {
+            let (i0, i1) = ((ring * SEG + s) as u32, (ring * SEG + (s + 1) % SEG) as u32);
+            let (o0, o1) = (i0 + SEG as u32, i1 + SEG as u32);
+            mesh.add_triangle(i0, o0, o1);
+            mesh.add_triangle(i0, o1, i1);
+        }
+    }
+    painter.add(mesh);
+    painter.circle_filled(c, 2.5, Color32::from_rgba_unmultiplied(0xE8, 0xFF, 0xE8, (alpha * 255.0) as u8));
 }
 
 struct SetupApp {
@@ -71,7 +143,14 @@ struct SetupApp {
     cancel: Arc<AtomicBool>,
     installed: Arc<AtomicBool>,
     then_ready: bool,
-    key: String,
+    hwnd: HWND,
+    reduced: bool,
+    /// Close was sent; later frames keep drawing the same picture until the window goes
+    closing: bool,
+    /// a failure just arrived: Retry takes keyboard focus, so Enter retries
+    focus_retry: bool,
+    height: f32,
+    from: Rc<Cell<Option<Pt>>>,
 }
 
 impl SetupApp {
@@ -89,12 +168,178 @@ impl SetupApp {
                 Err(FetchError::Cancelled) => return,
                 Err(e) => {
                     log::error!("model setup: {e}");
-                    Msg::Failed(e.to_string())
+                    Msg::Failed(e.advice())
                 }
             };
             let _ = tx.send(msg);
             ctx.request_repaint();
         });
+    }
+
+    fn close(&mut self, ctx: &egui::Context) {
+        if !self.closing {
+            self.closing = true;
+            ctx.send_viewport_cmd(ViewportCommand::Close);
+        }
+    }
+
+    /// The window's centre, physical pixels: the card fills it.
+    fn centre_physical(&self) -> Pt {
+        crate::caret::physical(|| unsafe {
+            let mut r = RECT::default();
+            let _ = GetWindowRect(self.hwnd, &mut r);
+            ((r.left + r.right) as f32 / 2.0, (r.top + r.bottom) as f32 / 2.0)
+        })
+    }
+
+    /// The whole window, apart from eframe itself, so tests can drive it.
+    fn draw(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let now = Instant::now();
+        while let Ok(msg) = self.rx.try_recv() {
+            match msg {
+                Msg::Progress(n) => self.stage = Stage::Downloading(n),
+                Msg::Unpacking(n) => self.stage = Stage::Unpacking(n),
+                Msg::Failed(e) => {
+                    self.stage = Stage::Failed(e);
+                    self.focus_retry = true;
+                }
+                Msg::Done => {
+                    self.installed.store(true, Ordering::SeqCst);
+                    if self.then_ready {
+                        self.stage = Stage::Ready(now);
+                    } else {
+                        self.close(&ctx);
+                    }
+                }
+            }
+        }
+        if let Stage::Ready(since) = self.stage {
+            let el = now.saturating_duration_since(since);
+            match after_ready(el, self.reduced) {
+                Next::Hold => ctx.request_repaint_after(motion::scaled(motion::duration::LOCATE).saturating_sub(el)),
+                Next::Fade => self.stage = Stage::Closing(now),
+                Next::Close => self.close(&ctx),
+            }
+        }
+        // Alt+F4 counts as Cancel; the .part stays for next launch
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if refuse_close(&self.stage, self.installed.load(Ordering::SeqCst)) {
+                ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+            } else if !self.installed.load(Ordering::SeqCst) {
+                self.cancel.store(true, Ordering::SeqCst);
+            }
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            match self.stage {
+                Stage::Downloading(_) => {
+                    self.cancel.store(true, Ordering::SeqCst);
+                    self.close(&ctx);
+                }
+                Stage::Failed(_) => self.close(&ctx),
+                _ => {}
+            }
+        }
+
+        let alpha = match self.stage {
+            Stage::Closing(start) => fade_alpha(now.saturating_duration_since(start)),
+            _ => Some(1.0),
+        };
+        let mut retry = false;
+        let card = ui
+            .scope(|ui| {
+                ui.set_opacity(alpha.unwrap_or(0.0));
+                Frame::new()
+                    .fill(BG)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .corner_radius(CornerRadius::same(14))
+                    .inner_margin(Margin::symmetric(16, 14))
+                    .show(ui, |ui| {
+                        ui.set_width(WIDTH - 34.0);
+                        self.body(ui, &ctx, &mut retry);
+                    })
+                    .response
+                    .rect
+            })
+            .inner;
+
+        if let Stage::Closing(_) = self.stage {
+            dot(ui.painter(), card.center(), 1.0 - alpha.unwrap_or(0.0));
+            match alpha {
+                Some(_) => ctx.request_repaint(),
+                None => {
+                    if !self.closing {
+                        self.from.set(Some(self.centre_physical()));
+                    }
+                    self.close(&ctx);
+                }
+            }
+        } else {
+            // Grow or shrink the window to the card so no invisible margin swallows clicks.
+            let h = card.max.y.ceil() + 1.0;
+            if (h - self.height).abs() > 0.5 && !matches!(self.stage, Stage::Ready(_)) {
+                self.height = h;
+                ctx.send_viewport_cmd(ViewportCommand::InnerSize(egui::vec2(WIDTH, h)));
+            }
+        }
+        if retry {
+            self.start(&ctx);
+        }
+    }
+
+    /// The card's contents. Every stage keeps the same rows, so the card never changes height.
+    fn body(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, retry: &mut bool) {
+        let installed = matches!(self.stage, Stage::Ready(_) | Stage::Closing(_));
+        let intro = if installed {
+            "Speech model installed.".to_string()
+        } else {
+            format!("Murmur needs its speech model (about {} MB) before first use.", self.total / MB)
+        };
+        ui.label(RichText::new(intro).size(13.0).color(MUTED));
+        ui.add_space(12.0);
+        match self.stage.clone() {
+            Stage::Downloading(n) => {
+                ui.label(RichText::new(format!("Downloading speech model: {} / {} MB", n / MB, self.total / MB)).size(15.0).color(TEXT));
+                ui.add_space(6.0);
+                ui.add(egui::ProgressBar::new(n as f32 / self.total as f32));
+                ui.add_space(12.0);
+                if ui.button("Cancel").clicked() {
+                    self.cancel.store(true, Ordering::SeqCst);
+                    self.close(ctx);
+                }
+            }
+            Stage::Unpacking(n) => {
+                // held under 100% until tar exits: the last files land after the size estimate
+                let frac = (n as f32 / model_fetch::PARAKEET_UNPACKED as f32).min(0.99);
+                ui.label(RichText::new(format!("Unpacking speech model: {:.0}%", frac * 100.0)).size(15.0).color(TEXT));
+                ui.add_space(6.0);
+                ui.add(egui::ProgressBar::new(frac));
+                ui.add_space(12.0);
+                // tar can't be stopped: no Cancel, but its room stays
+                ui.add_visible(false, egui::Button::new("Cancel"));
+            }
+            Stage::Failed(e) => {
+                ui.label(RichText::new(e).size(14.0).color(TEXT));
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let r = ui.button("Retry");
+                    if std::mem::take(&mut self.focus_retry) {
+                        r.request_focus();
+                    }
+                    *retry = r.clicked();
+                    if ui.button("Quit").clicked() {
+                        self.close(ctx);
+                    }
+                });
+            }
+            Stage::Ready(_) | Stage::Closing(_) => {
+                ui.label(RichText::new("Ready").size(15.0).color(TEXT));
+                ui.add_space(6.0);
+                ui.add(egui::ProgressBar::new(1.0));
+                ui.add_space(12.0);
+                ui.add_visible(false, egui::Button::new("Cancel"));
+            }
+        }
     }
 }
 
@@ -129,128 +374,34 @@ fn refuse_close(stage: &Stage, installed: bool) -> bool {
 }
 
 impl eframe::App for SetupApp {
+    fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] {
+        [0.0; 4]
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
-        while let Ok(msg) = self.rx.try_recv() {
-            match msg {
-                Msg::Progress(n) => self.stage = Stage::Downloading(n),
-                Msg::Unpacking(n) => self.stage = Stage::Unpacking(n),
-                Msg::Failed(e) => self.stage = Stage::Failed(e),
-                Msg::Done => {
-                    self.installed.store(true, Ordering::SeqCst);
-                    if self.then_ready {
-                        self.stage = Stage::Ready;
-                        ctx.send_viewport_cmd(ViewportCommand::InnerSize(SIZE_READY.into()));
-                    } else {
-                        ctx.send_viewport_cmd(ViewportCommand::Close);
-                        return;
-                    }
-                }
-            }
-        }
-        // the title bar's X counts as Cancel; the .part stays for next launch
-        if ctx.input(|i| i.viewport().close_requested()) {
-            if refuse_close(&self.stage, self.installed.load(Ordering::SeqCst)) {
-                ctx.send_viewport_cmd(ViewportCommand::CancelClose);
-            } else if matches!(self.stage, Stage::Ready) {
-                mark_welcomed();
-            } else {
-                self.cancel.store(true, Ordering::SeqCst);
-            }
-        }
-        let mut retry = false;
-        egui::Frame::new().inner_margin(Margin::same(18)).show(ui, |ui| {
-            if !matches!(self.stage, Stage::Ready) {
-                ui.label(egui::RichText::new("Murmur needs its speech model (about 460 MB) before first use.").size(13.0).color(MUTED));
-                ui.add_space(12.0);
-            }
-            match &self.stage {
-                Stage::Downloading(n) => {
-                    ui.label(
-                        egui::RichText::new(format!("Downloading speech model: {} / {} MB", n / MB, self.total / MB))
-                            .size(15.0)
-                            .color(TEXT),
-                    );
-                    ui.add_space(6.0);
-                    ui.add(egui::ProgressBar::new(*n as f32 / self.total as f32));
-                    ui.add_space(12.0);
-                    if ui.button("Cancel").clicked() {
-                        self.cancel.store(true, Ordering::SeqCst);
-                        ctx.send_viewport_cmd(ViewportCommand::Close);
-                    }
-                }
-                Stage::Unpacking(n) => {
-                    // held under 100% until tar exits: the last files land after the size estimate
-                    let frac = (*n as f32 / model_fetch::PARAKEET_UNPACKED as f32).min(0.99);
-                    ui.label(
-                        egui::RichText::new(format!("Unpacking speech model: {:.0}%", frac * 100.0))
-                            .size(15.0)
-                            .color(TEXT),
-                    );
-                    ui.add_space(6.0);
-                    ui.add(egui::ProgressBar::new(frac));
-                }
-                Stage::Failed(e) => {
-                    ui.label(egui::RichText::new(e).size(15.0).color(TEXT));
-                    ui.add_space(12.0);
-                    ui.horizontal(|ui| {
-                        retry = ui.button("Retry").clicked();
-                        if ui.button("Quit").clicked() {
-                            ctx.send_viewport_cmd(ViewportCommand::Close);
-                        }
-                    });
-                }
-                Stage::Ready => {
-                    ui.label(egui::RichText::new("You're ready").size(18.0).color(TEXT));
-                    ui.add_space(10.0);
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Hold {}, speak, then release. Murmur pastes the text where you're typing.",
-                            self.key
-                        ))
-                        .size(14.0)
-                        .color(TEXT),
-                    );
-                    ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new(
-                            "Murmur lives in the system tray (bottom-right; click ^ if you don't see it). \
-                             Right-click its icon to pause, see history, or edit your dictionary.",
-                        )
-                        .size(13.0)
-                        .color(MUTED),
-                    );
-                    ui.add_space(14.0);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                        if ui.button("Got it").clicked() {
-                            mark_welcomed();
-                            ctx.send_viewport_cmd(ViewportCommand::Close);
-                        }
-                    });
-                }
-            }
-        });
-        if retry {
-            self.start(&ctx);
-        }
+        self.draw(ui);
     }
 }
 
-/// First-run window: the model download and/or the "you're ready" screen, per `plan`. Blocks
-/// until the model is installed (or already was) and the window is closed, or the user quits.
-pub fn run(models: PathBuf, plan: Plan, key: String) -> SetupOutcome {
-    let (download, then_ready) = match plan {
-        Plan::Download { then_ready } => (true, then_ready),
-        Plan::ReadyOnly => (false, true),
-        Plan::Skip => return SetupOutcome::Installed,
+/// First-run window, per `plan`: the model download, then (first run only) "Ready" and the fade
+/// to a dot. Blocks until the model is installed and the window is closed, or the user quits.
+/// `ReadyOnly` and `Skip` show no window.
+pub fn run(models: PathBuf, plan: Plan) -> SetupOutcome {
+    let then_ready = match plan {
+        Plan::Download { then_ready } => then_ready,
+        Plan::ReadyOnly | Plan::Skip => return SetupOutcome::Installed { from: None },
     };
-    let installed = Arc::new(AtomicBool::new(!download));
+    let installed = Arc::new(AtomicBool::new(false));
     let done = installed.clone();
+    let from = Rc::new(Cell::new(None));
+    let app_from = from.clone();
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Murmur setup")
+            .with_decorations(false)
+            .with_transparent(true)
             .with_resizable(false)
-            .with_inner_size(if download { SIZE_DOWNLOAD } else { SIZE_READY }),
+            .with_inner_size([WIDTH, 170.0]),
         centered: true,
         ..Default::default()
     };
@@ -264,16 +415,19 @@ pub fn run(models: PathBuf, plan: Plan, key: String) -> SetupOutcome {
             let mut app = SetupApp {
                 models,
                 total: model_fetch::vad().size + model_fetch::parakeet().size,
-                stage: if download { Stage::Downloading(0) } else { Stage::Ready },
+                stage: Stage::Downloading(0),
                 rx,
                 cancel: Arc::new(AtomicBool::new(false)),
                 installed: done,
                 then_ready,
-                key,
+                hwnd: hwnd_of(cc).unwrap_or_default(),
+                reduced: reduced_motion(),
+                closing: false,
+                focus_retry: false,
+                height: 0.0,
+                from: app_from,
             };
-            if download {
-                app.start(&cc.egui_ctx);
-            }
+            app.start(&cc.egui_ctx);
             Ok(Box::new(app))
         }),
     );
@@ -281,7 +435,7 @@ pub fn run(models: PathBuf, plan: Plan, key: String) -> SetupOutcome {
         log::error!("setup window: {e}");
     }
     if installed.load(Ordering::SeqCst) {
-        SetupOutcome::Installed
+        SetupOutcome::Installed { from: from.get() }
     } else {
         SetupOutcome::Quit
     }
@@ -291,11 +445,58 @@ pub fn run(models: PathBuf, plan: Plan, key: String) -> SetupOutcome {
 mod tests {
     use super::*;
 
+    fn app(stage: Stage) -> SetupApp {
+        let (_, rx) = crossbeam_channel::unbounded();
+        SetupApp {
+            models: PathBuf::new(),
+            total: 483 * MB,
+            stage,
+            rx,
+            cancel: Arc::new(AtomicBool::new(false)),
+            installed: Arc::new(AtomicBool::new(false)),
+            then_ready: true,
+            hwnd: HWND::default(),
+            reduced: false,
+            closing: false,
+            focus_retry: false,
+            height: 0.0,
+            from: Rc::new(Cell::new(None)),
+        }
+    }
+
+    /// Runs one frame, returning the text drawn and whether the window asked to close.
+    fn frame(ctx: &egui::Context, app: &mut SetupApp, events: Vec<egui::Event>) -> (Vec<String>, bool) {
+        fn walk(shape: &egui::epaint::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::epaint::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                egui::epaint::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let input = egui::RawInput { events, ..Default::default() };
+        let out = ctx.run_ui(input, |ui| app.draw(ui));
+        let mut text = Vec::new();
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut text));
+        let close = out.viewport_output.values().any(|v| v.commands.contains(&ViewportCommand::Close));
+        (text, close)
+    }
+
+    fn esc() -> egui::Event {
+        egui::Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }
+    }
+
     #[test]
     fn close_refused_only_while_unpacking() {
         assert!(refuse_close(&Stage::Unpacking(0), false));
         assert!(!refuse_close(&Stage::Downloading(5), false));
         assert!(!refuse_close(&Stage::Failed("x".into()), false));
+        assert!(!refuse_close(&Stage::Closing(Instant::now()), true));
+    }
+
+    #[test]
+    fn own_close_after_install_is_not_refused() {
+        // Done arrives while the stage still reads Unpacking; the window's own Close must go through
+        assert!(!refuse_close(&Stage::Unpacking(0), true));
     }
 
     #[test]
@@ -312,8 +513,94 @@ mod tests {
     }
 
     #[test]
-    fn own_close_after_install_is_not_refused() {
-        // Done arrives while the stage still reads Unpacking; the window's own Close must go through
-        assert!(!refuse_close(&Stage::Unpacking(0), true));
+    fn invites_only_with_a_model_and_no_marker() {
+        assert!(invites(false, false));
+        assert!(!invites(true, false), "welcomed before");
+        assert!(!invites(false, true), "a missing custom model_dir: nothing to dictate with");
+    }
+
+    #[test]
+    fn ready_holds_for_a_beat_then_fades_or_closes() {
+        let beat = motion::scaled(motion::duration::LOCATE);
+        assert_eq!(after_ready(beat / 2, false), Next::Hold);
+        assert_eq!(after_ready(beat, false), Next::Fade);
+        assert_eq!(after_ready(beat, true), Next::Close, "reduced motion: no fade");
+    }
+
+    #[test]
+    fn the_fade_runs_down_to_nothing() {
+        let exit = motion::scaled(motion::duration::EXIT);
+        assert_eq!(fade_alpha(Duration::ZERO), Some(1.0));
+        let mid = fade_alpha(exit / 2).unwrap();
+        assert!(mid > 0.0 && mid < 1.0, "{mid}");
+        assert_eq!(fade_alpha(exit), None, "only the dot is left");
+    }
+
+    #[test]
+    fn a_failed_download_says_what_to_do_and_esc_quits() {
+        let ctx = egui::Context::default();
+        let mut a = app(Stage::Failed(FetchError::Interrupted("os error 10054".into()).advice()));
+        let (text, close) = frame(&ctx, &mut a, vec![]);
+        assert!(text.iter().any(|t| t.starts_with("The download stopped partway")), "{text:?}");
+        assert!(text.iter().any(|t| t == "Retry") && text.iter().any(|t| t == "Quit"), "{text:?}");
+        assert!(!text.iter().any(|t| t.contains("10054")), "no raw detail on the card");
+        assert!(!close);
+        let (_, close) = frame(&ctx, &mut a, vec![esc()]);
+        assert!(close);
+        assert!(!a.cancel.load(Ordering::SeqCst), "nothing to cancel after a failure");
+    }
+
+    #[test]
+    fn esc_cancels_the_download() {
+        let ctx = egui::Context::default();
+        let mut a = app(Stage::Downloading(10 * MB));
+        let (text, _) = frame(&ctx, &mut a, vec![]);
+        assert!(text.iter().any(|t| t == "Downloading speech model: 10 / 483 MB"), "{text:?}");
+        assert!(text.iter().any(|t| t == "Murmur needs its speech model (about 483 MB) before first use."), "{text:?}");
+        let (_, close) = frame(&ctx, &mut a, vec![esc()]);
+        assert!(close && a.cancel.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn esc_does_nothing_while_unpacking() {
+        let ctx = egui::Context::default();
+        let mut a = app(Stage::Unpacking(0));
+        let (_, close) = frame(&ctx, &mut a, vec![esc()]);
+        assert!(!close && !a.cancel.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn ready_runs_without_input() {
+        // past the beat, with no input at all: it moves on to the fade by itself
+        let ctx = egui::Context::default();
+        let mut a = app(Stage::Ready(Instant::now() - motion::scaled(motion::duration::LOCATE) * 2));
+        a.installed.store(true, Ordering::SeqCst);
+        let (text, close) = frame(&ctx, &mut a, vec![]);
+        assert!(matches!(a.stage, Stage::Closing(_)), "fading");
+        assert!(!close, "the fade comes first");
+        assert!(text.iter().any(|t| t == "Ready"), "same card on the frame the fade starts: {text:?}");
+    }
+
+    #[test]
+    fn the_faded_card_closes_once_and_hands_back_its_centre() {
+        let ctx = egui::Context::default();
+        let mut a = app(Stage::Closing(Instant::now() - motion::scaled(motion::duration::EXIT) * 2));
+        a.installed.store(true, Ordering::SeqCst);
+        let (_, close) = frame(&ctx, &mut a, vec![]);
+        assert!(close);
+        assert!(a.from.get().is_some(), "the mote starts where the card was");
+        let (_, close) = frame(&ctx, &mut a, vec![]);
+        assert!(!close, "asks to close once");
+    }
+
+    #[test]
+    fn reduced_motion_closes_after_the_beat_with_no_dot() {
+        let ctx = egui::Context::default();
+        let mut a = app(Stage::Ready(Instant::now() - motion::scaled(motion::duration::LOCATE) * 2));
+        a.reduced = true;
+        a.installed.store(true, Ordering::SeqCst);
+        let (_, close) = frame(&ctx, &mut a, vec![]);
+        assert!(close);
+        assert!(a.from.get().is_none(), "no flight: the invitation appears above the pill");
     }
 }
