@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::time::Duration;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_SHIFT;
-use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
+use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SetWindowPos,HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
 
 const WIDTH: f32 = 380.0;
 const POLL: Duration = Duration::from_millis(30);
@@ -50,6 +50,14 @@ impl Capture {
     }
 }
 
+/// Whether a press of `key` is one the picker can't use. Ctrl, Alt, Shift and Win aren't: they're
+/// polled, and Shift has its own refusal.
+fn in_use(key: Key) -> bool {
+    use Key::*;
+    let modifier = matches!(key, ControlLeft | ControlRight | AltLeft | AltRight | ShiftLeft | ShiftRight | SuperLeft | SuperRight);
+    !modifier && ptt_vk_of(key.name()).is_none()
+}
+
 struct PickerApp {
     current: Vec<u16>,
     picked: Option<Vec<u16>>,
@@ -74,9 +82,7 @@ impl PickerApp {
         // egui can't tell left Ctrl from right or see a modifier on its own, so the keys are polled
         let now: Vec<u16> = self.vks.iter().copied().filter(|vk| focused && down(*vk)).collect();
         let shift = focused && down(VK_SHIFT.0);
-        let other = ctx.input(|i| {
-            i.events.iter().any(|e| matches!(e, egui::Event::Key { key, pressed: true, .. } if ptt_vk_of(key.name()).is_none()))
-        });
+        let other = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { key, pressed: true, .. } if in_use(*key))));
         if let Some(keys) = self.capture.step(&now) {
             if ptt_name_of(&keys).is_some() {
                 self.picked = Some(keys);
@@ -110,7 +116,8 @@ impl eframe::App for PickerApp {
             }
         }
         // Esc or clicking another window closes it
-        let focused = ctx.input(|i| i.focused);
+        // winit can miss the focus event when the window brings itself to the front, so ask Windows too
+        let focused = ctx.input(|i| i.focused) || unsafe { GetForegroundWindow() } == self.hwnd;
         self.was_focused |= focused;
         let changed = self.picked.clone().filter(|vks| ptt_name_of(vks) != ptt_name_of(&self.current));
         if !self.closing {
@@ -245,5 +252,16 @@ mod tests {
         assert_eq!(c.step(&[]), None);
         c.step(&[0x7C]);
         assert_eq!(c.step(&[]), Some(vec![0x7C]));
+    }
+
+    #[test]
+    fn modifier_presses_are_not_keys_in_use() {
+        // egui reports each side of Ctrl, Alt, Shift and Win as a key press of its own
+        for key in [Key::ControlLeft, Key::ControlRight, Key::AltLeft, Key::AltRight, Key::ShiftLeft, Key::ShiftRight, Key::SuperLeft, Key::SuperRight] {
+            assert!(!in_use(key), "{key:?}");
+        }
+        assert!(!in_use(Key::F13));
+        assert!(in_use(Key::Enter));
+        assert!(in_use(Key::A));
     }
 }
