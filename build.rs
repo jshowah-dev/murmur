@@ -11,4 +11,9 @@ fn main() {
             .compile()
             .expect("embed icon");
     }
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        // the sherpa-onnx dylibs sit next to the binary in target/, and in Frameworks in an .app
+        println!("cargo:rustc-link-arg-bins=-Wl,-rpath,@executable_path");
+        println!("cargo:rustc-link-arg-bins=-Wl,-rpath,@executable_path/../Frameworks");
+    }
 }

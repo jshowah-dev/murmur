@@ -229,7 +229,6 @@ pub fn failure_text(e: &FetchError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     const FIXTURE: &str = include_str!("../tests/fixtures/release-v0.4.4.json");
 
@@ -288,8 +287,11 @@ mod tests {
         assert_eq!(parse_sha256_file(""), None);
     }
 
+    // the installer's per-user folder; the Mac version will update differently
+    #[cfg(windows)]
     #[test]
     fn only_the_installed_copy_updates_itself() {
+        use std::path::Path;
         let lad = Path::new(r"C:\Users\Jane Doe\AppData\Local");
         assert!(is_installed_copy(Path::new(r"C:\Users\Jane Doe\AppData\Local\Programs\Murmur\murmur.exe"), lad));
         assert!(is_installed_copy(Path::new(r"c:\users\jane doe\appdata\local\programs\murmur\MURMUR.EXE"), lad));

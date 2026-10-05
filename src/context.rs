@@ -1,9 +1,13 @@
 //! Which kind of app the dictation is about to land in.
 
 use crate::config::Config;
+#[cfg(windows)]
 use windows::core::PWSTR;
+#[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, HWND};
+#[cfg(windows)]
 use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -44,6 +48,7 @@ pub fn classify(exe: &str, title: &str, cfg: &Config) -> Profile {
 
 /// The foreground window and its exe file name. `None` when there is no window or the process
 /// cannot be opened (an elevated app seen from a non-elevated Murmur).
+#[cfg(windows)]
 fn foreground() -> Option<(HWND, String)> {
     unsafe {
         let hwnd = GetForegroundWindow();
@@ -63,6 +68,7 @@ fn foreground() -> Option<(HWND, String)> {
     }
 }
 
+#[cfg(windows)]
 fn window_title(hwnd: HWND) -> String {
     let mut title = [0u16; 512];
     let n = unsafe { GetWindowTextW(hwnd, &mut title) }.max(0) as usize;
@@ -72,6 +78,7 @@ fn window_title(hwnd: HWND) -> String {
 /// The profile for the window that has the focus right now. The title is read only for a
 /// browser, used for the match and dropped: it can hold a subject line or an address, so it is
 /// never logged.
+#[cfg(windows)]
 pub fn detect(cfg: &Config) -> Profile {
     match foreground() {
         Some((hwnd, exe)) => {
@@ -80,6 +87,12 @@ pub fn detect(cfg: &Config) -> Profile {
         }
         None => Profile::Plain,
     }
+}
+
+// TODO(macos): the frontmost app's bundle id and, for a browser, its window title via Accessibility.
+#[cfg(not(windows))]
+pub fn detect(_cfg: &Config) -> Profile {
+    Profile::Plain
 }
 
 #[cfg(test)]

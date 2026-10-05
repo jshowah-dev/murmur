@@ -239,8 +239,13 @@ mod tests {
         anyhow::Error::from(toml::from_str::<toml::Table>(text).unwrap_err()).context("parse config.toml")
     }
 
+    fn settings_path(name: &str) -> PathBuf {
+        let dir = if cfg!(windows) { "C:\\Users\\a\\AppData\\Roaming\\Murmur" } else { "/Users/a/Library/Application Support/Murmur" };
+        PathBuf::from(dir).join(name)
+    }
+
     fn problem(name: &str, line: Option<usize>, effect: Effect) -> FileProblem {
-        FileProblem { path: PathBuf::from(format!("C:\\Users\\a\\AppData\\Roaming\\Murmur\\{name}")), line, reason: "expected `=`.".into(), effect }
+        FileProblem { path: settings_path(name), line, reason: "expected `=`.".into(), effect }
     }
 
     fn units(s: &str) -> usize {
@@ -287,7 +292,7 @@ mod tests {
         let b = files_balloon(&[problem("config.toml", Some(4), Effect::Defaults)]);
         assert_eq!(b.title, "Murmur couldn't read config.toml");
         assert_eq!(b.body, "Line 4: expected `=`. Using default settings for now. Click to open it.");
-        assert_eq!(b.open, vec![PathBuf::from("C:\\Users\\a\\AppData\\Roaming\\Murmur\\config.toml")]);
+        assert_eq!(b.open, vec![settings_path("config.toml")]);
         let b = files_balloon(&[problem("dictionary.toml", Some(12), Effect::CorrectionsOff)]);
         assert_eq!(b.body, "Line 12: expected `=`. Corrections are off until it's fixed. Click to open it.");
         let mut p = problem("snippets.toml", None, Effect::SnippetsOff);

@@ -567,6 +567,8 @@ mod tests {
         d.save_to(&p).unwrap();
     }
 
+    // macOS has no share-mode locks for a scanner to hold the file with
+    #[cfg(windows)]
     #[test]
     fn unreadable_file_is_retried_without_a_notice() {
         use std::os::windows::fs::OpenOptionsExt;

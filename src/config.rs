@@ -35,7 +35,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             ptt_key: "RControl".into(),
-            model_dir: "%LOCALAPPDATA%\\Murmur\\models\\sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8".into(),
+            model_dir: DEFAULT_MODEL_DIR.into(),
             idle_unload_minutes: 15,
             threads: 8,
             min_silence_ms: 500,
@@ -51,6 +51,12 @@ impl Default for Config {
         }
     }
 }
+
+/// Kept as a `%VAR%` path so config.toml holds no user name and still matches the default.
+#[cfg(windows)]
+const DEFAULT_MODEL_DIR: &str = "%LOCALAPPDATA%\\Murmur\\models\\sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8";
+#[cfg(not(windows))]
+const DEFAULT_MODEL_DIR: &str = "%HOME%/Library/Application Support/Murmur/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8";
 
 /// `model_dir` defaults of earlier releases, newest first. When a release pins a new model, the
 /// default it replaces goes here, so installs still on it are offered the new one.

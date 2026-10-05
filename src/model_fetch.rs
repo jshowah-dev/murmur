@@ -258,9 +258,15 @@ fn finish(part: &Path, target: &Path, hasher: Sha256, asset: &Asset) -> Result<P
     Ok(target.to_path_buf())
 }
 
+#[cfg(windows)]
 pub fn tar_exe() -> PathBuf {
     let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
     PathBuf::from(root).join("System32").join("tar.exe")
+}
+
+#[cfg(not(windows))]
+pub fn tar_exe() -> PathBuf {
+    PathBuf::from("/usr/bin/tar")
 }
 
 /// Unpacks a .tar.bz2 holding one top-level folder into `dir` with Windows' own tar.exe, via
@@ -280,15 +286,16 @@ pub fn extract(archive: &Path, dir: &Path, progress: &mut dyn FnMut(u64)) -> Res
 }
 
 fn untar(archive: &Path, into: &Path, progress: &mut dyn FnMut(u64)) -> Result<(), FetchError> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let tar = tar_exe();
-    let mut child = std::process::Command::new(&tar)
-        .arg("-xjf")
-        .arg(archive)
-        .arg("-C")
-        .arg(into)
-        .creation_flags(CREATE_NO_WINDOW)
+    let mut cmd = std::process::Command::new(&tar);
+    cmd.arg("-xjf").arg(archive).arg("-C").arg(into);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = cmd
         .spawn()
         .map_err(|e| FetchError::Unpack(format!("{}: {e}", tar.display())))?;
     let status = loop {
@@ -413,8 +420,9 @@ mod tests {
             FetchError::Io(Error::other("boom")).advice(),
             "Couldn't save the model to disk. Retry, or check the log in %APPDATA%\\Murmur."
         );
-        // Windows' disk-full codes reach us as StorageFull
-        assert!(FetchError::Io(Error::from_raw_os_error(112)).advice().starts_with("Not enough disk space"));
+        // the OS's disk-full code (Windows' ERROR_DISK_FULL, ENOSPC elsewhere) reaches us as StorageFull
+        let disk_full = if cfg!(windows) { 112 } else { 28 };
+        assert!(FetchError::Io(Error::from_raw_os_error(disk_full)).advice().starts_with("Not enough disk space"));
     }
 
     #[derive(Clone, Copy, PartialEq)]

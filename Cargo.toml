@@ -4,6 +4,7 @@ version = "0.4.21"
 license = "MIT"
 edition = "2021"
 build = "build.rs"
+default-run = "murmur"
 
 [lib]
 name = "murmur_lib"
@@ -16,6 +17,22 @@ path = "src/main.rs"
 [dependencies]
 sherpa-onnx = { version = "1.13.7", default-features = false, features = ["shared"] }
 cpal = "0.18"
+tray-icon = "0.25"
+rphonetic = "4"
+similar = "3"
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "persistence"] }
+raw-window-handle = "0.6"
+toml = "1"
+serde = { version = "1", features = ["derive"] }
+crossbeam-channel = "0.5"
+dirs = "7"
+anyhow = "1"
+log = "0.4"
+simplelog = "0.12"
+ureq = { version = "3.4", default-features = false, features = ["rustls"] }
+sha2 = "0.11"
+
+[target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_UI_Input_KeyboardAndMouse",
@@ -37,20 +54,6 @@ windows = { version = "0.62", features = [
   "Win32_UI_Accessibility",
   "Win32_UI_HiDpi",
 ] }
-tray-icon = "0.25"
-rphonetic = "4"
-similar = "3"
-eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "persistence"] }
-raw-window-handle = "0.6"
-toml = "1"
-serde = { version = "1", features = ["derive"] }
-crossbeam-channel = "0.5"
-dirs = "7"
-anyhow = "1"
-log = "0.4"
-simplelog = "0.12"
-ureq = { version = "3.4", default-features = false, features = ["rustls"] }
-sha2 = "0.11"
 
 [build-dependencies]
 winresource = "0.1"
