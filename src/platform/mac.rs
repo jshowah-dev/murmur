@@ -1,11 +1,19 @@
 use super::Window;
 use anyhow::{Context, Result};
-use objc2::MainThreadMarker;
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
+use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy, NSEventMask, NSRunningApplication, NSWorkspace,
+    NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSEvent, NSEventMask,
+    NSPanel, NSRunningApplication, NSScreen, NSStatusWindowLevel, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
 };
-use objc2_core_graphics::{CGEventSource, CGEventSourceStateID};
-use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSDictionary, NSNumber, NSString};
+use objc2_core_foundation::CFData;
+use objc2_core_graphics::{
+    kCGColorSpaceSRGB, CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGEventSource, CGEventSourceStateID, CGImage,
+    CGImageAlphaInfo, CGImageByteOrderInfo,
+};
+use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSDictionary, NSNumber, NSPoint, NSRect, NSSize, NSString};
+use objc2_quartz_core::CATransaction;
 use std::fs::{File, TryLockError};
 use std::path::Path;
 
@@ -190,6 +198,99 @@ pub fn accessibility_trusted(prompt: bool) -> bool {
 /// The app in front, by process id.
 pub fn frontmost_pid() -> isize {
     NSWorkspace::sharedWorkspace().frontmostApplication().map_or(0, |a| a.processIdentifier() as isize)
+}
+
+/// The height of the display with the menu bar, which AppKit's bottom-up coordinates start from.
+fn primary_height(mtm: MainThreadMarker) -> f64 {
+    NSScreen::screens(mtm).firstObject().map_or(0.0, |s| s.frame().size.height)
+}
+
+/// The usable part (no menu bar, no Dock) of the screen you're working on, as (x, y, w, h) points
+/// from the top-left of the main display, and its pixels per point.
+pub fn work_area() -> ((f32, f32, f32, f32), f32) {
+    let Some(mtm) = MainThreadMarker::new() else { return ((0.0, 0.0, 1440.0, 900.0), 2.0) };
+    let Some(screen) = NSScreen::mainScreen(mtm) else { return ((0.0, 0.0, 1440.0, 900.0), 2.0) };
+    let f = screen.visibleFrame();
+    let top = primary_height(mtm) - (f.origin.y + f.size.height);
+    ((f.origin.x as f32, top as f32, f.size.width as f32, f.size.height as f32), screen.backingScaleFactor() as f32)
+}
+
+/// The mouse pointer, in points from the top-left of the main display.
+pub fn cursor() -> (f32, f32) {
+    let Some(mtm) = MainThreadMarker::new() else { return (0.0, 0.0) };
+    let p = NSEvent::mouseLocation();
+    (p.x as f32, (primary_height(mtm) - p.y) as f32)
+}
+
+/// A borderless window above other windows, on every Space and over full-screen apps, that
+/// never takes the focus or a click, and shows the pixels it's given: the pill's window.
+pub struct Panel {
+    panel: Retained<NSPanel>,
+    shown: std::cell::Cell<bool>,
+}
+
+impl Panel {
+    pub fn new() -> Result<Panel> {
+        let mtm = MainThreadMarker::new().context("a panel is made on the main thread")?;
+        let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0));
+        let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
+        let panel = NSPanel::initWithContentRect_styleMask_backing_defer(NSPanel::alloc(mtm), rect, style, NSBackingStoreType::Buffered, false);
+        unsafe { panel.setReleasedWhenClosed(false) };
+        panel.setOpaque(false);
+        panel.setBackgroundColor(Some(&NSColor::clearColor()));
+        panel.setHasShadow(false);
+        panel.setLevel(NSStatusWindowLevel);
+        panel.setIgnoresMouseEvents(true);
+        // an accessory app is never active, and a panel would otherwise hide whenever it isn't
+        panel.setHidesOnDeactivate(false);
+        panel.setCollectionBehavior(
+            NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::Stationary
+                | NSWindowCollectionBehavior::FullScreenAuxiliary
+                | NSWindowCollectionBehavior::IgnoresCycle,
+        );
+        panel.contentView().context("panel has no content view")?.setWantsLayer(true);
+        Ok(Panel { panel, shown: std::cell::Cell::new(false) })
+    }
+
+    /// Shows premultiplied BGRA `pixels` (`scale` pixels per point) in a `w`×`h` point frame whose
+    /// top-left is at (x, y) points from the top-left of the main display.
+    pub fn show(&self, (x, y, w, h): (f32, f32, f32, f32), pixels: &[u32], scale: f32) {
+        let Some(mtm) = MainThreadMarker::new() else { return };
+        let Some(layer) = self.panel.contentView().and_then(|v| v.layer()) else { return };
+        let (pw, ph) = (crate::canvas::pixels(w as i32, scale) as usize, crate::canvas::pixels(h as i32, scale) as usize);
+        if pixels.len() != pw * ph {
+            log::warn!("panel: {} pixels for a {pw}x{ph} image", pixels.len());
+            return;
+        }
+        let bytes: Vec<u8> = pixels.iter().flat_map(|p| p.to_le_bytes()).collect();
+        let provider = CGDataProvider::with_cf_data(Some(&CFData::from_bytes(&bytes)));
+        let space = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB }));
+        // 0xAARRGGBB stored little-endian: B, G, R, A in memory
+        let info = CGBitmapInfo(CGImageAlphaInfo::PremultipliedFirst.0 | CGImageByteOrderInfo::Order32Little.0);
+        let image = unsafe {
+            CGImage::new(pw, ph, 8, 32, pw * 4, space.as_deref(), info, provider.as_deref(), std::ptr::null(), false, CGColorRenderingIntent::RenderingIntentDefault)
+        };
+        let Some(image) = image else { return };
+        let frame = NSRect::new(NSPoint::new(x as f64, primary_height(mtm) - y as f64 - h as f64), NSSize::new(w as f64, h as f64));
+        CATransaction::begin();
+        // a new frame replaces the last at once, as on Windows: no cross-fade
+        CATransaction::setDisableActions(true);
+        unsafe { layer.setContents(Some(&*(&*image as *const CGImage).cast::<AnyObject>())) };
+        layer.setContentsScale(scale as f64);
+        self.panel.setFrame_display(frame, false);
+        CATransaction::commit();
+        if !self.shown.replace(true) {
+            self.panel.orderFrontRegardless();
+        }
+    }
+
+    #[allow(dead_code)] // the mote hides its panel between flights (phase 3)
+    pub fn hide(&self) {
+        if self.shown.replace(false) {
+            self.panel.orderOut(None);
+        }
+    }
 }
 
 #[cfg(test)]

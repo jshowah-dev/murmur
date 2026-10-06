@@ -4,9 +4,9 @@
 #
 # macOS ties the Accessibility and microphone permissions to the app's code signature. Set
 # MURMUR_SIGN_IDENTITY to a signing identity in your keychain (`security find-identity -v -p
-# codesigning` lists them) so a rebuilt app keeps its permissions; otherwise the first Apple
-# Development identity is used, and with none the app is signed ad hoc, which macOS treats as a
-# new app on every build.
+# codesigning` lists them) so a rebuilt app keeps its permissions; otherwise a "Murmur Dev"
+# certificate or the first Apple Development identity is used, and with none the app is signed
+# ad hoc, which macOS treats as a new app on every build.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -52,6 +52,11 @@ done
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/AppIcon.icns"
 
 identity=${MURMUR_SIGN_IDENTITY:-}
+# a self-signed "Murmur Dev" certificate (Keychain Access › Certificate Assistant › Create a
+# Certificate, type Code Signing) isn't trusted, so it's listed without -v
+if [ -z "$identity" ] && security find-identity -p codesigning | grep -q '"Murmur Dev"'; then
+  identity="Murmur Dev"
+fi
 if [ -z "$identity" ]; then
   identity=$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development: .*\)"/\1/p' | head -n 1)
 fi

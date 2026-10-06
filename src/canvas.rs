@@ -19,16 +19,31 @@ use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
 pub(crate) struct Canvas {
     w: i32,
     h: i32,
+    /// pixels per unit of the coordinates shapes are drawn in: 1 on Windows, 2 on a Retina Mac
+    s: f32,
     px: Vec<[f32; 4]>,
+}
+
+/// How many pixels `units` covers at `scale`.
+pub(crate) fn pixels(units: i32, scale: f32) -> i32 {
+    (units as f32 * scale).round() as i32
 }
 
 impl Canvas {
     pub(crate) fn new(w: i32, h: i32) -> Self {
-        Canvas { w, h, px: vec![[0.0; 4]; (w * h) as usize] }
+        Canvas::scaled(w, h, 1.0)
+    }
+
+    /// A `w`×`h` canvas drawn at `scale` pixels per unit: shapes take the same coordinates and
+    /// come out `scale` times as sharp.
+    pub(crate) fn scaled(w: i32, h: i32, scale: f32) -> Self {
+        let (w, h) = (pixels(w, scale), pixels(h, scale));
+        Canvas { w, h, s: scale, px: vec![[0.0; 4]; (w * h) as usize] }
     }
 
     /// Composite a capsule (rounded rect, radius = half the short side) of 0xRRGGBB at `alpha` over the canvas.
     pub(crate) fn capsule(&mut self, x: f32, y: f32, cw: f32, ch: f32, rgb: u32, alpha: f32) {
+        let (x, y, cw, ch) = (x * self.s, y * self.s, cw * self.s, ch * self.s);
         let r = cw.min(ch) / 2.0;
         let (cx, cy) = (x + cw / 2.0, y + ch / 2.0);
         let (bx, by) = (cw / 2.0 - r, ch / 2.0 - r);
@@ -54,6 +69,7 @@ impl Canvas {
     /// A soft round light at (cx, cy) fading to nothing at `r`, laid only over what's already
     /// drawn, so it never spills past the shape.
     pub(crate) fn glow(&mut self, cx: f32, cy: f32, r: f32, rgb: u32, alpha: f32) {
+        let (cx, cy, r) = (cx * self.s, cy * self.s, r * self.s);
         let col = [(rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF].map(|c| c as f32 / 255.0);
         for py in 0..self.h {
             for pxl in 0..self.w {
@@ -73,6 +89,7 @@ impl Canvas {
 
     /// A soft round light at (cx, cy) fading to nothing at `r`, over transparent canvas too.
     pub(crate) fn halo(&mut self, cx: f32, cy: f32, r: f32, rgb: u32, alpha: f32) {
+        let (cx, cy, r) = (cx * self.s, cy * self.s, r * self.s);
         let col = [(rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF].map(|c| c as f32 / 255.0);
         for py in 0..self.h {
             for pxl in 0..self.w {
@@ -278,6 +295,20 @@ mod tests {
         let px = c.into_bgra();
         assert!((px[5 * 20 + 5] >> 8) & 0xFF > 0x80, "lit inside the capsule");
         assert_eq!(px[5 * 20 + 15], 0, "nothing where nothing was drawn");
+    }
+
+    #[test]
+    fn a_scaled_canvas_draws_the_same_shape_in_more_pixels() {
+        let draw = |s: f32| {
+            let mut c = Canvas::scaled(20, 10, s);
+            c.capsule(0.0, 0.0, 10.0, 10.0, 0xFFFFFF, 1.0);
+            c.into_bgra()
+        };
+        let (one, two) = (draw(1.0), draw(2.0));
+        assert_eq!(two.len(), 4 * one.len());
+        // the capsule's centre and the empty right half, at both scales
+        assert!(one[5 * 20 + 5] >> 24 == 0xFF && two[10 * 40 + 10] >> 24 == 0xFF);
+        assert!(one[5 * 20 + 15] == 0 && two[10 * 40 + 30] == 0);
     }
 
     #[cfg(windows)] // GDI text

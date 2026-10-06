@@ -35,9 +35,11 @@ sha2 = "0.11"
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSArray", "NSDate", "NSDictionary", "NSRunLoop", "NSString", "NSValue"] }
-objc2-app-kit = { version = "0.3", features = ["libc", "NSAccessibility", "NSApplication", "NSEvent", "NSPasteboard", "NSResponder", "NSRunningApplication", "NSWorkspace"] }
-objc2-core-graphics = { version = "0.3", features = ["CGEvent", "CGEventSource", "CGEventTypes", "CGRemoteOperation"] }
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSDate", "NSDictionary", "NSGeometry", "NSRunLoop", "NSString", "NSValue"] }
+objc2-app-kit = { version = "0.3", features = ["libc", "NSAccessibility", "NSApplication", "NSColor", "NSEvent", "NSGraphics", "NSPanel", "NSPasteboard", "NSResponder", "NSRunningApplication", "NSScreen", "NSView", "NSWindow", "NSWorkspace"] }
+objc2-core-graphics = { version = "0.3", features = ["CGColorSpace", "CGDataProvider", "CGEvent", "CGEventSource", "CGEventTypes", "CGImage", "CGRemoteOperation"] }
+objc2-core-foundation = { version = "0.3", features = ["CFData", "CFString"] }
+objc2-quartz-core = { version = "0.3", features = ["CALayer", "CATransaction"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
