@@ -1,5 +1,9 @@
 # Handoff: Murmur on macOS, phase 2: editor, second display, setup (2026-10-06)
 
+> **Update, later the same night:** pushed through `5abea28`; Windows CI green (run 37416821967). Two new problems, first actions for next session:
+> 1. **Speaker mute eats the first words of a dictation.** Jeff confirmed it: with `mute_output = false` in his `config.toml` (set by me, backup in that session's scratchpad), the first words are back. Measured with a debug probe (since removed): `mute()` takes ~0.3 ms, and the mic stream loses no samples, no zeros, no pop. But the speakers only go quiet ~250 ms after the mute, so the 0.5 s pre-roll ring plus that tail hand the pipeline whatever is playing (rms ~0.006), then a sudden drop to room quiet (~0.0004), right where Jeff's first words are. Not proven which part trims the words (Silero VAD segmenting on the media, or the ASR on the mixed onset). Next: dump one real dictation's forwarded audio to WAV and transcribe its parts, then fix. Candidates: drop the pre-roll when muting, or skip the VAD's first segment if it ends before speech. Then set `mute_output` back to true.
+> 2. ~~Builds fail to link against `MacOSX27.0.sdk`~~ **Fixed the same night:** Jeff installed Command Line Tools for Xcode 27.0 (ld-27037.1), and a build without `SDKROOT` links. No workaround needed.
+
 **State:** the three items a peer session relayed from Jeff are done and committed locally, not pushed: the editor's ⌘S, `caret::work_area` per screen, and the setup card's Accessibility step. None has been smoke-tested by Jeff. Windows CI hasn't run on them.
 
 Supersedes `docs/superpowers/handoffs/2026-10-06-macos-port-phase2.md` for state and next steps. Its traps and "facts you'd otherwise re-derive" still stand and aren't repeated here. Read them, especially: never call `finishLaunching`, the fix-last card stays out of process, and only Jeff's real clicks can test the menu bar.
