@@ -475,11 +475,13 @@ pub fn main() -> Result<()> {
                         }
                     }
                     mic_used = Instant::now();
-                    if cfg.mute_output {
-                        output_mute.mute();
-                    }
+                    let playing = cfg.mute_output && output_mute.mute();
                     let _ = cmd_tx.send(PipelineCmd::Start);
-                    let _ = cmd_tx.send(PipelineCmd::Audio(ring.drain(..).collect()));
+                    let pre_roll: Vec<f32> = ring.drain(..).collect();
+                    // the pre-roll is what was playing, not you: it brought a video's words along
+                    if !playing {
+                        let _ = cmd_tx.send(PipelineCmd::Audio(pre_roll));
+                    }
                     forwarding = true;
                 }
                 HotkeyEvent::Press if listens_on_press(paused, forwarding) => {

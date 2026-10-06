@@ -33,6 +33,8 @@ const SCOPE_OUTPUT: u32 = code(b"outp");
 const DEFAULT_OUTPUT: u32 = code(b"dOut");
 const MUTE: u32 = code(b"mute");
 const VOLUME: u32 = code(b"volm");
+/// kAudioDevicePropertyDeviceIsRunningSomewhere: some app is playing through the device
+const RUNNING: u32 = code(b"gone");
 /// The main element, then the left and right channels.
 const ELEMENTS: [u32; 3] = [0, 1, 2];
 
@@ -114,14 +116,17 @@ impl OutputMute {
     }
 
     /// Mute the default output, remembering its prior state. No-op if already holding a mute.
-    pub fn mute(&mut self) {
+    /// Returns whether something was playing through it, which the mic has been hearing.
+    pub fn mute(&mut self) -> bool {
         if self.held.is_some() {
-            return;
+            return false;
         }
+        let playing = default_output().is_ok_and(|d| get::<u32>(d, &Address { selector: RUNNING, scope: SCOPE_GLOBAL, element: 0 }).is_ok_and(|v| v != 0));
         match Self::silence() {
             Ok(h) => self.held = Some(h),
             Err(e) => log::warn!("mute output: {e:#}"),
         }
+        playing
     }
 
     /// Put the output back to what it was before `mute()`.

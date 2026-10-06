@@ -28,9 +28,10 @@ impl OutputMute {
     }
 
     /// Mute the default output, remembering its prior state. No-op if already holding a mute.
-    pub fn mute(&mut self) {
+    /// Returns whether something was playing through it; not known here, so false.
+    pub fn mute(&mut self) -> bool {
         if self.was_muted.is_some() {
-            return;
+            return false;
         }
         match Self::endpoint().and_then(|ep| unsafe {
             let prior = ep.GetMute()?.as_bool();
@@ -42,6 +43,7 @@ impl OutputMute {
             Ok(prior) => self.was_muted = Some(prior),
             Err(e) => log::warn!("mute output: {e:#}"),
         }
+        false
     }
 
     /// Put the mute state back to what it was before `mute()`.
