@@ -1,27 +1,47 @@
+#[cfg(windows)]
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, SIZE};
+#[cfg(windows)]
 use windows::core::w;
+#[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject, GdiFlush, GetDC, GetTextExtentPoint32W,
     ReleaseDC, SelectObject, SetBkMode, SetTextColor, TextOutW, ANTIALIASED_QUALITY, AC_SRC_ALPHA, BITMAPINFO,
     BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DIB_RGB_COLORS, FW_NORMAL,
     HBITMAP, HDC, OUT_DEFAULT_PRECIS, TRANSPARENT,
 };
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
 
 /// Premultiplied RGBA canvas; shapes are drawn with per-pixel coverage so edges are antialiased.
 pub(crate) struct Canvas {
     w: i32,
     h: i32,
+    /// pixels per unit of the coordinates shapes are drawn in: 1 on Windows, 2 on a Retina Mac
+    s: f32,
     px: Vec<[f32; 4]>,
 }
 
+/// How many pixels `units` covers at `scale`.
+pub(crate) fn pixels(units: i32, scale: f32) -> i32 {
+    (units as f32 * scale).round() as i32
+}
+
 impl Canvas {
+    #[cfg(test)]
     pub(crate) fn new(w: i32, h: i32) -> Self {
-        Canvas { w, h, px: vec![[0.0; 4]; (w * h) as usize] }
+        Canvas::scaled(w, h, 1.0)
+    }
+
+    /// A `w`×`h` canvas drawn at `scale` pixels per unit: shapes take the same coordinates and
+    /// come out `scale` times as sharp.
+    pub(crate) fn scaled(w: i32, h: i32, scale: f32) -> Self {
+        let (w, h) = (pixels(w, scale), pixels(h, scale));
+        Canvas { w, h, s: scale, px: vec![[0.0; 4]; (w * h) as usize] }
     }
 
     /// Composite a capsule (rounded rect, radius = half the short side) of 0xRRGGBB at `alpha` over the canvas.
     pub(crate) fn capsule(&mut self, x: f32, y: f32, cw: f32, ch: f32, rgb: u32, alpha: f32) {
+        let (x, y, cw, ch) = (x * self.s, y * self.s, cw * self.s, ch * self.s);
         let r = cw.min(ch) / 2.0;
         let (cx, cy) = (x + cw / 2.0, y + ch / 2.0);
         let (bx, by) = (cw / 2.0 - r, ch / 2.0 - r);
@@ -47,6 +67,7 @@ impl Canvas {
     /// A soft round light at (cx, cy) fading to nothing at `r`, laid only over what's already
     /// drawn, so it never spills past the shape.
     pub(crate) fn glow(&mut self, cx: f32, cy: f32, r: f32, rgb: u32, alpha: f32) {
+        let (cx, cy, r) = (cx * self.s, cy * self.s, r * self.s);
         let col = [(rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF].map(|c| c as f32 / 255.0);
         for py in 0..self.h {
             for pxl in 0..self.w {
@@ -66,6 +87,7 @@ impl Canvas {
 
     /// A soft round light at (cx, cy) fading to nothing at `r`, over transparent canvas too.
     pub(crate) fn halo(&mut self, cx: f32, cy: f32, r: f32, rgb: u32, alpha: f32) {
+        let (cx, cy, r) = (cx * self.s, cy * self.s, r * self.s);
         let col = [(rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF].map(|c| c as f32 / 255.0);
         for py in 0..self.h {
             for pxl in 0..self.w {
@@ -87,6 +109,7 @@ impl Canvas {
     /// GDI draws white on black with grayscale antialiasing, so any channel is the coverage.
     /// `size` is what `measure` gave for these spans at `px`, so callers that already have it
     /// don't pay for it twice.
+    #[cfg(windows)]
     pub(crate) fn text(&mut self, x: f32, y: f32, spans: &[Span], px: i32, size: (i32, i32), alpha: f32) {
         let (tw, th) = size;
         if tw <= 0 || th <= 0 || alpha <= 0.0 {
@@ -150,6 +173,35 @@ impl Canvas {
         }
     }
 
+    /// Draw `spans` left to right with the top-left at (x, y), each in its own colour at `alpha`.
+    /// CoreText draws them into an alpha-only bitmap, so its alpha is the coverage. `size` is what
+    /// `measure` gave for these spans at `px`.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn text(&mut self, x: f32, y: f32, spans: &[Span], px: i32, size: (i32, i32), alpha: f32) {
+        let (tw, th) = (pixels(size.0, self.s), pixels(size.1, self.s));
+        if tw <= 0 || th <= 0 || alpha <= 0.0 {
+            return;
+        }
+        let (cov, runs) = coretext::coverage(spans, px as f64 * self.s as f64, tw as usize, th as usize);
+        let (ox, oy) = ((x * self.s).round() as i32, (y * self.s).round() as i32);
+        for row in 0..th {
+            for col in 0..tw {
+                let a = cov.get((row * tw + col) as usize).copied().unwrap_or(0.0) * alpha;
+                let (dx, dy) = (ox + col, oy + row);
+                if a <= 0.0 || dx < 0 || dy < 0 || dx >= self.w || dy >= self.h {
+                    continue;
+                }
+                let rgb = runs.iter().find(|(s, e, _)| col >= *s && col < *e).or(runs.last()).map_or(0xFFFFFF, |r| r.2);
+                let c = [(rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF].map(|v| v as f32 / 255.0);
+                let dst = &mut self.px[(dy * self.w + dx) as usize];
+                for i in 0..3 {
+                    dst[i] = c[i] * a + dst[i] * (1.0 - a);
+                }
+                dst[3] = a + dst[3] * (1.0 - a);
+            }
+        }
+    }
+
     /// Pack as premultiplied BGRA (0xAARRGGBB little-endian), what UpdateLayeredWindow expects.
     pub(crate) fn into_bgra(self) -> Vec<u32> {
         let q = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u32;
@@ -161,6 +213,7 @@ impl Canvas {
 pub(crate) type Span = (String, u32);
 
 /// Runs `f` with a memory DC holding the UI font, `px` pixels to the em.
+#[cfg(windows)]
 fn with_font<T>(px: i32, f: impl FnOnce(HDC) -> T) -> T {
     unsafe {
         let dc = CreateCompatibleDC(None);
@@ -177,6 +230,7 @@ fn with_font<T>(px: i32, f: impl FnOnce(HDC) -> T) -> T {
     }
 }
 
+#[cfg(windows)]
 fn extent(dc: HDC, wide: &[u16]) -> SIZE {
     let mut sz = SIZE::default();
     let _ = unsafe { GetTextExtentPoint32W(dc, wide, &mut sz) };
@@ -184,6 +238,7 @@ fn extent(dc: HDC, wide: &[u16]) -> SIZE {
 }
 
 /// Width and height of `spans` drawn side by side at `px`; (0, 0) when there's no text.
+#[cfg(windows)]
 pub(crate) fn measure(spans: &[Span], px: i32) -> (i32, i32) {
     if spans.iter().all(|(s, _)| s.is_empty()) {
         return (0, 0);
@@ -196,8 +251,70 @@ pub(crate) fn measure(spans: &[Span], px: i32) -> (i32, i32) {
     })
 }
 
+/// Width and height of `spans` drawn side by side at `px`; (0, 0) when there's no text.
+#[cfg(target_os = "macos")]
+pub(crate) fn measure(spans: &[Span], px: i32) -> (i32, i32) {
+    if spans.iter().all(|(s, _)| s.is_empty()) {
+        return (0, 0);
+    }
+    let (w, h) = spans.iter().filter_map(|(s, _)| coretext::line(s, px as f64)).fold((0.0, 0.0f64), |(w, h), l| {
+        let (lw, ascent, descent) = coretext::bounds(&l);
+        (w + lw, h.max(ascent + descent))
+    });
+    (w.ceil() as i32, h.ceil() as i32)
+}
+
+/// Text through CoreText in the system UI font.
+#[cfg(target_os = "macos")]
+mod coretext {
+    use super::Span;
+    use objc2_core_foundation::{CFAttributedString, CFDictionary, CFRetained, CFString};
+    use objc2_core_graphics::{CGBitmapContextCreate, CGContext, CGImageAlphaInfo};
+    use objc2_core_text::{kCTFontAttributeName, CTFont, CTFontUIFontType, CTLine};
+
+    /// `s` laid out in the system font at `px` to the em.
+    pub(super) fn line(s: &str, px: f64) -> Option<CFRetained<CTLine>> {
+        let font = unsafe { CTFont::new_ui_font_for_language(CTFontUIFontType::System, px, None) }?;
+        let attrs = CFDictionary::from_slices(&[unsafe { kCTFontAttributeName }], &[&*font]);
+        let text = CFString::from_str(s);
+        let attributed = unsafe { CFAttributedString::new(None, Some(&text), Some(attrs.as_opaque())) }?;
+        Some(unsafe { CTLine::with_attributed_string(&attributed) })
+    }
+
+    /// (width, ascent, descent) of `l`.
+    pub(super) fn bounds(l: &CTLine) -> (f64, f64, f64) {
+        let (mut ascent, mut descent, mut leading) = (0.0, 0.0, 0.0);
+        let w = unsafe { l.typographic_bounds(&mut ascent, &mut descent, &mut leading) };
+        (w, ascent, descent)
+    }
+
+    /// Coverage (0..=1, row-major from the top) of `spans` drawn left to right in a `w`×`h` pixel
+    /// bitmap at `px` pixels to the em, and each span's (start, end, colour) in pixels.
+    pub(super) fn coverage(spans: &[Span], px: f64, w: usize, h: usize) -> (Vec<f32>, Vec<(i32, i32, u32)>) {
+        let mut bits = vec![0u8; w * h];
+        let mut runs = Vec::new();
+        // alpha-only: whatever colour CoreText draws in, the alpha is how much of each pixel is ink
+        let ctx = unsafe { CGBitmapContextCreate(bits.as_mut_ptr().cast(), w, h, 8, w, None, CGImageAlphaInfo::Only.0) };
+        let Some(ctx) = ctx else { return (Vec::new(), runs) };
+        let mut at = 0.0;
+        for (s, rgb) in spans {
+            let Some(l) = line(s, px) else { continue };
+            let (lw, _, descent) = bounds(&l);
+            // bitmap contexts put y = 0 at the bottom row; the baseline sits the descent above it
+            CGContext::set_text_position(Some(&ctx), at, descent);
+            unsafe { l.draw(&ctx) };
+            let next = at + lw;
+            runs.push((at.round() as i32, next.round() as i32, *rgb));
+            at = next;
+        }
+        drop(ctx);
+        (bits.into_iter().map(|b| b as f32 / 255.0).collect(), runs)
+    }
+}
+
 /// Push premultiplied BGRA `pixels` (`w * h`) to the layered window `hwnd` at (x, y), through a
 /// 32-bit DIB and UpdateLayeredWindow.
+#[cfg(windows)]
 pub(crate) fn push(hwnd: HWND, x: i32, y: i32, w: i32, h: i32, pixels: &[u32]) {
     unsafe {
         let screen = GetDC(None);
@@ -256,6 +373,20 @@ mod tests {
         let px = c.into_bgra();
         assert!((px[5 * 20 + 5] >> 8) & 0xFF > 0x80, "lit inside the capsule");
         assert_eq!(px[5 * 20 + 15], 0, "nothing where nothing was drawn");
+    }
+
+    #[test]
+    fn a_scaled_canvas_draws_the_same_shape_in_more_pixels() {
+        let draw = |s: f32| {
+            let mut c = Canvas::scaled(20, 10, s);
+            c.capsule(0.0, 0.0, 10.0, 10.0, 0xFFFFFF, 1.0);
+            c.into_bgra()
+        };
+        let (one, two) = (draw(1.0), draw(2.0));
+        assert_eq!(two.len(), 4 * one.len());
+        // the capsule's centre and the empty right half, at both scales
+        assert!(one[5 * 20 + 5] >> 24 == 0xFF && two[10 * 40 + 10] >> 24 == 0xFF);
+        assert!(one[5 * 20 + 15] == 0 && two[10 * 40 + 30] == 0);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! any `egui::Ui`, so a future settings window can host it as a tab.
 
 use crate::correction_ui::{AMBER, GREEN, MUTED, TEXT};
-use crate::editor_kit::{has_comments, open_file, progress, reduced_motion, RED};
+use crate::editor_kit::{has_comments, open_file, progress, reduced_motion, CMD, RED};
 use crate::motion;
 use eframe::egui::{
     self, Align, Button, CentralPanel, Frame, Key, Layout, Margin, Modifiers, Panel, RichText, ScrollArea, Sense, TextEdit, TextStyle,
@@ -294,7 +294,7 @@ impl DictionaryPanel {
             });
             return;
         }
-        if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::S)) {
+        if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)) {
             self.save();
         }
         let fresh = self.fresh;
@@ -550,7 +550,7 @@ impl DictionaryPanel {
         let n = edit::changes(&self.loaded, &self.working);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let can = self.is_dirty() && !self.has_errors();
-            if ui.add_enabled(can, Button::new("Save")).on_hover_text("Ctrl+S").clicked() {
+            if ui.add_enabled(can, Button::new("Save")).on_hover_text(format!("{CMD}S")).clicked() {
                 self.save();
             }
             if n > 0 {
@@ -598,6 +598,25 @@ mod tests {
         assert!(panel.save());
         assert!(!panel.is_dirty());
         assert_eq!(on_disk(&p)[0].spoken, vec!["hob", "haub"]);
+    }
+
+    #[test]
+    fn the_command_key_with_s_saves() {
+        let p = temp_file("cmd-s", TWO);
+        let mut panel = DictionaryPanel::new(p.clone());
+        let ctx = egui::Context::default();
+        panel.working[0].spoken.push("haub".into());
+        frame(&ctx, &mut panel, vec![crate::editor_kit::command_key(Key::S)]);
+        assert!(!panel.is_dirty());
+        assert_eq!(on_disk(&p)[0].spoken, vec!["hob", "haub"]);
+        #[cfg(target_os = "macos")]
+        {
+            // Ctrl+S isn't Save on a Mac
+            panel.working[0].spoken.push("hab".into());
+            let ctrl = egui::Modifiers { ctrl: true, ..Default::default() };
+            frame(&ctx, &mut panel, vec![egui::Event::Key { key: Key::S, physical_key: None, pressed: true, repeat: false, modifiers: ctrl }]);
+            assert!(panel.is_dirty());
+        }
     }
 
     #[test]

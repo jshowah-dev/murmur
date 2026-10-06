@@ -7,8 +7,26 @@ use std::time::Duration;
 
 pub(crate) const RED: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x6C, 0x6C);
 
+/// The command modifier, as a shortcut hint names it: `egui::Modifiers::COMMAND` is Ctrl on
+/// Windows and ⌘ on a Mac.
+#[cfg(windows)]
+pub(crate) const CMD: &str = "Ctrl+";
+#[cfg(target_os = "macos")]
+pub(crate) const CMD: &str = "⌘";
+
+/// `key` pressed with the command modifier, carrying the modifiers egui-winit reports for it:
+/// Ctrl on Windows, ⌘ on a Mac. Pressing Ctrl on a Mac is `ctrl` alone, which isn't a command.
+#[cfg(test)]
+pub(crate) fn command_key(key: egui::Key) -> egui::Event {
+    #[cfg(windows)]
+    let modifiers = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
+    #[cfg(target_os = "macos")]
+    let modifiers = egui::Modifiers { mac_cmd: true, command: true, ..Default::default() };
+    egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
+}
+
 pub(crate) fn open_file(p: &Path) {
-    let _ = std::process::Command::new("explorer.exe").arg(p).spawn();
+    crate::platform::open_path(p);
 }
 
 /// Whether the file has a comment line, which saving from the editor would drop.
@@ -16,13 +34,9 @@ pub(crate) fn has_comments(p: &Path) -> bool {
     std::fs::read_to_string(p).map(|s| s.lines().any(|l| l.trim_start().starts_with('#'))).unwrap_or(false)
 }
 
-/// Windows' "Show animations in Windows" setting, off meaning reduced motion.
+/// The system's reduce-motion setting.
 pub(crate) fn reduced_motion() -> bool {
-    use windows::core::BOOL;
-    use windows::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS};
-    let mut on = BOOL(1);
-    let ok = unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, Some(&mut on as *mut BOOL as *mut _), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0)) };
-    ok.is_ok() && !on.as_bool()
+    crate::platform::reduced_motion()
 }
 
 /// A cubic-bezier easing token evaluated at `x` in 0..=1.

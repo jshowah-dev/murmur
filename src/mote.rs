@@ -4,12 +4,20 @@
 use crate::canvas::{self, Canvas, Span};
 use crate::editor_kit::{ease, reduced_motion};
 use crate::motion;
-use anyhow::{anyhow, Result};
+use crate::platform::Rect as RECT;
+use anyhow::Result;
+#[cfg(windows)]
+use anyhow::anyhow;
 use std::time::{Duration, Instant};
+#[cfg(windows)]
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, RECT, WPARAM};
+#[cfg(windows)]
+use windows::Win32::Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, WPARAM};
+#[cfg(windows)]
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+#[cfg(windows)]
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, RegisterClassW, SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE,
     SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
@@ -19,7 +27,19 @@ use windows::Win32::UI::WindowsAndMessaging::{
 pub(crate) type Pt = (f32, f32);
 
 /// The flight's length. The carved moment breaks the grammar here; logged in the kit ledger.
+#[cfg(windows)]
 pub(crate) const FLIGHT: Duration = Duration::from_millis(300);
+/// Longer on a Mac, where 300 ms read as too quick (Jeff, 2026-10-05).
+#[cfg(target_os = "macos")]
+pub(crate) const FLIGHT: Duration = Duration::from_millis(450);
+
+/// The least time the mote stays at the caret before dissolving. Words land in 0.1–0.3 s on a
+/// Mac, often mid-flight, so without a stay the mote sometimes swells away on arrival and
+/// sometimes sits first, and reads as an inconsistent dot (Jeff, 2026-10-05).
+#[cfg(windows)]
+const DWELL: Duration = Duration::ZERO;
+#[cfg(target_os = "macos")]
+const DWELL: Duration = Duration::from_millis(250);
 
 /// A point on a quadratic arc from `from` to `to` at `t` (0..=1). The arc lobs upward, like
 /// something tossed: its control point sits off the midpoint on the screen-up side.
@@ -105,6 +125,7 @@ enum Phase {
     Speaking { at: Pt, start: Instant },
     /// pulling back to a dot from openness `open`
     Furling { at: Pt, start: Instant, open: f32 },
+    /// before `start`, the plain dot
     Leaving { at: Pt, start: Instant, alpha: f32, grow: bool },
 }
 
@@ -224,7 +245,12 @@ impl Flight {
         }
         // read while still sticky, as in `dismiss`
         if let Some(s) = self.sprite(now) {
-            self.phase = Phase::Leaving { at: s.at, start: now, alpha: s.alpha, grow };
+            // a mote that has only just landed stays its minimum first
+            let start = match self.phase {
+                Phase::Settled { since, .. } => now.max(since + motion::scaled(DWELL)),
+                _ => now,
+            };
+            self.phase = Phase::Leaving { at: s.at, start, alpha: s.alpha, grow };
         }
         self.sticky = false;
     }
@@ -245,7 +271,7 @@ impl Flight {
                     let landed = start + motion::scaled(FLIGHT);
                     self.phase = match then {
                         Then::Settle => Phase::Settled { at: to, since: landed },
-                        Then::Dissolve => Phase::Leaving { at: to, start: landed, alpha: 1.0, grow: true },
+                        Then::Dissolve => Phase::Leaving { at: to, start: landed + motion::scaled(DWELL), alpha: 1.0, grow: true },
                         Then::Say => Phase::Speaking { at: to, start: landed },
                     };
                     return self.sprite(now);
@@ -320,8 +346,14 @@ pub(crate) fn on_done(mote_active: bool, has_text: bool, same_window: bool) -> L
 /// The mote window's side, in physical pixels.
 const S: i32 = 40;
 
+#[cfg(test)]
 fn render(s: &Sprite) -> Vec<u32> {
-    let mut c = Canvas::new(S, S);
+    render_scaled(s, 1.0)
+}
+
+/// `render` at `scale` pixels per unit.
+fn render_scaled(s: &Sprite, scale: f32) -> Vec<u32> {
+    let mut c = Canvas::scaled(S, S, scale);
     let m = S as f32 / 2.0;
     c.halo(m, m, 12.0 * s.radius, 0x60D060, 0.5 * s.alpha);
     let core = 5.0 * s.radius;
@@ -362,8 +394,9 @@ fn fit(x: i32, y: i32, w: i32, h: i32, work: RECT) -> (i32, i32) {
 }
 
 /// A frame of a speaking mote, `w`×`h`, with the capsule centred at `centre`.
-fn render_tag(s: &Sprite, m: &Message, b: &TagBox, centre: Pt, w: i32, h: i32, font: i32, text: (i32, i32)) -> Vec<u32> {
-    let mut c = Canvas::new(w, h);
+#[allow(clippy::too_many_arguments)]
+fn render_tag(s: &Sprite, m: &Message, b: &TagBox, centre: Pt, w: i32, h: i32, font: i32, text: (i32, i32), scale: f32) -> Vec<u32> {
+    let mut c = Canvas::scaled(w, h, scale);
     let (cx, cy) = centre;
     let dot = 1.0 - s.open;
     if dot > 0.0 {
@@ -380,6 +413,7 @@ fn render_tag(s: &Sprite, m: &Message, b: &TagBox, centre: Pt, w: i32, h: i32, f
     c.into_bgra()
 }
 
+#[cfg(windows)]
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
 }
@@ -394,20 +428,14 @@ fn changed(last: &mut Option<(Sprite, i32, i32, i32, i32)>, s: &Sprite, x: i32, 
 
 /// The mote's own click-through window. It's created and moved in physical pixels, the space
 /// `caret::find` reports in, while the rest of Murmur is DPI-unaware.
-pub(crate) struct Mote {
+#[cfg(windows)]
+struct Surface {
     hwnd: HWND,
-    flight: Flight,
-    shown: bool,
-    /// physical pixels per 96-dpi pixel, for the message's size
-    scale: f32,
-    /// the current message's font size, text size and work area, measured once per message
-    layout: Option<(i32, (i32, i32), RECT)>,
-    /// the last frame pushed, to skip an identical one
-    last: Option<(Sprite, i32, i32, i32, i32)>,
 }
 
-impl Mote {
-    pub(crate) fn create() -> Result<Mote> {
+#[cfg(windows)]
+impl Surface {
+    fn create() -> Result<Surface> {
         let hwnd = crate::caret::physical(|| unsafe {
             let hinst = GetModuleHandleW(None)?;
             let class: Vec<u16> = "MurmurMote\0".encode_utf16().collect();
@@ -424,13 +452,108 @@ impl Mote {
                 None, None, Some(hinst.into()), None,
             )?)
         })?;
-        let scale = crate::caret::physical(|| unsafe { GetDpiForSystem() }) as f32 / 96.0;
-        Ok(Mote { hwnd, flight: Flight::new(reduced_motion()), shown: false, scale, layout: None, last: None })
+        Ok(Surface { hwnd })
+    }
+
+    /// (physical pixels per 96-dpi pixel, for the message's size; units per unit of what the app
+    /// hands the mote, which is already physical pixels; pixels drawn per unit; dot size)
+    fn scales(&self) -> (f32, f32, f32, f32) {
+        (crate::caret::physical(|| unsafe { GetDpiForSystem() }) as f32 / 96.0, 1.0, 1.0, 1.0)
+    }
+
+    fn push(&self, x: i32, y: i32, w: i32, h: i32, px: &[u32]) {
+        crate::caret::physical(|| canvas::push(self.hwnd, x, y, w, h, px));
+    }
+
+    fn show(&self) {
+        unsafe {
+            let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
+            let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+        }
+    }
+
+    fn hide(&self) {
+        unsafe {
+            let _ = ShowWindow(self.hwnd, SW_HIDE);
+        }
+    }
+}
+
+/// The mote's window on macOS: a still, click-through stage over the screen that the mote moves
+/// across. The mote works in points, as the app does there (and `caret::find`), drawn at the
+/// screen's pixels per point.
+#[cfg(target_os = "macos")]
+struct Surface {
+    panel: crate::platform::Stage,
+    /// pixels per point
+    scale: f32,
+}
+
+#[cfg(target_os = "macos")]
+impl Surface {
+    fn create() -> Result<Surface> {
+        Ok(Surface { panel: crate::platform::Stage::new()?, scale: crate::platform::work_area().1 })
+    }
+
+    /// (message scale, points per unit, pixels drawn per unit, dot size). A point-sized dot comes
+    /// out about a third bigger than Windows' pixel-sized one on a typical laptop; 0.8 evens it.
+    fn scales(&self) -> (f32, f32, f32, f32) {
+        (1.0, 1.0, self.scale, 0.8)
+    }
+
+    fn push(&self, x: i32, y: i32, w: i32, h: i32, px: &[u32]) {
+        let size = (canvas::pixels(w, self.scale) as usize, canvas::pixels(h, self.scale) as usize);
+        self.panel.show((x as f32, y as f32, w as f32, h as f32), px, size, self.scale);
+    }
+
+    /// `push` orders the panel front the first time.
+    fn show(&self) {}
+
+    fn hide(&self) {
+        self.panel.hide();
+    }
+}
+
+pub(crate) struct Mote {
+    surface: Surface,
+    flight: Flight,
+    shown: bool,
+    /// physical pixels per 96-dpi pixel, for the message's size
+    scale: f32,
+    /// mote units per unit of the points the app hands in (1 on both systems today)
+    unit: f32,
+    /// pixels drawn per unit: 1 on Windows, the screen's pixels per point on macOS
+    px_scale: f32,
+    /// the dot's size against Windows'
+    dot: f32,
+    /// the current message's font size, text size and work area, measured once per message
+    layout: Option<(i32, (i32, i32), RECT)>,
+    /// the last frame pushed, to skip an identical one
+    last: Option<(Sprite, i32, i32, i32, i32)>,
+}
+
+impl Mote {
+    pub(crate) fn create() -> Result<Mote> {
+        let surface = Surface::create()?;
+        let (scale, unit, px_scale, dot) = surface.scales();
+        Ok(Mote { surface, flight: Flight::new(reduced_motion()), shown: false, scale, unit, px_scale, dot, layout: None, last: None })
+    }
+
+    /// A point from the app in the mote's pixels.
+    fn px(&self, (x, y): Pt) -> Pt {
+        (x * self.unit, y * self.unit)
+    }
+
+    fn target(&self, to: Target) -> Target {
+        match to {
+            Target::Caret(p) => Target::Caret(self.px(p)),
+            Target::Pill(p) => Target::Pill(self.px(p)),
+        }
     }
 
     pub(crate) fn launch(&mut self, from: Pt, to: Pt) {
         self.layout = None;
-        self.flight.launch(from, to, Instant::now());
+        self.flight.launch(self.px(from), self.px(to), Instant::now());
     }
 
     pub(crate) fn dissolve(&mut self) {
@@ -447,12 +570,12 @@ impl Mote {
 
     pub(crate) fn say(&mut self, m: Message, from: Pt, to: Target) {
         self.layout = None;
-        self.flight.say(m, from, to, Instant::now());
+        self.flight.say(m, self.px(from), self.target(to), Instant::now());
     }
 
     pub(crate) fn say_until_dismissed(&mut self, m: Message, from: Pt, to: Target) {
         self.layout = None;
-        self.flight.say_until_dismissed(m, from, to, Instant::now());
+        self.flight.say_until_dismissed(m, self.px(from), self.target(to), Instant::now());
     }
 
     pub(crate) fn dismiss(&mut self) {
@@ -472,39 +595,36 @@ impl Mote {
     fn frame(&mut self, s: &Sprite) -> Option<(i32, i32, i32, i32, Vec<u32>)> {
         let Some(m) = self.flight.message().filter(|_| s.open > 0.0) else {
             let (x, y) = ((s.at.0 - S as f32 / 2.0).round() as i32, (s.at.1 - S as f32 / 2.0).round() as i32);
-            return changed(&mut self.last, s, x, y, S, S).then(|| (x, y, S, S, render(s)));
+            return changed(&mut self.last, s, x, y, S, S).then(|| (x, y, S, S, render_scaled(s, self.px_scale)));
         };
         let (font, text, work) = *self.layout.get_or_insert_with(|| {
             let font = (16.0 * self.scale).round() as i32;
             let at = RECT { left: s.at.0 as i32, top: s.at.1 as i32, right: s.at.0 as i32 + 1, bottom: s.at.1 as i32 + 1 };
-            (font, canvas::measure(&m.0, font), crate::caret::work_area(&crate::caret::Anchor::Area(at)))
+            let work = crate::caret::work_area(&crate::caret::Anchor::Area(at));
+            let u = |v: i32| (v as f32 * self.unit).round() as i32;
+            (font, canvas::measure(&m.0, font), RECT { left: u(work.left), top: u(work.top), right: u(work.right), bottom: u(work.bottom) })
         });
         let b = tag_box(s.at, s.open, text, self.scale, self.flight.centred());
         let (w, h) = (((b.w + 2.0 * MARGIN).ceil() as i32).max(S), ((b.h + 2.0 * MARGIN).ceil() as i32).max(S));
         let (x0, y0) = ((b.cx - w as f32 / 2.0).round() as i32, (b.cy - h as f32 / 2.0).round() as i32);
         let (x, y) = fit(x0, y0, w, h, work);
-        changed(&mut self.last, s, x, y, w, h).then(|| (x, y, w, h, render_tag(s, m, &b, (b.cx - x as f32, b.cy - y as f32), w, h, font, text)))
+        changed(&mut self.last, s, x, y, w, h).then(|| (x, y, w, h, render_tag(s, m, &b, (b.cx - x as f32, b.cy - y as f32), w, h, font, text, self.px_scale)))
     }
 
     /// Draws this frame of the flight, or hides the window once it's over.
     pub(crate) fn animate(&mut self) {
-        match self.flight.sprite(Instant::now()) {
+        match self.flight.sprite(Instant::now()).map(|s| Sprite { radius: s.radius * self.dot, ..s }) {
             Some(s) => {
                 if let Some((x, y, w, h, px)) = self.frame(&s) {
-                    crate::caret::physical(|| canvas::push(self.hwnd, x, y, w, h, &px));
+                    self.surface.push(x, y, w, h, &px);
                 }
                 if !self.shown {
-                    unsafe {
-                        let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
-                        let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
-                    }
+                    self.surface.show();
                     self.shown = true;
                 }
             }
             None if self.shown => {
-                unsafe {
-                    let _ = ShowWindow(self.hwnd, SW_HIDE);
-                }
+                self.surface.hide();
                 self.shown = false;
                 self.layout = None;
                 self.last = None;
@@ -518,7 +638,6 @@ impl Mote {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
-    use windows::Win32::Foundation::RECT;
 
     fn ms(n: u64) -> Duration {
         Duration::from_millis(n)
@@ -558,6 +677,9 @@ mod tests {
         let mut f = Flight::new(false);
         f.launch(PILL, CARET, t0);
         f.sprite(settled);
+        // settled past the dwell, so it dissolves at once
+        let settled = settled + DWELL;
+        f.sprite(settled);
         f.dissolve(settled);
         let mid = f.sprite(settled + motion::duration::EXIT / 2).unwrap();
         assert!(mid.radius > 1.0 && mid.alpha < 1.0);
@@ -580,9 +702,30 @@ mod tests {
         f.dissolve(t0 + FLIGHT / 3);
         let s = f.sprite(t0 + FLIGHT / 2).unwrap();
         assert!(s.at != CARET && s.alpha == 1.0 && s.radius == 1.0, "keeps flying: {s:?}");
-        let s = f.sprite(t0 + FLIGHT + motion::duration::EXIT / 2).unwrap();
+        let s = f.sprite(t0 + FLIGHT + DWELL + motion::duration::EXIT / 2).unwrap();
         assert!(s.at == CARET && s.radius > 1.0 && s.alpha < 1.0, "dissolves at the caret: {s:?}");
-        assert!(f.sprite(t0 + FLIGHT + motion::duration::EXIT + ms(1)).is_none());
+        assert!(f.sprite(t0 + FLIGHT + DWELL + motion::duration::EXIT + ms(1)).is_none());
+    }
+
+    #[test]
+    fn words_landing_early_wait_out_the_dwell_at_the_caret() {
+        let t0 = Instant::now();
+        let landed = t0 + FLIGHT;
+        let mut f = Flight::new(false);
+        f.launch(PILL, CARET, t0);
+        f.dissolve(t0 + FLIGHT / 3);
+        let s = f.sprite(landed + DWELL / 2).unwrap();
+        assert!(s.at == CARET && s.alpha > 0.99 && s.radius < 1.01, "a plain dot while it dwells: {s:?}");
+        assert!(f.sprite(landed + DWELL + motion::duration::EXIT / 2).unwrap().radius > 1.0, "then dissolves");
+        assert!(f.sprite(landed + DWELL + motion::duration::EXIT + ms(1)).is_none());
+
+        // words just after landing wait out the rest of the dwell, not a whole one
+        let mut g = Flight::new(false);
+        g.launch(PILL, CARET, t0);
+        g.sprite(landed + ms(1));
+        g.dissolve(landed + DWELL / 2);
+        assert!(g.sprite(landed + DWELL / 2 + ms(1)).unwrap().radius < 1.01);
+        assert!(g.sprite(landed + DWELL + motion::duration::EXIT + ms(1)).is_none());
     }
 
     #[test]
@@ -905,3 +1048,4 @@ mod tests {
         assert_eq!(fit(1900, 500, 200, 40, second).0, 1920);
     }
 }
+

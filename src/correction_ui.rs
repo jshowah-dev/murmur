@@ -4,17 +4,13 @@ use eframe::egui::{
     Margin, Modifiers, Stroke, TextEdit, ViewportCommand,
 };
 use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
+use crate::platform::{self, Window};
 use murmur_lib::dictionary::Dictionary;
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use similar::{ChangeTag, TextDiff};
 use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
-use windows::Win32::Foundation::{HWND, RECT};
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowRect, SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-};
 
 const WIDTH: f32 = 540.0;
 pub(crate) const BG: Color32 = Color32::from_rgb(0x1F, 0x1F, 0x1F);
@@ -77,7 +73,7 @@ struct FixApp {
     dict: Dictionary,
     learn: Vec<(String, String)>,
     learn_for: String,
-    hwnd: HWND,
+    hwnd: Window,
     frame: u32,
     opened: Instant,
     reduced_motion: bool,
@@ -90,9 +86,8 @@ impl FixApp {
     fn close(&self, ctx: &egui::Context, result: Option<String>) {
         *self.out.borrow_mut() = result;
         // where the card was, for the mote that carries the result to the caret
-        *self.card.borrow_mut() = Some(caret::physical(|| unsafe {
-            let mut r = RECT::default();
-            let _ = GetWindowRect(self.hwnd, &mut r);
+        *self.card.borrow_mut() = Some(caret::physical(|| {
+            let r = platform::window_rect(self.hwnd).unwrap_or_default();
             ((r.left + r.right) as f32 / 2.0, (r.top + r.bottom) as f32 / 2.0)
         }));
         ctx.send_viewport_cmd(ViewportCommand::Close);
@@ -131,13 +126,11 @@ impl eframe::App for FixApp {
         if self.frame == 2 {
             // eframe shows the window after the first frame; only then can it take focus.
             // bring_to_front ends not-topmost, so pin it again: a click elsewhere must not bury it.
-            unsafe {
-                crate::correction::bring_to_front(self.hwnd);
-                let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            }
+            platform::raise(self.hwnd);
+            platform::keep_on_top(self.hwnd);
         }
         let (submit, cancel) =
-            ctx.input_mut(|i| (i.consume_key(Modifiers::CTRL, Key::Enter), i.consume_key(Modifiers::NONE, Key::Escape)));
+            ctx.input_mut(|i| (i.consume_key(Modifiers::COMMAND, Key::Enter), i.consume_key(Modifiers::NONE, Key::Escape)));
         if submit {
             return self.close(&ctx, Some(self.text.clone()));
         }
@@ -175,7 +168,7 @@ impl eframe::App for FixApp {
                         keycap(ui, "Esc");
                         ui.label(egui::RichText::new("Cancel").size(12.0).color(MUTED));
                         ui.add_space(8.0);
-                        keycap(ui, "Ctrl+Enter");
+                        keycap(ui, &format!("{}Enter", editor_kit::CMD));
                         ui.label(egui::RichText::new("Replace").size(12.0).color(MUTED));
                     });
                 });
@@ -242,10 +235,28 @@ impl eframe::App for FixApp {
     }
 }
 
-pub(crate) fn load_system_font(ctx: &egui::Context) {
+/// The system's UI font files, best first.
+#[cfg(windows)]
+fn system_fonts() -> Vec<String> {
     let dir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
-    for name in ["SegUIVar.ttf", "segoeui.ttf"] {
-        if let Ok(bytes) = std::fs::read(format!(r"{dir}\Fonts\{name}")) {
+    ["SegUIVar.ttf", "segoeui.ttf"].iter().map(|name| format!(r"{dir}\Fonts\{name}")).collect()
+}
+
+#[cfg(target_os = "macos")]
+fn system_fonts() -> Vec<String> {
+    vec!["/System/Library/Fonts/SFNS.ttf".into()]
+}
+
+/// Dark widgets and a dark title bar whatever the OS appearance: `set_visuals` alone only
+/// styles the theme active at startup, so a light-mode Mac drew light widgets on dark panels.
+pub(crate) fn dark_theme(ctx: &egui::Context) {
+    ctx.set_theme(egui::Theme::Dark);
+    ctx.send_viewport_cmd(ViewportCommand::SetTheme(egui::SystemTheme::Dark));
+}
+
+pub(crate) fn load_system_font(ctx: &egui::Context) {
+    for path in system_fonts() {
+        if let Ok(bytes) = std::fs::read(path) {
             ctx.add_font(FontInsert::new(
                 "system",
                 FontData::from_owned(bytes),
@@ -256,19 +267,23 @@ pub(crate) fn load_system_font(ctx: &egui::Context) {
     }
 }
 
-pub(crate) fn hwnd_of(cc: &eframe::CreationContext) -> Option<HWND> {
-    match cc.window_handle().ok()?.as_raw() {
-        RawWindowHandle::Win32(h) => Some(HWND(h.hwnd.get() as *mut _)),
-        _ => None,
-    }
-}
-
 /// Shows the fix-last dialog next to where `initial` was dictated. Blocks until the user
 /// replaces (Some(edited)) or cancels (None); also returns the card's centre, physical pixels.
-pub fn show(initial: &str, heard_at: Option<Instant>, dict: Dictionary, target: HWND) -> (Option<String>, Option<(f32, f32)>) {
+pub fn show(initial: &str, heard_at: Option<Instant>, dict: Dictionary, target: isize) -> (Option<String>, Option<(f32, f32)>) {
     // read the caret now, while the target app still has focus
     let anchor = caret::find(target);
     log::info!("fix-last anchor: {anchor:?}");
+    #[cfg(windows)]
+    return card(initial, heard_at, dict, anchor);
+    #[cfg(target_os = "macos")]
+    {
+        let _ = dict;
+        card_process::show(initial, heard_at, anchor)
+    }
+}
+
+/// The card itself, in this process.
+fn card(initial: &str, heard_at: Option<Instant>, dict: Dictionary, anchor: Option<caret::Anchor>) -> (Option<String>, Option<(f32, f32)>) {
     let out = Rc::new(RefCell::new(None));
     let card = Rc::new(RefCell::new(None));
     let app_card = card.clone();
@@ -291,15 +306,14 @@ pub fn show(initial: &str, heard_at: Option<Instant>, dict: Dictionary, target: 
         "murmur-fix",
         opts,
         Box::new(move |cc| {
-            cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            dark_theme(&cc.egui_ctx);
             load_system_font(&cc.egui_ctx);
-            let hwnd = hwnd_of(cc).unwrap_or_default();
+            let hwnd = platform::window_of(cc);
             if let Some(anchor) = anchor {
-                caret::physical(|| unsafe {
-                    let mut wr = RECT::default();
-                    let _ = GetWindowRect(hwnd, &mut wr);
+                caret::physical(|| {
+                    let wr = platform::window_rect(hwnd).unwrap_or_default();
                     let (x, y) = caret::place(&anchor, wr.right - wr.left, wr.bottom - wr.top, caret::work_area(&anchor));
-                    let _ = SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                    platform::move_to(hwnd, x, y);
                 });
             }
             log::info!("fix-last dialog created in {:?}", started.elapsed());
@@ -326,6 +340,128 @@ pub fn show(initial: &str, heard_at: Option<Instant>, dict: Dictionary, target: 
     let result = out.borrow_mut().take();
     let at = card.borrow_mut().take();
     (result, at)
+}
+
+/// On macOS the card runs in a process of its own. In Murmur's, the event loop eframe's window
+/// library sets up on the app stops the menu bar icon from opening its menu once the card closes.
+#[cfg(target_os = "macos")]
+pub mod card_process {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::process::{Command, Stdio};
+
+    /// The argument that starts Murmur as the card.
+    pub const FLAG: &str = "--fix-card";
+
+    /// Runs the card in a child process and waits for it.
+    pub(super) fn show(initial: &str, heard_at: Option<Instant>, anchor: Option<caret::Anchor>) -> (Option<String>, Option<(f32, f32)>) {
+        let run = || -> std::io::Result<String> {
+            let mut child = Command::new(std::env::current_exe()?).arg(FLAG).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?;
+            child.stdin.take().expect("piped").write_all(request(initial, heard_at.map(|t| t.elapsed()), anchor).as_bytes())?;
+            let out = child.wait_with_output()?;
+            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        };
+        match run() {
+            Ok(reply) => parse_reply(&reply),
+            Err(e) => {
+                log::error!("fix-last card: {e}");
+                (None, None)
+            }
+        }
+    }
+
+    /// The card process: reads the request on stdin, shows the card, writes the reply on stdout.
+    pub fn run() -> anyhow::Result<()> {
+        let mut input = String::new();
+        std::io::stdin().read_to_string(&mut input)?;
+        let (text, heard_ago, anchor) = parse_request(&input).ok_or_else(|| anyhow::anyhow!("bad fix-card request"))?;
+        let heard_at = heard_ago.and_then(|d| Instant::now().checked_sub(d));
+        let dict = Dictionary::load_or_seed().unwrap_or_default();
+        let (result, at) = card(&text, heard_at, dict, anchor);
+        std::io::stdout().write_all(reply(&result, at).as_bytes())?;
+        Ok(())
+    }
+
+    fn rect(r: &platform::Rect) -> String {
+        format!("{} {} {} {}", r.left, r.top, r.right, r.bottom)
+    }
+
+    /// Line 1: milliseconds since the words were heard, or -. Line 2: the anchor, or -. Then the text.
+    pub(super) fn request(text: &str, heard_ago: Option<Duration>, anchor: Option<caret::Anchor>) -> String {
+        let heard = heard_ago.map_or("-".into(), |d| d.as_millis().to_string());
+        let anchor = match anchor {
+            Some(caret::Anchor::Caret(r)) => format!("caret {}", rect(&r)),
+            Some(caret::Anchor::Area(r)) => format!("area {}", rect(&r)),
+            None => "-".into(),
+        };
+        format!("{heard}\n{anchor}\n{text}")
+    }
+
+    pub(super) fn parse_request(s: &str) -> Option<(String, Option<Duration>, Option<caret::Anchor>)> {
+        let mut lines = s.splitn(3, '\n');
+        let heard = match lines.next()? {
+            "-" => None,
+            ms => Some(Duration::from_millis(ms.parse().ok()?)),
+        };
+        let anchor = match lines.next()? {
+            "-" => None,
+            a => {
+                let mut parts = a.split(' ');
+                let kind = parts.next()?;
+                let n: Vec<i32> = parts.map(|p| p.parse().ok()).collect::<Option<_>>()?;
+                let [left, top, right, bottom] = n[..] else { return None };
+                let r = platform::Rect { left, top, right, bottom };
+                Some(match kind {
+                    "caret" => caret::Anchor::Caret(r),
+                    "area" => caret::Anchor::Area(r),
+                    _ => return None,
+                })
+            }
+        };
+        Some((lines.next().unwrap_or("").to_string(), heard, anchor))
+    }
+
+    /// Line 1: the card's centre, or -. Then = and the edited text, or ! for cancelled.
+    pub(super) fn reply(result: &Option<String>, at: Option<(f32, f32)>) -> String {
+        let at = at.map_or("-".into(), |(x, y)| format!("{x} {y}"));
+        match result {
+            Some(t) => format!("{at}\n={t}"),
+            None => format!("{at}\n!"),
+        }
+    }
+
+    pub(super) fn parse_reply(s: &str) -> (Option<String>, Option<(f32, f32)>) {
+        let (at, rest) = s.split_once('\n').unwrap_or((s, "!"));
+        let at = at.split_once(' ').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)));
+        (rest.strip_prefix('=').map(str::to_string), at)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_request_round_trips_with_a_multi_line_text() {
+            let r = platform::Rect { left: 10, top: -20, right: 30, bottom: 40 };
+            let text = "first line\nsecond = line";
+            for anchor in [Some(caret::Anchor::Caret(r)), Some(caret::Anchor::Area(r)), None] {
+                for heard in [Some(Duration::from_millis(1500)), None] {
+                    assert_eq!(parse_request(&request(text, heard, anchor)), Some((text.to_string(), heard, anchor)));
+                }
+            }
+            assert_eq!(parse_request("x\n-\ntext"), None);
+        }
+
+        #[test]
+        fn a_reply_round_trips_and_nothing_back_is_a_cancel() {
+            for result in [Some("fixed\ntext".to_string()), Some(String::new()), None] {
+                for at in [Some((1.5, -2.0)), None] {
+                    assert_eq!(parse_reply(&reply(&result, at)), (result.clone(), at));
+                }
+            }
+            assert_eq!(parse_reply(""), (None, None), "a card process that died says nothing");
+        }
+    }
 }
 
 #[cfg(test)]

@@ -34,8 +34,8 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            ptt_key: "RControl".into(),
-            model_dir: "%LOCALAPPDATA%\\Murmur\\models\\sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8".into(),
+            ptt_key: DEFAULT_PTT_KEY.into(),
+            model_dir: DEFAULT_MODEL_DIR.into(),
             idle_unload_minutes: 15,
             threads: 8,
             min_silence_ms: 500,
@@ -51,6 +51,22 @@ impl Default for Config {
         }
     }
 }
+
+/// The push-to-talk key out of the box: Right Ctrl, or Right Option on a Mac, which has no Right Ctrl.
+#[cfg(windows)]
+const DEFAULT_PTT_KEY: &str = "RControl";
+#[cfg(not(windows))]
+const DEFAULT_PTT_KEY: &str = "RAlt";
+#[cfg(windows)]
+const DEFAULT_PTT_VK: u16 = VK_RCONTROL;
+#[cfg(not(windows))]
+const DEFAULT_PTT_VK: u16 = 0xA5;
+
+/// Kept as a `%VAR%` path so config.toml holds no user name and still matches the default.
+#[cfg(windows)]
+const DEFAULT_MODEL_DIR: &str = "%LOCALAPPDATA%\\Murmur\\models\\sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8";
+#[cfg(not(windows))]
+const DEFAULT_MODEL_DIR: &str = "%HOME%/Library/Application Support/Murmur/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8";
 
 /// `model_dir` defaults of earlier releases, newest first. When a release pins a new model, the
 /// default it replaces goes here, so installs still on it are offered the new one.
@@ -169,7 +185,9 @@ const VK_F1: u16 = 0x70;
 
 /// (config name, virtual-key code, label) of the PTT keys that aren't function keys. None of them
 /// types anything: the key is watched, not swallowed, so it still reaches the app in front.
-/// A chord is named and labelled in this order.
+/// A chord is named and labelled in this order. The names are the same on both systems; the
+/// labels are what the keys say: Alt is Option and Win is Command on a Mac.
+#[cfg(windows)]
 const PTT_KEYS: [(&str, u16, &str); 10] = [
     ("RControl", VK_RCONTROL, "Right Ctrl"),
     ("LControl", 0xA2, "Left Ctrl"),
@@ -182,9 +200,33 @@ const PTT_KEYS: [(&str, u16, &str); 10] = [
     ("LWin", VK_LWIN, "Left Win"),
     ("RWin", VK_RWIN, "Right Win"),
 ];
+#[cfg(not(windows))]
+const PTT_KEYS: [(&str, u16, &str); 10] = [
+    ("RControl", VK_RCONTROL, "Right Control"),
+    ("LControl", 0xA2, "Left Control"),
+    ("RAlt", 0xA5, "Right Option"),
+    ("LAlt", 0xA4, "Left Option"),
+    ("RShift", VK_RSHIFT, "Right Shift"),
+    ("CapsLock", 0x14, "Caps Lock"),
+    ("ScrollLock", 0x91, "Scroll Lock"),
+    ("Pause", 0x13, "Pause"),
+    ("LWin", VK_LWIN, "Left Command"),
+    ("RWin", VK_RWIN, "Right Command"),
+];
 
-/// Other spellings config.toml accepts.
-const PTT_ALIASES: [(&str, &str); 4] = [("RCtrl", "RControl"), ("LCtrl", "LControl"), ("RMenu", "RAlt"), ("LMenu", "LAlt")];
+/// Other spellings config.toml accepts, Mac key names among them.
+const PTT_ALIASES: [(&str, &str); 10] = [
+    ("RCtrl", "RControl"),
+    ("LCtrl", "LControl"),
+    ("RMenu", "RAlt"),
+    ("LMenu", "LAlt"),
+    ("ROption", "RAlt"),
+    ("LOption", "LAlt"),
+    ("RCommand", "RWin"),
+    ("LCommand", "LWin"),
+    ("RCmd", "RWin"),
+    ("LCmd", "LWin"),
+];
 
 /// Virtual-key code for one key name from config.toml, any case; F1 to F24 included.
 pub fn ptt_vk_of(name: &str) -> Option<u16> {
@@ -310,9 +352,9 @@ impl Config {
             .unwrap_or_else(|| PathBuf::from("silero_vad.onnx"))
     }
 
-    /// Virtual-key codes for the configured PTT key or chord; an unusable setting means Right Ctrl.
+    /// Virtual-key codes for the configured PTT key or chord; an unusable setting means the default key.
     pub fn ptt_vks(&self) -> Vec<u16> {
-        ptt_vks_of(&self.ptt_key).unwrap_or_else(|| vec![VK_RCONTROL])
+        ptt_vks_of(&self.ptt_key).unwrap_or_else(|| vec![DEFAULT_PTT_VK])
     }
 
     /// The PTT key as a person would name it ("Right Ctrl"), for on-screen instructions.
@@ -329,6 +371,11 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The label each system shows for a key.
+    fn label(windows: &'static str, mac: &'static str) -> &'static str {
+        if cfg!(windows) { windows } else { mac }
+    }
 
     fn backup_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("murmur-config-{name}-{}", std::process::id()));
@@ -378,7 +425,7 @@ mod tests {
     #[test]
     fn defaults_match_spec() {
         let c = Config::default();
-        assert_eq!(c.ptt_key, "RControl");
+        assert_eq!(c.ptt_key, if cfg!(windows) { "RControl" } else { "RAlt" });
         assert_eq!(c.idle_unload_minutes, 15);
         assert_eq!(c.threads, 8);
         assert_eq!(c.min_silence_ms, 500);
@@ -398,7 +445,9 @@ mod tests {
     #[test]
     fn ptt_key_names_map_to_vk() {
         let mut c = Config::default();
-        assert_eq!(c.ptt_vks(), [0xA3]); // VK_RCONTROL
+        assert_eq!(c.ptt_vks(), [DEFAULT_PTT_VK]);
+        c.ptt_key = "RControl".into();
+        assert_eq!(c.ptt_vks(), [0xA3]);
         c.ptt_key = "F13".into();
         assert_eq!(c.ptt_vks(), [0x7C]);
         c.ptt_key = "CapsLock".into();
@@ -408,23 +457,23 @@ mod tests {
     #[test]
     fn ptt_key_labels_read_like_the_keyboard() {
         let mut c = Config::default();
-        assert_eq!(c.ptt_key_label(), "Right Ctrl");
+        assert_eq!(c.ptt_key_label(), label("Right Ctrl", "Right Option"));
         c.ptt_key = "lalt".into();
-        assert_eq!(c.ptt_key_label(), "Left Alt");
+        assert_eq!(c.ptt_key_label(), label("Left Alt", "Left Option"));
         c.ptt_key = "F13".into();
         assert_eq!(c.ptt_key_label(), "F13");
         c.ptt_key = "CapsLock".into();
         assert_eq!(c.ptt_key_label(), "Caps Lock");
-        // an unknown name falls back to Right Ctrl, the same key ptt_vk falls back to
+        // an unknown name falls back to the default key, the same key ptt_vk falls back to
         c.ptt_key = "nonsense".into();
-        assert_eq!(c.ptt_key_label(), "Right Ctrl");
+        assert_eq!(c.ptt_key_label(), label("Right Ctrl", "Right Option"));
     }
 
     #[test]
     fn key_names_vks_and_labels_agree() {
         for (name, vk, label) in [
-            ("RControl", 0xA3, "Right Ctrl"),
-            ("LAlt", 0xA4, "Left Alt"),
+            ("RControl", 0xA3, label("Right Ctrl", "Right Control")),
+            ("LAlt", 0xA4, label("Left Alt", "Left Option")),
             ("Pause", 0x13, "Pause"),
             ("F1", 0x70, "F1"),
             ("F13", 0x7C, "F13"),
@@ -436,6 +485,8 @@ mod tests {
         }
         assert_eq!(ptt_vk_of("rctrl"), Some(0xA3));
         assert_eq!(ptt_vk_of("LMENU"), Some(0xA4));
+        assert_eq!(ptt_vk_of("ROption"), Some(0xA5));
+        assert_eq!(ptt_vk_of("rcmd"), Some(0x5C));
         for unknown in ["nonsense", "f", "F0", "F25", ""] {
             assert_eq!(ptt_vk_of(unknown), None, "{unknown}");
         }
@@ -461,8 +512,11 @@ mod tests {
         assert_eq!(ptt_vks_of("lwin + lctrl"), Some(vec![0xA2, 0x5B]), "any case, spaces, in the stored order");
         assert_eq!(ptt_vks_of("LControl+LControl"), Some(vec![0xA2]));
         assert_eq!(ptt_name_of(&[0x5B, 0xA2]).as_deref(), Some("LControl+LWin"));
-        assert_eq!(ptt_label_of(&[0x5B, 0xA2]).as_deref(), Some("Left Ctrl + Left Win"));
-        assert_eq!(ptt_label_of(&[0xA5, 0xA3, 0x5C]).as_deref(), Some("Right Ctrl + Right Alt + Right Win"));
+        assert_eq!(ptt_label_of(&[0x5B, 0xA2]).as_deref(), Some(label("Left Ctrl + Left Win", "Left Control + Left Command")));
+        assert_eq!(
+            ptt_label_of(&[0xA5, 0xA3, 0x5C]).as_deref(),
+            Some(label("Right Ctrl + Right Alt + Right Win", "Right Control + Right Option + Right Command"))
+        );
     }
 
     #[test]
@@ -477,14 +531,14 @@ mod tests {
     }
 
     #[test]
-    fn a_chord_in_config_is_used_and_a_bad_one_falls_back_to_right_ctrl() {
+    fn a_chord_in_config_is_used_and_a_bad_one_falls_back_to_the_default() {
         let mut c = Config::default();
         c.ptt_key = "LControl+LAlt".into();
         assert_eq!(c.ptt_vks(), [0xA2, 0xA4]);
-        assert_eq!(c.ptt_key_label(), "Left Ctrl + Left Alt");
+        assert_eq!(c.ptt_key_label(), label("Left Ctrl + Left Alt", "Left Control + Left Option"));
         c.ptt_key = "LWin".into();
-        assert_eq!(c.ptt_vks(), [0xA3]);
-        assert_eq!(c.ptt_key_label(), "Right Ctrl");
+        assert_eq!(c.ptt_vks(), [DEFAULT_PTT_VK]);
+        assert_eq!(c.ptt_key_label(), label("Right Ctrl", "Right Option"));
         let text = set_ptt_key_line("ptt_key = \"RControl\"
 ", "LControl+LWin");
         assert_eq!(toml::from_str::<Config>(&text).unwrap().ptt_vks(), [0xA2, 0x5B]);

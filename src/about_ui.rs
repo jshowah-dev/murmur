@@ -2,15 +2,14 @@
 //! link that starts the same update as the tray's; a newer release also goes to the tray menu), what Murmur has learned, and the parts that
 //! do the hearing, with their licenses.
 
-use crate::correction_ui::{hwnd_of, keycap, load_system_font, BG, BORDER, GREEN, MUTED, TEXT};
+use crate::correction_ui::{dark_theme, keycap, load_system_font, BG, BORDER, GREEN, MUTED, TEXT};
+use crate::platform::{self, Window};
 use eframe::egui::{self, CornerRadius, Frame, Key, Margin, Modifiers, RichText, Stroke, ViewportCommand};
 use murmur_lib::update::Release;
 use std::cell::Cell;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver};
-use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
 
 const WIDTH: f32 = 420.0;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -82,7 +81,7 @@ struct AboutApp {
     /// The newer release the check found, for the tray to offer once the window is gone.
     found: Rc<Cell<Option<Release>>>,
     clicked: Rc<Cell<bool>>,
-    hwnd: HWND,
+    hwnd: Window,
     frame: u32,
     was_focused: bool,
     /// Set once the window has been asked to close. It's drawn a few more times before it goes:
@@ -111,10 +110,8 @@ impl AboutApp {
         }
         if self.frame == 2 {
             // same as History: take focus once shown, then re-pin topmost
-            unsafe {
-                crate::correction::bring_to_front(self.hwnd);
-                let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            }
+            platform::raise(self.hwnd);
+            platform::keep_on_top(self.hwnd);
         }
         if let Some(u) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             if let Update::Available(r) = &u {
@@ -205,6 +202,38 @@ impl AboutApp {
 /// Shows the About window, centred on screen. Blocks until closed, returning the newer release its
 /// check found, if any, and whether its update link was clicked.
 pub fn show(model: String, terms: usize, installed: bool) -> Option<(Release, bool)> {
+    #[cfg(windows)]
+    return window(model, terms, installed);
+    #[cfg(target_os = "macos")]
+    crate::child::ask(FLAG, &Request { model, terms, installed }).map(|r: Reply| (r.release, r.clicked))
+}
+
+/// The argument that starts Murmur as the About window.
+#[cfg(target_os = "macos")]
+pub const FLAG: &str = "--about";
+
+#[cfg(target_os = "macos")]
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+struct Request {
+    model: String,
+    terms: usize,
+    installed: bool,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+struct Reply {
+    release: Release,
+    clicked: bool,
+}
+
+/// The About window's process.
+#[cfg(target_os = "macos")]
+pub fn run_child() -> anyhow::Result<()> {
+    crate::child::serve(|r: Request| window(r.model, r.terms, r.installed).map(|(release, clicked)| Reply { release, clicked }))
+}
+
+fn window(model: String, terms: usize, installed: bool) -> Option<(Release, bool)> {
     let found = Rc::new(Cell::new(None));
     let clicked = Rc::new(Cell::new(false));
     let (app_found, app_clicked) = (found.clone(), clicked.clone());
@@ -224,9 +253,9 @@ pub fn show(model: String, terms: usize, installed: bool) -> Option<(Release, bo
         "murmur-about",
         opts,
         Box::new(move |cc| {
-            cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            dark_theme(&cc.egui_ctx);
             load_system_font(&cc.egui_ctx);
-            let hwnd = hwnd_of(cc).unwrap_or_default();
+            let hwnd = platform::window_of(cc);
             Ok(Box::new(AboutApp { model, terms, update: Update::Checking, rx: None, installed, found: app_found, clicked: app_clicked, hwnd, frame: 0, was_focused: false, closing: false, height: 0.0 }))
         }),
     );
@@ -240,11 +269,21 @@ pub fn show(model: String, terms: usize, installed: bool) -> Option<(Release, bo
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_request_and_a_release_cross_to_and_from_the_child() {
+        let r = Request { model: "Parakeet TDT 0.6B v2".into(), terms: 12, installed: true };
+        assert_eq!(crate::child::round_trip(&r), Some(r));
+        let release = Release { tag: "0.5.0".into(), setup_url: "https://example.com/s.exe".into(), setup_size: 123_456_789, sha_url: "https://example.com/s.sha256".into() };
+        let reply = Reply { release, clicked: true };
+        assert_eq!(crate::child::round_trip(&reply), Some(reply));
+    }
+
     #[test]
     fn model_label_names_parakeet_and_falls_back_to_the_folder() {
-        let p = Path::new(r"C:\m\sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8");
-        assert_eq!(model_label(p), "Parakeet TDT 0.6B v2 (NVIDIA)");
-        assert_eq!(model_label(Path::new(r"C:\m\whisper-small")), "whisper-small");
+        let p = Path::new("m").join("sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8");
+        assert_eq!(model_label(&p), "Parakeet TDT 0.6B v2 (NVIDIA)");
+        assert_eq!(model_label(&Path::new("m").join("whisper-small")), "whisper-small");
     }
 
     /// Past the frames that start the update check and take focus, so a test touches neither.
@@ -257,7 +296,7 @@ mod tests {
             installed: true,
             found: Rc::new(Cell::new(None)),
             clicked: Rc::new(Cell::new(false)),
-            hwnd: HWND::default(),
+            hwnd: Window::default(),
             frame: 5,
             was_focused: false,
             closing: false,

@@ -2,7 +2,7 @@
 //! into any `egui::Ui`; the editor window hosts it as a tab beside the dictionary.
 
 use crate::correction_ui::{AMBER, GREEN, MUTED, TEXT};
-use crate::editor_kit::{has_comments, open_file, progress, reduced_motion, RED};
+use crate::editor_kit::{has_comments, open_file, progress, reduced_motion, CMD, RED};
 use crate::motion;
 use eframe::egui::{
     self, Align, Button, CentralPanel, Frame, Key, Layout, Margin, Modifiers, Panel, RichText, ScrollArea, Sense, TextEdit, UiBuilder,
@@ -270,7 +270,7 @@ impl SnippetsPanel {
             });
             return;
         }
-        if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::S)) {
+        if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)) {
             self.save();
         }
         let issues = self.issues();
@@ -455,7 +455,7 @@ impl SnippetsPanel {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             // errors still held back for a new snippet don't disable Save: pressing it shows them
             let can = self.is_dirty() && !issues.iter().any(|x| x.error);
-            if ui.add_enabled(can, Button::new("Save")).on_hover_text("Ctrl+S").clicked() {
+            if ui.add_enabled(can, Button::new("Save")).on_hover_text(format!("{CMD}S")).clicked() {
                 self.save();
             }
             if n > 0 {
@@ -534,6 +534,17 @@ mod tests {
         assert!(panel.save());
         assert!(!panel.is_dirty());
         assert_eq!(on_disk(&p)[1], Snippet { trigger: "my mail".into(), text: "\n me@example.com \n".into() });
+    }
+
+    #[test]
+    fn the_command_key_with_s_saves() {
+        let p = temp_file("cmd-s", TWO);
+        let mut panel = SnippetsPanel::new(p.clone());
+        let ctx = egui::Context::default();
+        panel.working[0].text = "Cheers".into();
+        frame(&ctx, &mut panel, egui::vec2(736.0, 536.0), vec![crate::editor_kit::command_key(Key::S)]);
+        assert!(!panel.is_dirty());
+        assert_eq!(on_disk(&p)[0].text, "Cheers");
     }
 
     #[test]

@@ -1,8 +1,15 @@
+#[cfg(windows)]
 use anyhow::{anyhow, Result};
+#[cfg(windows)]
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+#[cfg(windows)]
+use windows::Win32::Foundation::{ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use crate::platform::Rect as RECT;
+#[cfg(windows)]
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+#[cfg(windows)]
 use windows::Win32::Foundation::GetLastError;
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos, GetForegroundWindow, GetWindowRect, LoadCursorW, PeekMessageW,
     RegisterClassW, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, GWL_EXSTYLE,
@@ -10,12 +17,19 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WM_QUIT,
     WM_MOUSEMOVE, WM_RBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
+#[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
+#[cfg(windows)]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-use crate::editor_kit::{ease, reduced_motion};
+use crate::editor_kit::ease;
+#[cfg(windows)]
+use crate::editor_kit::reduced_motion;
 use crate::motion;
-use crate::canvas::{self, Canvas};
+use crate::canvas::Canvas;
+#[cfg(windows)]
+use crate::canvas;
+#[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{MonitorFromWindow, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -47,17 +61,21 @@ const IDLE_H: i32 = 14;
 
 /// The resting pill takes clicks so it can be right-clicked; the live pill is bigger and only
 /// shows while you dictate, so it lets every click through to the app underneath.
+#[cfg(windows)]
 fn ex_style(state: OverlayState) -> WINDOW_EX_STYLE {
     let base = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
     if state.is_resting() { base } else { base | WS_EX_TRANSPARENT }
 }
 
 /// Set by the window procedure, taken by the main loop, which shows the menu.
+#[cfg(windows)]
 static RIGHT_CLICKED: AtomicBool = AtomicBool::new(false);
 /// winuser.h; the windows crate only exports it with the Win32_UI_Controls feature
+#[cfg(windows)]
 const WM_MOUSELEAVE: u32 = 0x02A3;
 
 /// Whether the cursor is over the pill.
+#[cfg(windows)]
 static HOVERED: AtomicBool = AtomicBool::new(false);
 
 /// Centres of the "more" dots that hint at the right-click menu, right of the status dot.
@@ -154,8 +172,9 @@ fn size(g: f32) -> (i32, i32) {
     (lerp(IDLE_W, W), lerp(IDLE_H, H))
 }
 
-pub struct Overlay {
-    hwnd: HWND,
+/// What the pill shows and how far each of its motions has run, apart from the window it's drawn
+/// in: the same on both systems.
+struct Pill {
     state: OverlayState,
     look: Look,
     processing_at: Option<Instant>,
@@ -164,6 +183,93 @@ pub struct Overlay {
     reduced: bool,
 }
 
+impl Pill {
+    fn new(reduced: bool) -> Pill {
+        Pill { state: OverlayState::Idle, look: Look::default(), processing_at: None, pulse_at: None, stepped_at: Instant::now(), reduced }
+    }
+
+    fn set(&mut self, state: OverlayState) {
+        if state != OverlayState::Processing {
+            self.processing_at = None;
+        } else if self.state != OverlayState::Processing {
+            self.processing_at = Some(Instant::now());
+        }
+        self.state = state;
+        if !state.is_resting() {
+            self.look.hover = 0.0;
+        }
+    }
+
+    /// Steps every per-frame value one frame toward where the state and cursor say it should be.
+    /// `hovered` is the cursor being on the pill; `near` is asked only when the resting pill
+    /// shows it. True when the look changed and needs painting.
+    fn step(&mut self, hovered: bool, near: impl FnOnce() -> (f32, f32)) -> bool {
+        let now = Instant::now();
+        let dt = now - self.stepped_at;
+        self.stepped_at = now;
+        let resting = self.state.is_resting();
+        let mut look = self.look;
+        look.hover = step(look.hover, resting && hovered, dt, motion::duration::HOVER, motion::duration::EXIT, self.reduced);
+        look.grow = step(look.grow, !resting, dt, motion::duration::ENTER, motion::duration::EXIT, self.reduced);
+        let target = match self.state {
+            OverlayState::Listening(l) | OverlayState::Locked(l) => l.clamp(0.0, 1.0),
+            _ => 0.0,
+        };
+        look.level = follow(look.level, target, dt, self.reduced);
+        // still at silence, so a quiet pill doesn't repaint every frame
+        if look.level > 0.01 && !self.reduced {
+            look.phase = (look.phase + dt.as_secs_f32()) % 1000.0;
+        }
+        let (near, near_x) = if resting && !self.reduced { near() } else { (0.0, look.near_x) };
+        // quantized so a still cursor or a far one causes no repaints
+        look.near = (near * 64.0).round() / 64.0;
+        look.near_x = (near_x * 64.0).round() / 64.0;
+        look.pulse = match self.pulse_at {
+            Some(t0) => {
+                let p = (now - t0).as_secs_f32() / motion::scaled(motion::duration::EMPHASIS).as_secs_f32();
+                if p >= 1.0 {
+                    self.pulse_at = None;
+                    0.0
+                } else if self.reduced {
+                    // no bloom, just a brighter dot for the same moment
+                    0.5
+                } else {
+                    p.max(0.001)
+                }
+            }
+            None => 0.0,
+        };
+        look.dot = self.processing_at.map_or(0, |t0| processing_dot(now - t0));
+        let changed = look != self.look;
+        self.look = look;
+        changed
+    }
+
+    /// True when it changed.
+    fn set_quiet(&mut self, quiet: bool) -> bool {
+        let changed = self.look.quiet != quiet;
+        self.look.quiet = quiet;
+        changed
+    }
+
+    /// One soft pulse of the resting dot: your words landed.
+    fn pulse(&mut self) {
+        self.pulse_at = Some(Instant::now());
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod mac;
+#[cfg(target_os = "macos")]
+pub use mac::{live, Overlay};
+
+#[cfg(windows)]
+pub struct Overlay {
+    hwnd: HWND,
+    pill: Pill,
+}
+
+#[cfg(windows)]
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_MOUSEMOVE if !HOVERED.swap(true, Ordering::Relaxed) => {
@@ -182,10 +288,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
 }
 
+#[cfg(windows)]
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+#[cfg(windows)]
 impl Overlay {
     pub fn create() -> Result<Overlay> {
         unsafe {
@@ -210,7 +318,7 @@ impl Overlay {
                 0, 0, W, H,
                 None, None, Some(hinst.into()), None,
             )?;
-            Ok(Overlay { hwnd, state: OverlayState::Idle, look: Look::default(), processing_at: None, pulse_at: None, stepped_at: Instant::now(), reduced: reduced_motion() })
+            Ok(Overlay { hwnd, pill: Pill::new(reduced_motion()) })
         }
     }
 
@@ -228,7 +336,7 @@ impl Overlay {
     }
 
     fn paint(&mut self) {
-        let (w, h, pixels) = render(self.state, self.look);
+        let (w, h, pixels) = render(self.pill.state, self.pill.look);
         let (x, y) = self.target_position(w, h);
         canvas::push(self.hwnd, x, y, w, h, &pixels);
     }
@@ -251,22 +359,16 @@ impl Overlay {
         })
     }
 
-    pub fn hwnd(&self) -> HWND {
-        self.hwnd
+    pub fn hwnd(&self) -> crate::platform::Window {
+        crate::platform::Window(self.hwnd.0 as isize)
     }
 
     pub fn set(&mut self, state: OverlayState) {
-        let was_resting = self.state.is_resting();
-        if state != OverlayState::Processing {
-            self.processing_at = None;
-        } else if self.state != OverlayState::Processing {
-            self.processing_at = Some(Instant::now());
-        }
-        self.state = state;
+        let was_resting = self.pill.state.is_resting();
+        self.pill.set(state);
         if !state.is_resting() {
             // the live pill is click-through, so no leave message will come
             HOVERED.store(false, Ordering::Relaxed);
-            self.look.hover = 0.0;
         }
         self.paint();
         unsafe {
@@ -281,77 +383,28 @@ impl Overlay {
 
     /// Re-paint the resting pill so it follows the foreground window's monitor.
     pub fn refresh_resting(&mut self) {
-        if self.state.is_resting() {
+        if self.pill.state.is_resting() {
             self.paint();
         }
     }
 
-    /// Steps every per-frame value one frame toward where the state and cursor say it should be;
-    /// repaints only when the look changed.
+    /// Steps the pill one frame; repaints only when the look changed.
     pub fn animate(&mut self) {
-        let now = Instant::now();
-        let dt = now - self.stepped_at;
-        self.stepped_at = now;
-        let resting = self.state.is_resting();
-        let mut look = self.look;
-        look.hover = step(look.hover, resting && HOVERED.load(Ordering::Relaxed), dt, motion::duration::HOVER, motion::duration::EXIT, self.reduced);
-        look.grow = step(look.grow, !resting, dt, motion::duration::ENTER, motion::duration::EXIT, self.reduced);
-        let target = match self.state {
-            OverlayState::Listening(l) | OverlayState::Locked(l) => l.clamp(0.0, 1.0),
-            _ => 0.0,
-        };
-        look.level = follow(look.level, target, dt, self.reduced);
-        // still at silence, so a quiet pill doesn't repaint every frame
-        if look.level > 0.01 && !self.reduced {
-            look.phase = (look.phase + dt.as_secs_f32()) % 1000.0;
-        }
-        let (near, near_x) = if resting && !self.reduced { self.cursor_nearness() } else { (0.0, look.near_x) };
-        // quantized so a still cursor or a far one causes no repaints
-        look.near = (near * 64.0).round() / 64.0;
-        look.near_x = (near_x * 64.0).round() / 64.0;
-        look.pulse = match self.pulse_at {
-            Some(t0) => {
-                let p = (now - t0).as_secs_f32() / motion::scaled(motion::duration::EMPHASIS).as_secs_f32();
-                if p >= 1.0 {
-                    self.pulse_at = None;
-                    0.0
-                } else if self.reduced {
-                    // no bloom, just a brighter dot for the same moment
-                    0.5
-                } else {
-                    p.max(0.001)
-                }
-            }
-            None => 0.0,
-        };
-        look.dot = self.processing_at.map_or(0, |t0| processing_dot(now - t0));
-        if look != self.look {
-            self.look = look;
+        let hwnd = self.hwnd;
+        if self.pill.step(HOVERED.load(Ordering::Relaxed), || cursor_nearness(hwnd)) {
             self.paint();
         }
     }
 
     pub fn set_quiet(&mut self, quiet: bool) {
-        if self.look.quiet != quiet {
-            self.look.quiet = quiet;
+        if self.pill.set_quiet(quiet) {
             self.paint();
         }
     }
 
     /// One soft pulse of the resting dot: your words landed.
     pub fn pulse(&mut self) {
-        self.pulse_at = Some(Instant::now());
-    }
-
-    fn cursor_nearness(&self) -> (f32, f32) {
-        unsafe {
-            let mut pt = POINT::default();
-            let mut r = RECT::default();
-            if GetCursorPos(&mut pt).is_err() || GetWindowRect(self.hwnd, &mut r).is_err() {
-                return (0.0, 0.5);
-            }
-            nearness((pt.x, pt.y), r)
-        }
+        self.pill.pulse();
     }
 
     /// True once per right-click on the pill.
@@ -375,13 +428,32 @@ impl Overlay {
     }
 }
 
+/// (strength, where along) for the cursor near the pill window `hwnd`.
+#[cfg(windows)]
+fn cursor_nearness(hwnd: HWND) -> (f32, f32) {
+    unsafe {
+        let mut pt = POINT::default();
+        let mut r = RECT::default();
+        if GetCursorPos(&mut pt).is_err() || GetWindowRect(hwnd, &mut r).is_err() {
+            return (0.0, 0.5);
+        }
+        nearness((pt.x, pt.y), r)
+    }
+}
+
 /// Paint `state` into premultiplied BGRA pixels, row-major, `w * h` long. The size follows
 /// `look.grow`; `look.hover` wakes the resting pill (full body opacity plus the "more" dots).
+#[cfg_attr(target_os = "macos", allow(dead_code))] // macOS draws at the screen's scale
 fn render(state: OverlayState, look: Look) -> (i32, i32, Vec<u32>) {
+    render_scaled(state, look, 1.0)
+}
+
+/// `render` at `scale` pixels per unit: (w, h) stay in units, the pixels are `scale` times as many each way.
+fn render_scaled(state: OverlayState, look: Look, scale: f32) -> (i32, i32, Vec<u32>) {
     let grow = ease(motion::easing::STANDARD, look.grow.clamp(0.0, 1.0));
     let hover = if state.is_resting() { ease(motion::easing::STANDARD, look.hover.clamp(0.0, 1.0)) } else { 0.0 };
     let (w, h) = size(grow);
-    let mut c = Canvas::new(w, h);
+    let mut c = Canvas::scaled(w, h, scale);
     let (wf, hf) = (w as f32, h as f32);
     let (_, _, rest_alpha) = OverlayState::Idle.geometry();
     let (_, _, live_alpha) = OverlayState::Processing.geometry();
@@ -627,6 +699,7 @@ mod tests {
         assert_eq!(step(1.0, false, ms(1), motion::duration::HOVER, motion::duration::EXIT, true), 0.0);
     }
 
+    #[cfg(windows)] // window styles
     #[test]
     fn only_the_resting_pill_takes_clicks() {
         for state in [OverlayState::Idle, OverlayState::Paused] {

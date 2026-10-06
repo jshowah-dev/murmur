@@ -2,17 +2,13 @@
 //! process, so dictation keeps working while it's open. One editor at a time; a second launch
 //! brings the first forward.
 
-use crate::correction_ui::{load_system_font, BG};
+use crate::correction_ui::{dark_theme, load_system_font, BG};
 use crate::dictionary_panel::DictionaryPanel;
 use crate::snippets_panel::SnippetsPanel;
 use anyhow::Result;
 use eframe::egui::{self, Frame, Id, Margin, Modal, Panel, RichText, ViewportCommand};
 use std::path::PathBuf;
 use std::sync::Arc;
-use windows::core::{HSTRING, PCWSTR};
-use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
-use windows::Win32::System::Threading::{CreateMutexW, OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
-use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, IsIconic, ShowWindow, SW_RESTORE};
 
 const TITLE: &str = "Murmur — Dictionary & Snippets";
 // unchanged from the dictionary-only editor, so an update still sees an editor left open by it
@@ -47,19 +43,9 @@ impl Tab {
     }
 }
 
-fn mutex_exists(name: &str) -> bool {
-    match unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, &HSTRING::from(name)) } {
-        Ok(h) => {
-            let _ = unsafe { CloseHandle(h) };
-            true
-        }
-        Err(_) => false,
-    }
-}
-
 /// Whether an editor process is running, from outside it: an update would force-close it.
 pub fn is_open() -> bool {
-    mutex_exists(MUTEX)
+    crate::platform::instance_exists(MUTEX)
 }
 
 enum CloseChoice {
@@ -199,19 +185,6 @@ impl EditorApp {
     }
 }
 
-/// Brings an already-open editor to the front. If its window isn't up yet, does nothing.
-fn focus_existing() {
-    unsafe {
-        if let Ok(hwnd) = FindWindowW(PCWSTR::null(), &HSTRING::from(TITLE)) {
-            // SW_RESTORE would also un-maximize, so only use it on a minimized window
-            if IsIconic(hwnd).as_bool() {
-                let _ = ShowWindow(hwnd, SW_RESTORE);
-            }
-            crate::correction::bring_to_front(hwnd);
-        }
-    }
-}
-
 /// eframe remembers the window's size and position in `state`, and keeps it on a connected monitor.
 fn options(state: PathBuf) -> eframe::NativeOptions {
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/murmur.png")).unwrap_or_default();
@@ -230,20 +203,19 @@ fn options(state: PathBuf) -> eframe::NativeOptions {
 
 pub fn run(tab: Tab) -> Result<()> {
     log::info!("editor starting on {tab:?}");
-    let _instance = unsafe {
-        let m = CreateMutexW(None, false, &HSTRING::from(MUTEX))?;
-        if GetLastError() == ERROR_ALREADY_EXISTS {
-            focus_existing();
-            return Ok(());
-        }
-        m
+    let Some(_instance) = crate::platform::single_instance(MUTEX)? else {
+        // brings an already-open editor to the front; if its window isn't up yet, does nothing
+        crate::platform::raise_titled(TITLE);
+        return Ok(());
     };
+    #[cfg(target_os = "macos")]
+    crate::platform::show_in_dock();
     let app = EditorApp::new(murmur_lib::dictionary::path(), murmur_lib::snippets::path(), tab);
     eframe::run_native(
         "murmur-dictionary",
         options(murmur_lib::config::config_dir().join("editor.ron")),
         Box::new(move |cc| {
-            cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            dark_theme(&cc.egui_ctx);
             load_system_font(&cc.egui_ctx);
             Ok(Box::new(app))
         }),
@@ -295,13 +267,15 @@ mod tests {
     }
 
     #[test]
-    fn a_held_mutex_is_seen_from_outside() {
-        let name = format!("Local\\Murmur.Test.{}", std::process::id());
-        assert!(!mutex_exists(&name));
-        let held = unsafe { CreateMutexW(None, false, &HSTRING::from(name.as_str())) }.unwrap();
-        assert!(mutex_exists(&name));
-        unsafe { CloseHandle(held) }.unwrap();
-        assert!(!mutex_exists(&name));
+    fn a_held_instance_is_seen_from_outside() {
+        let name = format!("Local\\Murmur.Test{}", std::process::id());
+        assert!(!crate::platform::instance_exists(&name));
+        let held = crate::platform::single_instance(&name).unwrap();
+        assert!(held.is_some());
+        assert!(crate::platform::instance_exists(&name));
+        assert!(crate::platform::single_instance(&name).unwrap().is_none());
+        drop(held);
+        assert!(!crate::platform::instance_exists(&name));
     }
 
     #[test]

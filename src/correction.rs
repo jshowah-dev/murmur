@@ -5,30 +5,12 @@ use crate::inject;
 use crate::mote::Message;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use windows::Win32::Foundation::HWND;
-use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow, SetWindowPos, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOMOVE,
-    SWP_NOSIZE,
-};
 
-/// Windows only lets the process that received the last input activate a window. The hotkey
-/// press went to the target app, so attach to its input queue for the activation call;
-/// without this the dialog opens behind the target and merely flashes on the taskbar.
-pub(crate) unsafe fn bring_to_front(hwnd: HWND) {
-    unsafe {
-        let fg = GetForegroundWindow();
-        let fg_tid = GetWindowThreadProcessId(fg, None);
-        let me = GetCurrentThreadId();
-        let attached = fg_tid != 0 && fg_tid != me && AttachThreadInput(fg_tid, me, true).as_bool();
-        let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-        let _ = SetWindowPos(hwnd, Some(HWND_NOTOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-        let _ = SetForegroundWindow(hwnd);
-        if attached {
-            let _ = AttachThreadInput(fg_tid, me, false);
-        }
-    }
-}
+/// The paste shortcut, as the fix-last message names it.
+#[cfg(windows)]
+const PASTE: &str = "Ctrl+V";
+#[cfg(target_os = "macos")]
+const PASTE: &str = "⌘V";
 
 /// What fix-last did, for the mote to say at the caret.
 #[derive(Debug, Default, PartialEq)]
@@ -86,8 +68,8 @@ pub(crate) fn fix_message(o: &FixOutcome) -> Option<Message> {
     match (spans.is_empty(), o.copied) {
         (true, false) if o.replaced => spans.push(("Replaced".into(), text)),
         (true, false) => return None,
-        (true, true) => spans.push(("Copied, press Ctrl+V to paste".into(), text)),
-        (false, true) => spans.push((" · Copied, press Ctrl+V".into(), text)),
+        (true, true) => spans.push((format!("Copied, press {PASTE} to paste"), text)),
+        (false, true) => spans.push((format!(" · Copied, press {PASTE}"), text)),
         // "Learned …" already says the edit landed; "Not learned" doesn't
         (false, false) if o.replaced && o.learned.is_empty() => spans.push((" · Replaced".into(), text)),
         (false, false) => {}
@@ -102,7 +84,7 @@ pub fn fix_last(history: &mut History, dict: &Arc<Mutex<Dictionary>>) -> FixOutc
     let target_hwnd = inject::foreground_hwnd();
     let snapshot = dict.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let heard_at = last.inject.as_ref().map(|r| r.at);
-    let (edited, card) = correction_ui::show(&last.cleaned, heard_at, snapshot, HWND(target_hwnd as *mut _));
+    let (edited, card) = correction_ui::show(&last.cleaned, heard_at, snapshot, target_hwnd);
     let mut out = FixOutcome { card, ..Default::default() };
     let Some(edited) = edited else { return out };
     let edited = edited.trim().to_string();
@@ -144,7 +126,7 @@ fn paste_or_copy_correction(history: &mut History, last: &crate::history::Entry,
         .unwrap_or(false);
     if fresh {
         // the dialog took focus; hand it back to the target before undo+paste
-        unsafe { bring_to_front(HWND(target_hwnd as *mut _)) };
+        crate::platform::focus_target(target_hwnd);
         std::thread::sleep(Duration::from_millis(150));
         if inject::foreground_hwnd() == target_hwnd {
             match inject::undo_then_paste(&edited) {
@@ -175,7 +157,7 @@ mod tests {
 
     fn unreadable(line: Option<usize>) -> Option<crate::notice::FileProblem> {
         Some(crate::notice::FileProblem {
-            path: "C:\\m\\dictionary.toml".into(),
+            path: std::path::Path::new("m").join("dictionary.toml"),
             line,
             reason: "expected `=`.".into(),
             effect: crate::notice::Effect::CorrectionsOff,
@@ -187,7 +169,7 @@ mod tests {
         let m = fix_message(&FixOutcome { not_learned: unreadable(Some(12)), replaced: true, ..Default::default() }).unwrap();
         assert_eq!(text(&m), "Not learned: dictionary.toml line 12 has a mistake · Replaced");
         let m = fix_message(&FixOutcome { not_learned: unreadable(Some(12)), copied: true, ..Default::default() }).unwrap();
-        assert_eq!(text(&m), "Not learned: dictionary.toml line 12 has a mistake · Copied, press Ctrl+V");
+        assert_eq!(text(&m), format!("Not learned: dictionary.toml line 12 has a mistake · Copied, press {PASTE}"));
         let m = fix_message(&FixOutcome { not_learned: unreadable(None), ..Default::default() }).unwrap();
         assert_eq!(text(&m), "Not learned: dictionary.toml can't be read");
     }
@@ -210,9 +192,9 @@ mod tests {
     #[test]
     fn copied_alone_and_with_learned() {
         let m = fix_message(&FixOutcome { copied: true, ..Default::default() }).unwrap();
-        assert_eq!(text(&m), "Copied, press Ctrl+V to paste");
+        assert_eq!(text(&m), format!("Copied, press {PASTE} to paste"));
         let m = fix_message(&FixOutcome { copied: true, learned: learned(1), ..Default::default() }).unwrap();
-        assert_eq!(text(&m), "Learned hob0 → HAWB0 · Copied, press Ctrl+V");
+        assert_eq!(text(&m), format!("Learned hob0 → HAWB0 · Copied, press {PASTE}"));
     }
 
     #[test]
