@@ -29,7 +29,6 @@ pub enum Anchor {
 }
 
 impl Anchor {
-    #[cfg(windows)]
     fn rect(&self) -> RECT {
         match *self {
             Anchor::Caret(r) | Anchor::Area(r) => r,
@@ -63,12 +62,10 @@ pub fn find(target: isize) -> Option<Anchor> {
     ax::find(target)
 }
 
-/// The usable part of the screen you're working on.
-// TODO(macos phase 2): the screen the anchor is on, for a second display.
+/// The usable part of the screen the anchor is on, or the nearest one.
 #[cfg(target_os = "macos")]
-pub fn work_area(_anchor: &Anchor) -> RECT {
-    let ((x, y, w, h), _) = crate::platform::work_area();
-    RECT { left: x as i32, top: y as i32, right: (x + w) as i32, bottom: (y + h) as i32 }
+pub fn work_area(anchor: &Anchor) -> RECT {
+    crate::platform::work_area_at(anchor.rect())
 }
 
 #[cfg(target_os = "macos")]

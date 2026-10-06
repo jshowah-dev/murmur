@@ -111,9 +111,7 @@ pub fn move_to(w: Window, x: i32, y: i32) {
 /// `w`'s frame in points from the top-left of the main display.
 pub fn window_rect(w: Window) -> Option<Rect> {
     let (win, mtm) = (ns_window(w)?, MainThreadMarker::new()?);
-    let f = win.frame();
-    let top = primary_height(mtm) - (f.origin.y + f.size.height);
-    Some(Rect { left: f.origin.x as i32, top: top as i32, right: (f.origin.x + f.size.width) as i32, bottom: (top + f.size.height) as i32 })
+    Some(flipped(win.frame(), primary_height(mtm)))
 }
 
 pub fn is_minimized(_w: Window) -> bool {
@@ -217,6 +215,33 @@ pub fn frontmost_pid() -> isize {
 /// The height of the display with the menu bar, which AppKit's bottom-up coordinates start from.
 fn primary_height(mtm: MainThreadMarker) -> f64 {
     NSScreen::screens(mtm).firstObject().map_or(0.0, |s| s.frame().size.height)
+}
+
+/// An AppKit rect (bottom-up from the main display) as a top-left one.
+fn flipped(r: NSRect, primary: f64) -> Rect {
+    let top = primary - (r.origin.y + r.size.height);
+    Rect { left: r.origin.x as i32, top: top as i32, right: (r.origin.x + r.size.width) as i32, bottom: (top + r.size.height) as i32 }
+}
+
+/// The usable part (no menu bar, no Dock) of the screen holding `at`, or of the nearest screen
+/// to it, in points from the top-left of the main display.
+pub fn work_area_at(at: Rect) -> Rect {
+    let Some(mtm) = MainThreadMarker::new() else { return Rect { left: 0, top: 0, right: 1440, bottom: 900 } };
+    let primary = primary_height(mtm);
+    let screens: Vec<(Rect, Rect)> = NSScreen::screens(mtm).iter().map(|s| (flipped(s.frame(), primary), flipped(s.visibleFrame(), primary))).collect();
+    nearest_screen(&screens, at).unwrap_or(Rect { left: 0, top: 0, right: 1440, bottom: 900 })
+}
+
+/// Of `screens` as (frame, usable area), the usable area of the one holding `at`'s centre, else
+/// of the one nearest it.
+fn nearest_screen(screens: &[(Rect, Rect)], at: Rect) -> Option<Rect> {
+    let (cx, cy) = ((at.left + at.right) / 2, (at.top + at.bottom) / 2);
+    let gap = |f: &Rect| {
+        let dx = (f.left - cx).max(cx - (f.right - 1)).max(0) as i64;
+        let dy = (f.top - cy).max(cy - (f.bottom - 1)).max(0) as i64;
+        dx * dx + dy * dy
+    };
+    screens.iter().min_by_key(|(frame, _)| gap(frame)).map(|&(_, work)| work)
 }
 
 /// The usable part (no menu bar, no Dock) of the screen you're working on, as (x, y, w, h) points
@@ -372,6 +397,32 @@ impl Stage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn r(left: i32, top: i32, right: i32, bottom: i32) -> Rect {
+        Rect { left, top, right, bottom }
+    }
+
+    #[test]
+    fn the_work_area_is_the_screens_the_caret_is_on_or_the_nearest() {
+        // a laptop with the menu bar, and a display to its right that sits 200 points higher
+        let laptop = (r(0, 0, 1710, 1107), r(0, 33, 1710, 1020));
+        let right = (r(1710, -200, 4270, 1240), r(1710, -200, 4270, 1240));
+        let screens = [laptop, right];
+        let caret = |x, y| r(x, y, x, y + 18);
+        assert_eq!(nearest_screen(&screens, caret(400, 500)), Some(laptop.1));
+        assert_eq!(nearest_screen(&screens, caret(2000, -100)), Some(right.1), "above the laptop's top edge");
+        assert_eq!(nearest_screen(&screens, caret(1709, 500)), Some(laptop.1), "the laptop's last column");
+        assert_eq!(nearest_screen(&screens, caret(1710, 500)), Some(right.1), "the right display's first column");
+        assert_eq!(nearest_screen(&screens, caret(-50, 300)), Some(laptop.1), "off every screen: the nearest");
+        assert_eq!(nearest_screen(&screens, caret(5000, 1300)), Some(right.1));
+        assert_eq!(nearest_screen(&[], caret(0, 0)), None);
+    }
+
+    #[test]
+    fn an_appkit_rect_flips_to_top_left() {
+        let f = NSRect::new(NSPoint::new(10.0, 87.0), NSSize::new(1710.0, 986.0));
+        assert_eq!(flipped(f, 1107.0), r(10, 34, 1720, 1020));
+    }
 
     #[test]
     fn each_side_of_a_modifier_has_its_own_bit() {
