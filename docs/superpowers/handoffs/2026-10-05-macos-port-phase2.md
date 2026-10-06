@@ -1,5 +1,7 @@
 # Handoff: Murmur on macOS, phase 2 under way (2026-10-05, evening)
 
+> **Update, same session (27f73d6):** the ⌘ shortcuts are committed, and fix-last's card now runs in its own process (`murmur --fix-card`), because in Murmur's process it left the menu bar icon unable to open its menu once the card closed. Jeff confirmed the menu works after fix-last. Root cause in-process not found: not the text field's focus, not TextInputUI's `TUINSWindow`; clicks reach the status item's window, but its menu never opens. macOS drops synthetic clicks on the menu bar (from osascript, Swift CGEventPost, and Murmur itself), so only Jeff's real clicks can test it. Still untested: the editor's ⌘S. Windows CI not run since 50231b1.
+
 **State:** dwell, speaker mute, Open at Login done and pushed; the egui windows open on macOS (History, key picker, About confirmed by Jeff); ⌘ shortcuts written but **uncommitted and untested**.
 
 Supersedes `docs/superpowers/handoffs/2026-10-05-macos-port.md`. Its state section and "Do next" are out of date; its layout, build/run/test steps, signing, pushing, decisions table, and phases 2–4 lists still stand.
