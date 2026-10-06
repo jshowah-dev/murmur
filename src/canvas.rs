@@ -27,6 +27,7 @@ pub(crate) fn pixels(units: i32, scale: f32) -> i32 {
 }
 
 impl Canvas {
+    #[cfg(test)]
     pub(crate) fn new(w: i32, h: i32) -> Self {
         Canvas::scaled(w, h, 1.0)
     }

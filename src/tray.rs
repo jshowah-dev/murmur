@@ -90,7 +90,7 @@ fn icon(paused: bool, _live: bool) -> Icon {
 fn icon(paused: bool, live: bool) -> Icon {
     const PX: i32 = 36;
     let shape = |inset: f32| {
-        let mut c = crate::canvas::Canvas::new(PX, PX);
+        let mut c = crate::canvas::Canvas::scaled(PX, PX, 1.0);
         c.capsule(12.0 + inset, 3.0 + inset, 12.0 - 2.0 * inset, 21.0 - 2.0 * inset, 0xFFFFFF, 1.0);
         if inset == 0.0 {
             c.capsule(16.75, 24.0, 2.5, 6.5, 0xFFFFFF, 1.0);
