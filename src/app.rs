@@ -266,6 +266,8 @@ pub fn main() -> Result<()> {
     let mut listening = false;
     // hands-free: recording continues after the key is let go
     let mut locked = false;
+    // the loudest chunk of the dictation, logged on release to tune the pill's meter
+    let mut loudest: f32 = 0.0;
     let mut resting_tick: u32 = 0;
     let mut output_mute = audio_out::OutputMute::new();
     overlay.set(OverlayState::Idle);
@@ -333,7 +335,9 @@ pub fn main() -> Result<()> {
             if forwarding {
                 // level is metered here, not in the pipeline, so it keeps moving while a chunk decodes
                 if listening {
-                    let l = (audio::rms(&chunk) * 6.0).min(1.0);
+                    let rms = audio::rms(&chunk);
+                    loudest = loudest.max(rms);
+                    let l = (rms * METER_GAIN).min(1.0);
                     overlay.set(if locked { OverlayState::Locked(l) } else { OverlayState::Listening(l) });
                 }
                 let _ = cmd_tx.send(PipelineCmd::Audio(chunk));
@@ -496,6 +500,8 @@ pub fn main() -> Result<()> {
                     }
                 }
                 HotkeyEvent::Release => {
+                    log::info!("loudest voice rms {loudest:.3}");
+                    loudest = 0.0;
                     let dictating = forwarding;
                     while let Ok(chunk) = audio_rx.try_recv() {
                         let _ = cmd_tx.send(PipelineCmd::Audio(chunk));
@@ -671,6 +677,13 @@ pub fn main() -> Result<()> {
     let _ = cmd_tx.send(PipelineCmd::Shutdown);
     Ok(())
 }
+
+/// Voice level to pill meter. A MacBook's built-in mic reads about seven times quieter than
+/// the Windows mics this was tuned on (loudest speech rms 0.02 against 0.15).
+#[cfg(windows)]
+const METER_GAIN: f32 = 6.0;
+#[cfg(target_os = "macos")]
+const METER_GAIN: f32 = 40.0;
 
 /// Audio kept while idle and prepended on key-down: 500 ms at 16 kHz.
 const PRE_ROLL_SAMPLES: usize = 8_000;
