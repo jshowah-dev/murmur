@@ -2,7 +2,7 @@
 //! link that starts the same update as the tray's; a newer release also goes to the tray menu), what Murmur has learned, and the parts that
 //! do the hearing, with their licenses.
 
-use crate::correction_ui::{keycap, load_system_font, BG, BORDER, GREEN, MUTED, TEXT};
+use crate::correction_ui::{dark_theme, keycap, load_system_font, BG, BORDER, GREEN, MUTED, TEXT};
 use crate::platform::{self, Window};
 use eframe::egui::{self, CornerRadius, Frame, Key, Margin, Modifiers, RichText, Stroke, ViewportCommand};
 use murmur_lib::update::Release;
@@ -221,7 +221,7 @@ pub fn show(model: String, terms: usize, installed: bool) -> Option<(Release, bo
         "murmur-about",
         opts,
         Box::new(move |cc| {
-            cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            dark_theme(&cc.egui_ctx);
             load_system_font(&cc.egui_ctx);
             let hwnd = platform::window_of(cc);
             Ok(Box::new(AboutApp { model, terms, update: Update::Checking, rx: None, installed, found: app_found, clicked: app_clicked, hwnd, frame: 0, was_focused: false, closing: false, height: 0.0 }))

@@ -1,6 +1,6 @@
 //! The push-to-talk key picker: press the key you want to hold to talk. Enter or clicking away keeps it, Esc cancels.
 
-use crate::correction_ui::{keycap, load_system_font, AMBER, BG, BORDER, MUTED, TEXT};
+use crate::correction_ui::{dark_theme, keycap, load_system_font, AMBER, BG, BORDER, MUTED, TEXT};
 use crate::platform::{self, Window};
 use crate::hotkey::down;
 use eframe::egui::{self, CornerRadius, Frame, Key, Margin, Modifiers, RichText, Stroke, ViewportCommand};
@@ -225,7 +225,7 @@ pub fn show(current: Vec<u16>) -> Option<Vec<u16>> {
         "murmur-ptt-key",
         opts,
         Box::new(move |cc| {
-            cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            dark_theme(&cc.egui_ctx);
             load_system_font(&cc.egui_ctx);
             let hwnd = platform::window_of(cc);
             let mut vks = pickable_vks();

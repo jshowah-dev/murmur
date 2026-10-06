@@ -1,4 +1,4 @@
-use crate::correction_ui::{keycap, load_system_font, BG, BORDER, GREEN, MUTED, TEXT};
+use crate::correction_ui::{dark_theme, keycap, load_system_font, BG, BORDER, GREEN, MUTED, TEXT};
 use crate::platform::{self, Window};
 use eframe::egui::{
     self, text::LayoutJob, text::TextFormat, Color32, CornerRadius, FontId, Frame, Key, Margin, Modifiers, Stroke,
@@ -170,7 +170,7 @@ pub fn show(items: Vec<(String, Instant)>, key: String) {
         "murmur-history",
         opts,
         Box::new(move |cc| {
-            cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            dark_theme(&cc.egui_ctx);
             load_system_font(&cc.egui_ctx);
             let hwnd = platform::window_of(cc);
             Ok(Box::new(HistoryApp { items, hwnd, frame: 0, was_focused: false, copied: None, closing: false, height: 0.0, key }))

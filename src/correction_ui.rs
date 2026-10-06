@@ -247,6 +247,13 @@ fn system_fonts() -> Vec<String> {
     vec!["/System/Library/Fonts/SFNS.ttf".into()]
 }
 
+/// Dark widgets and a dark title bar whatever the OS appearance: `set_visuals` alone only
+/// styles the theme active at startup, so a light-mode Mac drew light widgets on dark panels.
+pub(crate) fn dark_theme(ctx: &egui::Context) {
+    ctx.set_theme(egui::Theme::Dark);
+    ctx.send_viewport_cmd(ViewportCommand::SetTheme(egui::SystemTheme::Dark));
+}
+
 pub(crate) fn load_system_font(ctx: &egui::Context) {
     for path in system_fonts() {
         if let Ok(bytes) = std::fs::read(path) {
@@ -299,7 +306,7 @@ fn card(initial: &str, heard_at: Option<Instant>, dict: Dictionary, anchor: Opti
         "murmur-fix",
         opts,
         Box::new(move |cc| {
-            cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            dark_theme(&cc.egui_ctx);
             load_system_font(&cc.egui_ctx);
             let hwnd = platform::window_of(cc);
             if let Some(anchor) = anchor {

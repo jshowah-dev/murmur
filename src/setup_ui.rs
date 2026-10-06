@@ -3,7 +3,7 @@
 //! `main.rs`, where the invitation is said).
 
 use crate::config;
-use crate::correction_ui::{load_system_font, BG, BORDER, MUTED, TEXT};
+use crate::correction_ui::{dark_theme, load_system_font, BG, BORDER, MUTED, TEXT};
 use crate::editor_kit::{ease, reduced_motion};
 use crate::motion;
 use crate::mote::Pt;
@@ -477,7 +477,7 @@ pub fn run(models: PathBuf, plan: Plan, ask_access: bool) -> SetupOutcome {
         "murmur-setup",
         opts,
         Box::new(move |cc| {
-            cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            dark_theme(&cc.egui_ctx);
             load_system_font(&cc.egui_ctx);
             let (_, rx) = crossbeam_channel::unbounded();
             let mut app = SetupApp {

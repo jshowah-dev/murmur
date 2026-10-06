@@ -2,7 +2,7 @@
 //! process, so dictation keeps working while it's open. One editor at a time; a second launch
 //! brings the first forward.
 
-use crate::correction_ui::{load_system_font, BG};
+use crate::correction_ui::{dark_theme, load_system_font, BG};
 use crate::dictionary_panel::DictionaryPanel;
 use crate::snippets_panel::SnippetsPanel;
 use anyhow::Result;
@@ -213,7 +213,7 @@ pub fn run(tab: Tab) -> Result<()> {
         "murmur-dictionary",
         options(murmur_lib::config::config_dir().join("editor.ron")),
         Box::new(move |cc| {
-            cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            dark_theme(&cc.egui_ctx);
             load_system_font(&cc.egui_ctx);
             Ok(Box::new(app))
         }),
