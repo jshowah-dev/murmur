@@ -168,7 +168,6 @@ pub fn init_app() {
     let mtm = MainThreadMarker::new().expect("init_app on the main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-    app.finishLaunching();
 }
 
 /// Hands AppKit the events waiting for it (the menu bar item's clicks among them), without waiting.
@@ -226,7 +225,6 @@ pub fn cursor() -> (f32, f32) {
 /// never takes the focus or a click, and shows the pixels it's given: the pill's window.
 pub struct Panel {
     panel: Retained<NSPanel>,
-    shown: std::cell::Cell<bool>,
 }
 
 /// A borderless, click-through, never-focused panel above other windows, on every Space and
@@ -267,6 +265,14 @@ fn image(pixels: &[u32], (pw, ph): (usize, usize)) -> Option<objc2_core_foundati
     unsafe { CGImage::new(pw, ph, 8, 32, pw * 4, space.as_deref(), info, provider.as_deref(), std::ptr::null(), false, CGColorRenderingIntent::RenderingIntentDefault) }
 }
 
+/// Orders `panel` front unless it's on screen. Asked of the panel rather than remembered: when an
+/// egui window's event loop ends, winit closes every window the app has, these panels included.
+fn front(panel: &NSPanel) {
+    if !panel.isVisible() {
+        panel.orderFrontRegardless();
+    }
+}
+
 fn set_contents(layer: &CALayer, image: &CGImage, scale: f32) {
     unsafe { layer.setContents(Some(&*(image as *const CGImage).cast::<AnyObject>())) };
     layer.setContentsScale(scale as f64);
@@ -275,7 +281,7 @@ fn set_contents(layer: &CALayer, image: &CGImage, scale: f32) {
 impl Panel {
     pub fn new() -> Result<Panel> {
         let mtm = MainThreadMarker::new().context("a panel is made on the main thread")?;
-        Ok(Panel { panel: overlay_panel(mtm)?, shown: std::cell::Cell::new(false) })
+        Ok(Panel { panel: overlay_panel(mtm)? })
     }
 
     /// Shows `pw`×`ph` premultiplied BGRA `pixels` (`scale` pixels per point) in a `w`×`h` point
@@ -291,11 +297,8 @@ impl Panel {
         set_contents(&layer, &image, scale);
         self.panel.setFrame_display(frame, false);
         CATransaction::commit();
-        if !self.shown.replace(true) {
-            self.panel.orderFrontRegardless();
-        }
+        front(&self.panel);
     }
-
 }
 
 /// A click-through panel over the whole screen that never moves: what moves is a layer inside
@@ -336,9 +339,8 @@ impl Stage {
         self.sprite.setFrame(NSRect::new(NSPoint::new(x as f64 - sf.origin.x, bottom), NSSize::new(w as f64, h as f64)));
         self.sprite.setHidden(false);
         CATransaction::commit();
-        if !self.shown.replace(true) {
-            self.panel.orderFrontRegardless();
-        }
+        self.shown.set(true);
+        front(&self.panel);
     }
 
     pub fn hide(&self) {
