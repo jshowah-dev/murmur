@@ -1,5 +1,6 @@
-//! First-run window: the model download as a Murmur card, then "Ready", then the card fades to
-//! a dot that the mote carries to the pill (see `main.rs`, where the invitation is said).
+//! First-run window: on macOS, asking to be allowed under Accessibility; the model download as a
+//! Murmur card, then "Ready", then the card fades to a dot that the mote carries to the pill (see
+//! `main.rs`, where the invitation is said).
 
 use crate::config;
 use crate::correction_ui::{load_system_font, BG, BORDER, MUTED, TEXT};
@@ -72,6 +73,8 @@ enum Msg {
 
 #[derive(Debug, Clone, PartialEq)]
 enum Stage {
+    /// macOS: waiting for Murmur to be allowed under Accessibility, so it can paste
+    Access,
     Downloading(u64),
     Unpacking(u64),
     /// what to do, from `FetchError::advice`
@@ -162,9 +165,35 @@ struct SetupApp {
     focus_retry: bool,
     height: f32,
     from: Rc<Cell<Option<Pt>>>,
+    /// whether the model download comes after the Access step
+    download: bool,
+    /// whether Murmur may paste; with `true`, macOS's own prompt asks for it
+    trusted: fn(bool) -> bool,
+}
+
+/// How often the Access step checks whether it was allowed.
+const ACCESS_POLL: Duration = Duration::from_millis(500);
+
+#[cfg(target_os = "macos")]
+fn trusted(prompt: bool) -> bool {
+    platform::accessibility_trusted(prompt)
+}
+
+#[cfg(windows)]
+fn trusted(_prompt: bool) -> bool {
+    true
 }
 
 impl SetupApp {
+    /// Past the Access step, allowed or not: the download, or nothing more to do.
+    fn after_access(&mut self, ctx: &egui::Context) {
+        if self.download {
+            self.start(ctx);
+        } else {
+            self.close(ctx);
+        }
+    }
+
     /// Runs one download + unpack attempt on a worker thread; Retry calls this again and resumes.
     fn start(&mut self, ctx: &egui::Context) {
         let (tx, rx) = crossbeam_channel::unbounded();
@@ -221,6 +250,14 @@ impl SetupApp {
                 }
             }
         }
+        if self.stage == Stage::Access {
+            if (self.trusted)(false) {
+                log::info!("setup: allowed under Accessibility");
+                self.after_access(&ctx);
+            } else {
+                ctx.request_repaint_after(ACCESS_POLL);
+            }
+        }
         if let Stage::Ready(since) = self.stage {
             let el = now.saturating_duration_since(since);
             match after_ready(el, self.reduced) {
@@ -239,6 +276,7 @@ impl SetupApp {
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             match self.stage {
+                Stage::Access => self.after_access(&ctx),
                 Stage::Downloading(_) => {
                     self.cancel.store(true, Ordering::SeqCst);
                     self.close(&ctx);
@@ -296,6 +334,24 @@ impl SetupApp {
 
     /// The card's contents. Each stage but Failed keeps the same rows, so the card holds its height from download to Ready.
     fn body(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, retry: &mut bool) {
+        if self.stage == Stage::Access {
+            ui.label(RichText::new("Murmur pastes what you say by pressing ⌘V for you. macOS lets it once you allow it.").size(13.0).color(MUTED));
+            ui.add_space(12.0);
+            ui.label(RichText::new("Allow Murmur under Privacy & Security › Accessibility").size(15.0).color(TEXT));
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Open Settings").clicked() {
+                    // macOS's prompt adds Murmur to the list, so allowing it is one switch
+                    (self.trusted)(true);
+                }
+                if ui.button("Not now").clicked() {
+                    self.after_access(ctx);
+                }
+            });
+            ui.add_space(6.0);
+            ui.label(RichText::new("Until then, your words are left on the clipboard.").size(12.0).color(MUTED));
+            return;
+        }
         let installed = matches!(self.stage, Stage::Ready(_) | Stage::Closing(_));
         let intro = if installed {
             "Speech model installed.".to_string()
@@ -339,6 +395,8 @@ impl SetupApp {
                     }
                 });
             }
+            // drawn above, on its own
+            Stage::Access => {}
             Stage::Ready(_) | Stage::Closing(_) => {
                 ui.label(RichText::new("Ready").size(15.0).color(TEXT));
                 ui.add_space(6.0);
@@ -390,15 +448,18 @@ impl eframe::App for SetupApp {
     }
 }
 
-/// First-run window, per `plan`: the model download, then (first run only) "Ready" and the fade
-/// to a dot. Blocks until the model is installed and the window is closed, or the user quits.
-/// `ReadyOnly` and `Skip` show no window.
-pub fn run(models: PathBuf, plan: Plan) -> SetupOutcome {
-    let then_ready = match plan {
-        Plan::Download { then_ready } => then_ready,
+/// First-run window, per `plan`: on macOS, first the Access step when `ask_access`; then the
+/// model download, then (first run only) "Ready" and the fade to a dot. Blocks until the model is
+/// installed and the window is closed, or the user quits. Without a download or the Access step,
+/// no window.
+pub fn run(models: PathBuf, plan: Plan, ask_access: bool) -> SetupOutcome {
+    let (download, then_ready) = match plan {
+        Plan::Download { then_ready } => (true, then_ready),
+        Plan::ReadyOnly | Plan::Skip if ask_access => (false, false),
         Plan::ReadyOnly | Plan::Skip => return SetupOutcome::Installed { from: None },
     };
-    let installed = Arc::new(AtomicBool::new(false));
+    // with nothing to download, the model is already there
+    let installed = Arc::new(AtomicBool::new(!download));
     let done = installed.clone();
     let from = Rc::new(Cell::new(None));
     let app_from = from.clone();
@@ -433,8 +494,14 @@ pub fn run(models: PathBuf, plan: Plan) -> SetupOutcome {
                 focus_retry: false,
                 height: 0.0,
                 from: app_from,
+                download,
+                trusted,
             };
-            app.start(&cc.egui_ctx);
+            if ask_access {
+                app.stage = Stage::Access;
+            } else {
+                app.start(&cc.egui_ctx);
+            }
             Ok(Box::new(app))
         }),
     );
@@ -468,6 +535,8 @@ mod tests {
             focus_retry: false,
             height: 0.0,
             from: Rc::new(Cell::new(None)),
+            download: true,
+            trusted: |_| false,
         }
     }
 
@@ -612,6 +681,29 @@ mod tests {
         assert_eq!(dot_radii(1.0), (2.5, 12.0));
         let (core, halo) = dot_radii(1.5);
         assert!((core - 2.5 / 1.5).abs() < 1e-6 && (halo - 8.0).abs() < 1e-6, "{core} {halo}");
+    }
+
+    #[test]
+    fn the_access_step_waits_until_allowed_then_moves_on() {
+        let ctx = egui::Context::default();
+        let mut a = app(Stage::Access);
+        a.download = false;
+        let (text, close) = frame(&ctx, &mut a, vec![]);
+        assert!(text.iter().any(|t| t == "Allow Murmur under Privacy & Security › Accessibility"), "{text:?}");
+        assert!(text.iter().any(|t| t == "Open Settings") && text.iter().any(|t| t == "Not now"), "{text:?}");
+        assert!(!close && a.stage == Stage::Access, "waits while not allowed");
+        a.trusted = |_| true;
+        let (_, close) = frame(&ctx, &mut a, vec![]);
+        assert!(close, "allowed, with the model already there: done");
+    }
+
+    #[test]
+    fn esc_on_the_access_step_goes_on_without_it() {
+        let ctx = egui::Context::default();
+        let mut a = app(Stage::Access);
+        a.download = false;
+        let (_, close) = frame(&ctx, &mut a, vec![esc()]);
+        assert!(close && !a.cancel.load(Ordering::SeqCst));
     }
 
     #[test]

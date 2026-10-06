@@ -150,13 +150,15 @@ pub fn main() -> Result<()> {
         return Ok(());
     };
     #[cfg(target_os = "macos")]
-    {
-        platform::init_app();
-        // pasting is a synthetic Cmd+V, which macOS only lets through once Murmur is allowed
-        if !platform::accessibility_trusted(false) {
-            log::warn!("not allowed to paste yet; asking for Accessibility");
-            platform::accessibility_trusted(true);
-        }
+    platform::init_app();
+    // pasting is a synthetic Cmd+V, which macOS only lets through once Murmur is allowed: the
+    // setup card asks first
+    #[cfg(target_os = "macos")]
+    let ask_access = !platform::accessibility_trusted(false);
+    #[cfg(windows)]
+    let ask_access = false;
+    if ask_access {
+        log::warn!("not allowed to paste yet; asking for Accessibility");
     }
     let mut problems: Vec<notice::FileProblem> = Vec::new();
     let mut cfg = match Config::load_or_create() {
@@ -201,9 +203,9 @@ pub fn main() -> Result<()> {
     let plan = setup_ui::plan(model_missing, default_dir, welcomed);
     // where the setup card faded to a dot, for the mote that carries it to the pill
     let mut card_at = None;
-    if plan != setup_ui::Plan::Skip {
+    if plan != setup_ui::Plan::Skip || ask_access {
         let models = model_dir.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| model_dir.clone());
-        match setup_ui::run(models, plan) {
+        match setup_ui::run(models, plan, ask_access) {
             // re-checked: the unpacked folder must be the one model_dir names
             setup_ui::SetupOutcome::Installed { from } => {
                 model_missing = !model_fetch::is_installed(&model_dir);
