@@ -13,7 +13,7 @@ use objc2_core_graphics::{
     CGImageAlphaInfo, CGImageByteOrderInfo,
 };
 use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSDictionary, NSNumber, NSPoint, NSRect, NSSize, NSString};
-use objc2_quartz_core::CATransaction;
+use objc2_quartz_core::{CALayer, CATransaction};
 use std::fs::{File, TryLockError};
 use std::path::Path;
 
@@ -229,55 +229,66 @@ pub struct Panel {
     shown: std::cell::Cell<bool>,
 }
 
+/// A borderless, click-through, never-focused panel above other windows, on every Space and
+/// over full-screen apps, drawing through its layer.
+fn overlay_panel(mtm: MainThreadMarker) -> Result<Retained<NSPanel>> {
+    let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0));
+    let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
+    let panel = NSPanel::initWithContentRect_styleMask_backing_defer(NSPanel::alloc(mtm), rect, style, NSBackingStoreType::Buffered, false);
+    unsafe { panel.setReleasedWhenClosed(false) };
+    panel.setOpaque(false);
+    panel.setBackgroundColor(Some(&NSColor::clearColor()));
+    panel.setHasShadow(false);
+    panel.setLevel(NSStatusWindowLevel);
+    panel.setIgnoresMouseEvents(true);
+    // an accessory app is never active, and a panel would otherwise hide whenever it isn't
+    panel.setHidesOnDeactivate(false);
+    panel.setCollectionBehavior(
+        NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::Stationary
+            | NSWindowCollectionBehavior::FullScreenAuxiliary
+            | NSWindowCollectionBehavior::IgnoresCycle,
+    );
+    panel.contentView().context("panel has no content view")?.setWantsLayer(true);
+    Ok(panel)
+}
+
+/// Premultiplied BGRA `pixels`, `pw`×`ph`, as an image a layer can show.
+fn image(pixels: &[u32], (pw, ph): (usize, usize)) -> Option<objc2_core_foundation::CFRetained<CGImage>> {
+    if pixels.len() != pw * ph {
+        log::warn!("panel: {} pixels for a {pw}x{ph} image", pixels.len());
+        return None;
+    }
+    let bytes: Vec<u8> = pixels.iter().flat_map(|p| p.to_le_bytes()).collect();
+    let provider = CGDataProvider::with_cf_data(Some(&CFData::from_bytes(&bytes)));
+    let space = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB }));
+    // 0xAARRGGBB stored little-endian: B, G, R, A in memory
+    let info = CGBitmapInfo(CGImageAlphaInfo::PremultipliedFirst.0 | CGImageByteOrderInfo::Order32Little.0);
+    unsafe { CGImage::new(pw, ph, 8, 32, pw * 4, space.as_deref(), info, provider.as_deref(), std::ptr::null(), false, CGColorRenderingIntent::RenderingIntentDefault) }
+}
+
+fn set_contents(layer: &CALayer, image: &CGImage, scale: f32) {
+    unsafe { layer.setContents(Some(&*(image as *const CGImage).cast::<AnyObject>())) };
+    layer.setContentsScale(scale as f64);
+}
+
 impl Panel {
     pub fn new() -> Result<Panel> {
         let mtm = MainThreadMarker::new().context("a panel is made on the main thread")?;
-        let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0));
-        let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
-        let panel = NSPanel::initWithContentRect_styleMask_backing_defer(NSPanel::alloc(mtm), rect, style, NSBackingStoreType::Buffered, false);
-        unsafe { panel.setReleasedWhenClosed(false) };
-        panel.setOpaque(false);
-        panel.setBackgroundColor(Some(&NSColor::clearColor()));
-        panel.setHasShadow(false);
-        panel.setLevel(NSStatusWindowLevel);
-        panel.setIgnoresMouseEvents(true);
-        // an accessory app is never active, and a panel would otherwise hide whenever it isn't
-        panel.setHidesOnDeactivate(false);
-        panel.setCollectionBehavior(
-            NSWindowCollectionBehavior::CanJoinAllSpaces
-                | NSWindowCollectionBehavior::Stationary
-                | NSWindowCollectionBehavior::FullScreenAuxiliary
-                | NSWindowCollectionBehavior::IgnoresCycle,
-        );
-        panel.contentView().context("panel has no content view")?.setWantsLayer(true);
-        Ok(Panel { panel, shown: std::cell::Cell::new(false) })
+        Ok(Panel { panel: overlay_panel(mtm)?, shown: std::cell::Cell::new(false) })
     }
 
-    /// Shows premultiplied BGRA `pixels` (`scale` pixels per point) in a `w`×`h` point frame whose
-    /// top-left is at (x, y) points from the top-left of the main display.
-    pub fn show(&self, (x, y, w, h): (f32, f32, f32, f32), pixels: &[u32], scale: f32) {
+    /// Shows `pw`×`ph` premultiplied BGRA `pixels` (`scale` pixels per point) in a `w`×`h` point
+    /// frame whose top-left is at (x, y) points from the top-left of the main display.
+    pub fn show(&self, (x, y, w, h): (f32, f32, f32, f32), pixels: &[u32], (pw, ph): (usize, usize), scale: f32) {
         let Some(mtm) = MainThreadMarker::new() else { return };
         let Some(layer) = self.panel.contentView().and_then(|v| v.layer()) else { return };
-        let (pw, ph) = (crate::canvas::pixels(w as i32, scale) as usize, crate::canvas::pixels(h as i32, scale) as usize);
-        if pixels.len() != pw * ph {
-            log::warn!("panel: {} pixels for a {pw}x{ph} image", pixels.len());
-            return;
-        }
-        let bytes: Vec<u8> = pixels.iter().flat_map(|p| p.to_le_bytes()).collect();
-        let provider = CGDataProvider::with_cf_data(Some(&CFData::from_bytes(&bytes)));
-        let space = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB }));
-        // 0xAARRGGBB stored little-endian: B, G, R, A in memory
-        let info = CGBitmapInfo(CGImageAlphaInfo::PremultipliedFirst.0 | CGImageByteOrderInfo::Order32Little.0);
-        let image = unsafe {
-            CGImage::new(pw, ph, 8, 32, pw * 4, space.as_deref(), info, provider.as_deref(), std::ptr::null(), false, CGColorRenderingIntent::RenderingIntentDefault)
-        };
-        let Some(image) = image else { return };
+        let Some(image) = image(pixels, (pw, ph)) else { return };
         let frame = NSRect::new(NSPoint::new(x as f64, primary_height(mtm) - y as f64 - h as f64), NSSize::new(w as f64, h as f64));
         CATransaction::begin();
         // a new frame replaces the last at once, as on Windows: no cross-fade
         CATransaction::setDisableActions(true);
-        unsafe { layer.setContents(Some(&*(&*image as *const CGImage).cast::<AnyObject>())) };
-        layer.setContentsScale(scale as f64);
+        set_contents(&layer, &image, scale);
         self.panel.setFrame_display(frame, false);
         CATransaction::commit();
         if !self.shown.replace(true) {
@@ -285,9 +296,57 @@ impl Panel {
         }
     }
 
-    #[allow(dead_code)] // the mote hides its panel between flights (phase 3)
+}
+
+/// A click-through panel over the whole screen that never moves: what moves is a layer inside
+/// it, which Core Animation draws in step with the display. Moving a window every frame instead
+/// smears, because the window server moves it apart from redrawing it. The mote's window.
+pub struct Stage {
+    panel: Retained<NSPanel>,
+    sprite: Retained<CALayer>,
+    shown: std::cell::Cell<bool>,
+}
+
+impl Stage {
+    pub fn new() -> Result<Stage> {
+        let mtm = MainThreadMarker::new().context("a stage is made on the main thread")?;
+        let panel = overlay_panel(mtm)?;
+        let root = panel.contentView().and_then(|v| v.layer()).context("stage has no layer")?;
+        let sprite = CALayer::new();
+        root.addSublayer(&sprite);
+        Ok(Stage { panel, sprite, shown: std::cell::Cell::new(false) })
+    }
+
+    /// Shows `pw`×`ph` premultiplied BGRA `pixels` (`scale` pixels per point) in a `w`×`h` point
+    /// rectangle whose top-left is at (x, y) points from the top-left of the main display.
+    pub fn show(&self, (x, y, w, h): (f32, f32, f32, f32), pixels: &[u32], size: (usize, usize), scale: f32) {
+        let Some(mtm) = MainThreadMarker::new() else { return };
+        let Some(screen) = NSScreen::mainScreen(mtm) else { return };
+        let Some(image) = image(pixels, size) else { return };
+        let sf = screen.frame();
+        // AppKit owns the view's layer, which counts y up from the bottom like the rest of AppKit:
+        // the sprite's bottom edge, from the screen's bottom edge
+        let bottom = (primary_height(mtm) - (y as f64 + h as f64)) - sf.origin.y;
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        if self.panel.frame() != sf {
+            self.panel.setFrame_display(sf, false);
+        }
+        set_contents(&self.sprite, &image, scale);
+        self.sprite.setFrame(NSRect::new(NSPoint::new(x as f64 - sf.origin.x, bottom), NSSize::new(w as f64, h as f64)));
+        self.sprite.setHidden(false);
+        CATransaction::commit();
+        if !self.shown.replace(true) {
+            self.panel.orderFrontRegardless();
+        }
+    }
+
     pub fn hide(&self) {
         if self.shown.replace(false) {
+            CATransaction::begin();
+            CATransaction::setDisableActions(true);
+            self.sprite.setHidden(true);
+            CATransaction::commit();
             self.panel.orderOut(None);
         }
     }

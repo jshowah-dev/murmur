@@ -1,6 +1,3 @@
-// The Mac pill and mote land in phase 3; until then only Windows draws with the canvas.
-#![cfg_attr(target_os = "macos", allow(dead_code))]
-
 #[cfg(windows)]
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, SIZE};
 #[cfg(windows)]
@@ -175,9 +172,34 @@ impl Canvas {
         }
     }
 
-    // TODO(macos phase 3): CoreText, for the mote's messages.
+    /// Draw `spans` left to right with the top-left at (x, y), each in its own colour at `alpha`.
+    /// CoreText draws them into an alpha-only bitmap, so its alpha is the coverage. `size` is what
+    /// `measure` gave for these spans at `px`.
     #[cfg(target_os = "macos")]
-    pub(crate) fn text(&mut self, _x: f32, _y: f32, _spans: &[Span], _px: i32, _size: (i32, i32), _alpha: f32) {}
+    pub(crate) fn text(&mut self, x: f32, y: f32, spans: &[Span], px: i32, size: (i32, i32), alpha: f32) {
+        let (tw, th) = (pixels(size.0, self.s), pixels(size.1, self.s));
+        if tw <= 0 || th <= 0 || alpha <= 0.0 {
+            return;
+        }
+        let (cov, runs) = coretext::coverage(spans, px as f64 * self.s as f64, tw as usize, th as usize);
+        let (ox, oy) = ((x * self.s).round() as i32, (y * self.s).round() as i32);
+        for row in 0..th {
+            for col in 0..tw {
+                let a = cov.get((row * tw + col) as usize).copied().unwrap_or(0.0) * alpha;
+                let (dx, dy) = (ox + col, oy + row);
+                if a <= 0.0 || dx < 0 || dy < 0 || dx >= self.w || dy >= self.h {
+                    continue;
+                }
+                let rgb = runs.iter().find(|(s, e, _)| col >= *s && col < *e).or(runs.last()).map_or(0xFFFFFF, |r| r.2);
+                let c = [(rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF].map(|v| v as f32 / 255.0);
+                let dst = &mut self.px[(dy * self.w + dx) as usize];
+                for i in 0..3 {
+                    dst[i] = c[i] * a + dst[i] * (1.0 - a);
+                }
+                dst[3] = a + dst[3] * (1.0 - a);
+            }
+        }
+    }
 
     /// Pack as premultiplied BGRA (0xAARRGGBB little-endian), what UpdateLayeredWindow expects.
     pub(crate) fn into_bgra(self) -> Vec<u32> {
@@ -228,10 +250,65 @@ pub(crate) fn measure(spans: &[Span], px: i32) -> (i32, i32) {
     })
 }
 
-// TODO(macos phase 3): CoreText, for the mote's messages.
+/// Width and height of `spans` drawn side by side at `px`; (0, 0) when there's no text.
 #[cfg(target_os = "macos")]
-pub(crate) fn measure(_spans: &[Span], _px: i32) -> (i32, i32) {
-    (0, 0)
+pub(crate) fn measure(spans: &[Span], px: i32) -> (i32, i32) {
+    if spans.iter().all(|(s, _)| s.is_empty()) {
+        return (0, 0);
+    }
+    let (w, h) = spans.iter().filter_map(|(s, _)| coretext::line(s, px as f64)).fold((0.0, 0.0f64), |(w, h), l| {
+        let (lw, ascent, descent) = coretext::bounds(&l);
+        (w + lw, h.max(ascent + descent))
+    });
+    (w.ceil() as i32, h.ceil() as i32)
+}
+
+/// Text through CoreText in the system UI font.
+#[cfg(target_os = "macos")]
+mod coretext {
+    use super::Span;
+    use objc2_core_foundation::{CFAttributedString, CFDictionary, CFRetained, CFString};
+    use objc2_core_graphics::{CGBitmapContextCreate, CGContext, CGImageAlphaInfo};
+    use objc2_core_text::{kCTFontAttributeName, CTFont, CTFontUIFontType, CTLine};
+
+    /// `s` laid out in the system font at `px` to the em.
+    pub(super) fn line(s: &str, px: f64) -> Option<CFRetained<CTLine>> {
+        let font = unsafe { CTFont::new_ui_font_for_language(CTFontUIFontType::System, px, None) }?;
+        let attrs = CFDictionary::from_slices(&[unsafe { kCTFontAttributeName }], &[&*font]);
+        let text = CFString::from_str(s);
+        let attributed = unsafe { CFAttributedString::new(None, Some(&text), Some(attrs.as_opaque())) }?;
+        Some(unsafe { CTLine::with_attributed_string(&attributed) })
+    }
+
+    /// (width, ascent, descent) of `l`.
+    pub(super) fn bounds(l: &CTLine) -> (f64, f64, f64) {
+        let (mut ascent, mut descent, mut leading) = (0.0, 0.0, 0.0);
+        let w = unsafe { l.typographic_bounds(&mut ascent, &mut descent, &mut leading) };
+        (w, ascent, descent)
+    }
+
+    /// Coverage (0..=1, row-major from the top) of `spans` drawn left to right in a `w`×`h` pixel
+    /// bitmap at `px` pixels to the em, and each span's (start, end, colour) in pixels.
+    pub(super) fn coverage(spans: &[Span], px: f64, w: usize, h: usize) -> (Vec<f32>, Vec<(i32, i32, u32)>) {
+        let mut bits = vec![0u8; w * h];
+        let mut runs = Vec::new();
+        // alpha-only: whatever colour CoreText draws in, the alpha is how much of each pixel is ink
+        let ctx = unsafe { CGBitmapContextCreate(bits.as_mut_ptr().cast(), w, h, 8, w, None, CGImageAlphaInfo::Only.0) };
+        let Some(ctx) = ctx else { return (Vec::new(), runs) };
+        let mut at = 0.0;
+        for (s, rgb) in spans {
+            let Some(l) = line(s, px) else { continue };
+            let (lw, _, descent) = bounds(&l);
+            // bitmap contexts put y = 0 at the bottom row; the baseline sits the descent above it
+            CGContext::set_text_position(Some(&ctx), at, descent);
+            unsafe { l.draw(&ctx) };
+            let next = at + lw;
+            runs.push((at.round() as i32, next.round() as i32, *rgb));
+            at = next;
+        }
+        drop(ctx);
+        (bits.into_iter().map(|b| b as f32 / 255.0).collect(), runs)
+    }
 }
 
 /// Push premultiplied BGRA `pixels` (`w * h`) to the layered window `hwnd` at (x, y), through a
@@ -311,7 +388,6 @@ mod tests {
         assert!(one[5 * 20 + 15] == 0 && two[10 * 40 + 30] == 0);
     }
 
-    #[cfg(windows)] // GDI text
     #[test]
     fn text_is_drawn_in_each_spans_colour() {
         let spans: Vec<Span> = vec![("Hob".into(), 0xFF0000), ("HAWB".into(), 0x0000FF)];
@@ -329,14 +405,12 @@ mod tests {
         }
     }
 
-    #[cfg(windows)] // GDI text
     #[test]
     fn measure_handles_wide_characters_and_nothing() {
         assert!(measure(&[("日本".into(), 0xFFFFFF)], 16).0 > 10);
         assert_eq!(measure(&[], 16), (0, 0));
     }
 
-    #[cfg(windows)] // GDI text
     #[test]
     fn text_respects_alpha() {
         let spans: Vec<Span> = vec![("Hi".into(), 0xFFFFFF)];

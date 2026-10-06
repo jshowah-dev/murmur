@@ -1,19 +1,13 @@
 //! The carved moment: when you let go of the key, a mote flies from the pill to your caret,
 //! waits there while the speech is transcribed, and dissolves into your words.
 
-// The Mac mote lands in phase 3; until then its flight and drawing are only used on Windows.
-#![cfg_attr(target_os = "macos", allow(dead_code))]
-
-use crate::canvas::{Canvas, Span};
-#[cfg(windows)]
-use crate::canvas;
-use crate::editor_kit::ease;
-#[cfg(windows)]
-use crate::editor_kit::reduced_motion;
+use crate::canvas::{self, Canvas, Span};
+use crate::editor_kit::{ease, reduced_motion};
 use crate::motion;
 use crate::platform::Rect as RECT;
+use anyhow::Result;
 #[cfg(windows)]
-use anyhow::{anyhow, Result};
+use anyhow::anyhow;
 use std::time::{Duration, Instant};
 #[cfg(windows)]
 use windows::core::PCWSTR;
@@ -33,7 +27,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 pub(crate) type Pt = (f32, f32);
 
 /// The flight's length. The carved moment breaks the grammar here; logged in the kit ledger.
+#[cfg(windows)]
 pub(crate) const FLIGHT: Duration = Duration::from_millis(300);
+/// Longer on a Mac, where 300 ms read as too quick (Jeff, 2026-10-05).
+#[cfg(target_os = "macos")]
+pub(crate) const FLIGHT: Duration = Duration::from_millis(450);
 
 /// A point on a quadratic arc from `from` to `to` at `t` (0..=1). The arc lobs upward, like
 /// something tossed: its control point sits off the midpoint on the screen-up side.
@@ -334,8 +332,14 @@ pub(crate) fn on_done(mote_active: bool, has_text: bool, same_window: bool) -> L
 /// The mote window's side, in physical pixels.
 const S: i32 = 40;
 
+#[cfg(test)]
 fn render(s: &Sprite) -> Vec<u32> {
-    let mut c = Canvas::new(S, S);
+    render_scaled(s, 1.0)
+}
+
+/// `render` at `scale` pixels per unit.
+fn render_scaled(s: &Sprite, scale: f32) -> Vec<u32> {
+    let mut c = Canvas::scaled(S, S, scale);
     let m = S as f32 / 2.0;
     c.halo(m, m, 12.0 * s.radius, 0x60D060, 0.5 * s.alpha);
     let core = 5.0 * s.radius;
@@ -376,8 +380,9 @@ fn fit(x: i32, y: i32, w: i32, h: i32, work: RECT) -> (i32, i32) {
 }
 
 /// A frame of a speaking mote, `w`×`h`, with the capsule centred at `centre`.
-fn render_tag(s: &Sprite, m: &Message, b: &TagBox, centre: Pt, w: i32, h: i32, font: i32, text: (i32, i32)) -> Vec<u32> {
-    let mut c = Canvas::new(w, h);
+#[allow(clippy::too_many_arguments)]
+fn render_tag(s: &Sprite, m: &Message, b: &TagBox, centre: Pt, w: i32, h: i32, font: i32, text: (i32, i32), scale: f32) -> Vec<u32> {
+    let mut c = Canvas::scaled(w, h, scale);
     let (cx, cy) = centre;
     let dot = 1.0 - s.open;
     if dot > 0.0 {
@@ -407,29 +412,16 @@ fn changed(last: &mut Option<(Sprite, i32, i32, i32, i32)>, s: &Sprite, x: i32, 
     differs
 }
 
-#[cfg(target_os = "macos")]
-mod mac;
-#[cfg(target_os = "macos")]
-pub(crate) use mac::Mote;
-
 /// The mote's own click-through window. It's created and moved in physical pixels, the space
 /// `caret::find` reports in, while the rest of Murmur is DPI-unaware.
 #[cfg(windows)]
-pub(crate) struct Mote {
+struct Surface {
     hwnd: HWND,
-    flight: Flight,
-    shown: bool,
-    /// physical pixels per 96-dpi pixel, for the message's size
-    scale: f32,
-    /// the current message's font size, text size and work area, measured once per message
-    layout: Option<(i32, (i32, i32), RECT)>,
-    /// the last frame pushed, to skip an identical one
-    last: Option<(Sprite, i32, i32, i32, i32)>,
 }
 
 #[cfg(windows)]
-impl Mote {
-    pub(crate) fn create() -> Result<Mote> {
+impl Surface {
+    fn create() -> Result<Surface> {
         let hwnd = crate::caret::physical(|| unsafe {
             let hinst = GetModuleHandleW(None)?;
             let class: Vec<u16> = "MurmurMote\0".encode_utf16().collect();
@@ -446,13 +438,108 @@ impl Mote {
                 None, None, Some(hinst.into()), None,
             )?)
         })?;
-        let scale = crate::caret::physical(|| unsafe { GetDpiForSystem() }) as f32 / 96.0;
-        Ok(Mote { hwnd, flight: Flight::new(reduced_motion()), shown: false, scale, layout: None, last: None })
+        Ok(Surface { hwnd })
+    }
+
+    /// (physical pixels per 96-dpi pixel, for the message's size; units per unit of what the app
+    /// hands the mote, which is already physical pixels; pixels drawn per unit; dot size)
+    fn scales(&self) -> (f32, f32, f32, f32) {
+        (crate::caret::physical(|| unsafe { GetDpiForSystem() }) as f32 / 96.0, 1.0, 1.0, 1.0)
+    }
+
+    fn push(&self, x: i32, y: i32, w: i32, h: i32, px: &[u32]) {
+        crate::caret::physical(|| canvas::push(self.hwnd, x, y, w, h, px));
+    }
+
+    fn show(&self) {
+        unsafe {
+            let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
+            let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+        }
+    }
+
+    fn hide(&self) {
+        unsafe {
+            let _ = ShowWindow(self.hwnd, SW_HIDE);
+        }
+    }
+}
+
+/// The mote's window on macOS: a still, click-through stage over the screen that the mote moves
+/// across. The mote works in points, as the app does there (and `caret::find`), drawn at the
+/// screen's pixels per point.
+#[cfg(target_os = "macos")]
+struct Surface {
+    panel: crate::platform::Stage,
+    /// pixels per point
+    scale: f32,
+}
+
+#[cfg(target_os = "macos")]
+impl Surface {
+    fn create() -> Result<Surface> {
+        Ok(Surface { panel: crate::platform::Stage::new()?, scale: crate::platform::work_area().1 })
+    }
+
+    /// (message scale, points per unit, pixels drawn per unit, dot size). A point-sized dot comes
+    /// out about a third bigger than Windows' pixel-sized one on a typical laptop; 0.8 evens it.
+    fn scales(&self) -> (f32, f32, f32, f32) {
+        (1.0, 1.0, self.scale, 0.8)
+    }
+
+    fn push(&self, x: i32, y: i32, w: i32, h: i32, px: &[u32]) {
+        let size = (canvas::pixels(w, self.scale) as usize, canvas::pixels(h, self.scale) as usize);
+        self.panel.show((x as f32, y as f32, w as f32, h as f32), px, size, self.scale);
+    }
+
+    /// `push` orders the panel front the first time.
+    fn show(&self) {}
+
+    fn hide(&self) {
+        self.panel.hide();
+    }
+}
+
+pub(crate) struct Mote {
+    surface: Surface,
+    flight: Flight,
+    shown: bool,
+    /// physical pixels per 96-dpi pixel, for the message's size
+    scale: f32,
+    /// mote units per unit of the points the app hands in (1 on both systems today)
+    unit: f32,
+    /// pixels drawn per unit: 1 on Windows, the screen's pixels per point on macOS
+    px_scale: f32,
+    /// the dot's size against Windows'
+    dot: f32,
+    /// the current message's font size, text size and work area, measured once per message
+    layout: Option<(i32, (i32, i32), RECT)>,
+    /// the last frame pushed, to skip an identical one
+    last: Option<(Sprite, i32, i32, i32, i32)>,
+}
+
+impl Mote {
+    pub(crate) fn create() -> Result<Mote> {
+        let surface = Surface::create()?;
+        let (scale, unit, px_scale, dot) = surface.scales();
+        Ok(Mote { surface, flight: Flight::new(reduced_motion()), shown: false, scale, unit, px_scale, dot, layout: None, last: None })
+    }
+
+    /// A point from the app in the mote's pixels.
+    fn px(&self, (x, y): Pt) -> Pt {
+        (x * self.unit, y * self.unit)
+    }
+
+    fn target(&self, to: Target) -> Target {
+        match to {
+            Target::Caret(p) => Target::Caret(self.px(p)),
+            Target::Pill(p) => Target::Pill(self.px(p)),
+        }
     }
 
     pub(crate) fn launch(&mut self, from: Pt, to: Pt) {
         self.layout = None;
-        self.flight.launch(from, to, Instant::now());
+        self.flight.launch(self.px(from), self.px(to), Instant::now());
     }
 
     pub(crate) fn dissolve(&mut self) {
@@ -469,12 +556,12 @@ impl Mote {
 
     pub(crate) fn say(&mut self, m: Message, from: Pt, to: Target) {
         self.layout = None;
-        self.flight.say(m, from, to, Instant::now());
+        self.flight.say(m, self.px(from), self.target(to), Instant::now());
     }
 
     pub(crate) fn say_until_dismissed(&mut self, m: Message, from: Pt, to: Target) {
         self.layout = None;
-        self.flight.say_until_dismissed(m, from, to, Instant::now());
+        self.flight.say_until_dismissed(m, self.px(from), self.target(to), Instant::now());
     }
 
     pub(crate) fn dismiss(&mut self) {
@@ -494,39 +581,36 @@ impl Mote {
     fn frame(&mut self, s: &Sprite) -> Option<(i32, i32, i32, i32, Vec<u32>)> {
         let Some(m) = self.flight.message().filter(|_| s.open > 0.0) else {
             let (x, y) = ((s.at.0 - S as f32 / 2.0).round() as i32, (s.at.1 - S as f32 / 2.0).round() as i32);
-            return changed(&mut self.last, s, x, y, S, S).then(|| (x, y, S, S, render(s)));
+            return changed(&mut self.last, s, x, y, S, S).then(|| (x, y, S, S, render_scaled(s, self.px_scale)));
         };
         let (font, text, work) = *self.layout.get_or_insert_with(|| {
             let font = (16.0 * self.scale).round() as i32;
             let at = RECT { left: s.at.0 as i32, top: s.at.1 as i32, right: s.at.0 as i32 + 1, bottom: s.at.1 as i32 + 1 };
-            (font, canvas::measure(&m.0, font), crate::caret::work_area(&crate::caret::Anchor::Area(at)))
+            let work = crate::caret::work_area(&crate::caret::Anchor::Area(at));
+            let u = |v: i32| (v as f32 * self.unit).round() as i32;
+            (font, canvas::measure(&m.0, font), RECT { left: u(work.left), top: u(work.top), right: u(work.right), bottom: u(work.bottom) })
         });
         let b = tag_box(s.at, s.open, text, self.scale, self.flight.centred());
         let (w, h) = (((b.w + 2.0 * MARGIN).ceil() as i32).max(S), ((b.h + 2.0 * MARGIN).ceil() as i32).max(S));
         let (x0, y0) = ((b.cx - w as f32 / 2.0).round() as i32, (b.cy - h as f32 / 2.0).round() as i32);
         let (x, y) = fit(x0, y0, w, h, work);
-        changed(&mut self.last, s, x, y, w, h).then(|| (x, y, w, h, render_tag(s, m, &b, (b.cx - x as f32, b.cy - y as f32), w, h, font, text)))
+        changed(&mut self.last, s, x, y, w, h).then(|| (x, y, w, h, render_tag(s, m, &b, (b.cx - x as f32, b.cy - y as f32), w, h, font, text, self.px_scale)))
     }
 
     /// Draws this frame of the flight, or hides the window once it's over.
     pub(crate) fn animate(&mut self) {
-        match self.flight.sprite(Instant::now()) {
+        match self.flight.sprite(Instant::now()).map(|s| Sprite { radius: s.radius * self.dot, ..s }) {
             Some(s) => {
                 if let Some((x, y, w, h, px)) = self.frame(&s) {
-                    crate::caret::physical(|| canvas::push(self.hwnd, x, y, w, h, &px));
+                    self.surface.push(x, y, w, h, &px);
                 }
                 if !self.shown {
-                    unsafe {
-                        let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
-                        let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
-                    }
+                    self.surface.show();
                     self.shown = true;
                 }
             }
             None if self.shown => {
-                unsafe {
-                    let _ = ShowWindow(self.hwnd, SW_HIDE);
-                }
+                self.surface.hide();
                 self.shown = false;
                 self.layout = None;
                 self.last = None;
@@ -926,3 +1010,4 @@ mod tests {
         assert_eq!(fit(1900, 500, 200, 40, second).0, 1920);
     }
 }
+

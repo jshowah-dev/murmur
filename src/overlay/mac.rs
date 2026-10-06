@@ -35,7 +35,8 @@ impl Overlay {
         let (w, h, pixels) = render_scaled(self.pill.state, self.pill.look, scale);
         let (w, h) = (w as f32, h as f32);
         self.at = ((sx + sw / 2.0 - w / 2.0).round(), (sy + sh - h - LIFT).round(), w, h);
-        self.panel.show(self.at, &pixels, scale);
+        let size = (crate::canvas::pixels(w as i32, scale) as usize, crate::canvas::pixels(h as i32, scale) as usize);
+        self.panel.show(self.at, &pixels, size, scale);
     }
 
     /// The pill's centre, where the mote takes off.
