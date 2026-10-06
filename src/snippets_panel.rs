@@ -537,6 +537,17 @@ mod tests {
     }
 
     #[test]
+    fn the_command_key_with_s_saves() {
+        let p = temp_file("cmd-s", TWO);
+        let mut panel = SnippetsPanel::new(p.clone());
+        let ctx = egui::Context::default();
+        panel.working[0].text = "Cheers".into();
+        frame(&ctx, &mut panel, egui::vec2(736.0, 536.0), vec![crate::editor_kit::command_key(Key::S)]);
+        assert!(!panel.is_dirty());
+        assert_eq!(on_disk(&p)[0].text, "Cheers");
+    }
+
+    #[test]
     fn second_save_is_not_a_conflict() {
         let p = temp_file("twice", TWO);
         let mut panel = SnippetsPanel::new(p);

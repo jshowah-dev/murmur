@@ -14,6 +14,17 @@ pub(crate) const CMD: &str = "Ctrl+";
 #[cfg(target_os = "macos")]
 pub(crate) const CMD: &str = "⌘";
 
+/// `key` pressed with the command modifier, carrying the modifiers egui-winit reports for it:
+/// Ctrl on Windows, ⌘ on a Mac. Pressing Ctrl on a Mac is `ctrl` alone, which isn't a command.
+#[cfg(test)]
+pub(crate) fn command_key(key: egui::Key) -> egui::Event {
+    #[cfg(windows)]
+    let modifiers = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
+    #[cfg(target_os = "macos")]
+    let modifiers = egui::Modifiers { mac_cmd: true, command: true, ..Default::default() };
+    egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
+}
+
 pub(crate) fn open_file(p: &Path) {
     crate::platform::open_path(p);
 }
