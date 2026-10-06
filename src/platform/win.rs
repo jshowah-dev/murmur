@@ -47,7 +47,8 @@ pub fn is_minimized(w: Window) -> bool {
 }
 
 pub fn is_foreground(w: Window) -> bool {
-    unsafe { GetForegroundWindow() } == hwnd(w)
+    let fg = unsafe { GetForegroundWindow() };
+    fg == hwnd(w)
 }
 
 /// Windows only lets the process that received the last input activate a window. The hotkey
