@@ -1,11 +1,10 @@
-use crate::correction_ui::{hwnd_of, keycap, load_system_font, BG, BORDER, GREEN, MUTED, TEXT};
+use crate::correction_ui::{keycap, load_system_font, BG, BORDER, GREEN, MUTED, TEXT};
+use crate::platform::{self, Window};
 use eframe::egui::{
     self, text::LayoutJob, text::TextFormat, Color32, CornerRadius, FontId, Frame, Key, Margin, Modifiers, Stroke,
     ViewportCommand,
 };
 use std::time::{Duration, Instant};
-use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
 
 const WIDTH: f32 = 540.0;
 const MAX_LIST: f32 = 460.0;
@@ -27,7 +26,7 @@ fn ago(secs: u64) -> String {
 
 struct HistoryApp {
     items: Vec<(String, Instant)>,
-    hwnd: HWND,
+    hwnd: Window,
     frame: u32,
     was_focused: bool,
     copied: Option<(usize, Instant)>,
@@ -56,10 +55,8 @@ impl HistoryApp {
         self.frame += 1;
         if self.frame == 2 {
             // same as the fix dialog: take focus once shown, then re-pin topmost
-            unsafe {
-                crate::correction::bring_to_front(self.hwnd);
-                let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            }
+            platform::raise(self.hwnd);
+            platform::keep_on_top(self.hwnd);
         }
         // Esc or clicking another window closes it
         let focused = ctx.input(|i| i.focused);
@@ -175,7 +172,7 @@ pub fn show(items: Vec<(String, Instant)>, key: String) {
         Box::new(move |cc| {
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
             load_system_font(&cc.egui_ctx);
-            let hwnd = hwnd_of(cc).unwrap_or_default();
+            let hwnd = platform::window_of(cc);
             Ok(Box::new(HistoryApp { items, hwnd, frame: 0, was_focused: false, copied: None, closing: false, height: 0.0, key }))
         }),
     );
@@ -195,7 +192,7 @@ mod tests {
 
     /// Past the frame that takes focus, so a test doesn't.
     fn app() -> HistoryApp {
-        HistoryApp { items: vec![("hello there".into(), Instant::now())], hwnd: HWND::default(), frame: 5, was_focused: false, copied: None, closing: false, height: 0.0, key: "Right Ctrl".into() }
+        HistoryApp { items: vec![("hello there".into(), Instant::now())], hwnd: Window::default(), frame: 5, was_focused: false, copied: None, closing: false, height: 0.0, key: "Right Ctrl".into() }
     }
 
     /// Runs one frame, returning the text drawn and whether the window asked to close.

@@ -16,7 +16,6 @@ use std::time::{Duration, Instant};
 pub enum PipelineCmd {
     Start,
     Stop,
-    #[cfg_attr(not(windows), allow(dead_code))] // the macOS spike has no cancel yet
     Abort,
     Audio(Vec<f32>),
     Shutdown,

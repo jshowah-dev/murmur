@@ -2,7 +2,7 @@
 //! a dot that the mote carries to the pill (see `main.rs`, where the invitation is said).
 
 use crate::config;
-use crate::correction_ui::{hwnd_of, load_system_font, BG, BORDER, MUTED, TEXT};
+use crate::correction_ui::{load_system_font, BG, BORDER, MUTED, TEXT};
 use crate::editor_kit::{ease, reduced_motion};
 use crate::motion;
 use crate::mote::Pt;
@@ -15,8 +15,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use windows::Win32::Foundation::{HWND, RECT};
-use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsIconic};
+use crate::platform::{self, Rect as RECT, Window};
 
 const MB: u64 = 1024 * 1024;
 const TICK: Duration = Duration::from_millis(250);
@@ -155,7 +154,7 @@ struct SetupApp {
     cancel: Arc<AtomicBool>,
     installed: Arc<AtomicBool>,
     then_ready: bool,
-    hwnd: HWND,
+    hwnd: Window,
     reduced: bool,
     /// Close was sent; later frames keep drawing the same picture until the window goes
     closing: bool,
@@ -197,11 +196,7 @@ impl SetupApp {
 
     /// The window's centre, physical pixels (the card fills it), if it's on screen.
     fn card_centre(&self) -> Option<Pt> {
-        crate::caret::physical(|| unsafe {
-            let mut r = RECT::default();
-            let rect = GetWindowRect(self.hwnd, &mut r).ok().map(|_| r);
-            hand_back(rect, IsIconic(self.hwnd).as_bool())
-        })
+        crate::caret::physical(|| hand_back(platform::window_rect(self.hwnd), platform::is_minimized(self.hwnd)))
     }
 
     /// The whole window, apart from eframe itself, so tests can drive it.
@@ -432,7 +427,7 @@ pub fn run(models: PathBuf, plan: Plan) -> SetupOutcome {
                 cancel: Arc::new(AtomicBool::new(false)),
                 installed: done,
                 then_ready,
-                hwnd: hwnd_of(cc).unwrap_or_default(),
+                hwnd: platform::window_of(cc),
                 reduced: reduced_motion(),
                 closing: false,
                 focus_retry: false,
@@ -467,7 +462,7 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(false)),
             installed: Arc::new(AtomicBool::new(false)),
             then_ready: true,
-            hwnd: HWND::default(),
+            hwnd: Window::default(),
             reduced: false,
             closing: false,
             focus_retry: false,

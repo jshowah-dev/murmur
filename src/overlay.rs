@@ -1,8 +1,18 @@
+// The Mac pill lands in phase 3; until then its drawing is only used on Windows.
+#![cfg_attr(target_os = "macos", allow(dead_code))]
+
+#[cfg(windows)]
 use anyhow::{anyhow, Result};
+#[cfg(windows)]
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+#[cfg(windows)]
+use windows::Win32::Foundation::{ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use crate::platform::Rect as RECT;
+#[cfg(windows)]
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+#[cfg(windows)]
 use windows::Win32::Foundation::GetLastError;
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos, GetForegroundWindow, GetWindowRect, LoadCursorW, PeekMessageW,
     RegisterClassW, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, GWL_EXSTYLE,
@@ -10,12 +20,21 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WM_QUIT,
     WM_MOUSEMOVE, WM_RBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
+#[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
+#[cfg(windows)]
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
-use crate::editor_kit::{ease, reduced_motion};
+use std::time::Duration;
+#[cfg(windows)]
+use std::time::Instant;
+use crate::editor_kit::ease;
+#[cfg(windows)]
+use crate::editor_kit::reduced_motion;
 use crate::motion;
-use crate::canvas::{self, Canvas};
+use crate::canvas::Canvas;
+#[cfg(windows)]
+use crate::canvas;
+#[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{MonitorFromWindow, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -47,17 +66,21 @@ const IDLE_H: i32 = 14;
 
 /// The resting pill takes clicks so it can be right-clicked; the live pill is bigger and only
 /// shows while you dictate, so it lets every click through to the app underneath.
+#[cfg(windows)]
 fn ex_style(state: OverlayState) -> WINDOW_EX_STYLE {
     let base = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
     if state.is_resting() { base } else { base | WS_EX_TRANSPARENT }
 }
 
 /// Set by the window procedure, taken by the main loop, which shows the menu.
+#[cfg(windows)]
 static RIGHT_CLICKED: AtomicBool = AtomicBool::new(false);
 /// winuser.h; the windows crate only exports it with the Win32_UI_Controls feature
+#[cfg(windows)]
 const WM_MOUSELEAVE: u32 = 0x02A3;
 
 /// Whether the cursor is over the pill.
+#[cfg(windows)]
 static HOVERED: AtomicBool = AtomicBool::new(false);
 
 /// Centres of the "more" dots that hint at the right-click menu, right of the status dot.
@@ -154,6 +177,12 @@ fn size(g: f32) -> (i32, i32) {
     (lerp(IDLE_W, W), lerp(IDLE_H, H))
 }
 
+#[cfg(target_os = "macos")]
+mod mac;
+#[cfg(target_os = "macos")]
+pub use mac::{live, Overlay};
+
+#[cfg(windows)]
 pub struct Overlay {
     hwnd: HWND,
     state: OverlayState,
@@ -164,6 +193,7 @@ pub struct Overlay {
     reduced: bool,
 }
 
+#[cfg(windows)]
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_MOUSEMOVE if !HOVERED.swap(true, Ordering::Relaxed) => {
@@ -182,10 +212,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
 }
 
+#[cfg(windows)]
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+#[cfg(windows)]
 impl Overlay {
     pub fn create() -> Result<Overlay> {
         unsafe {
@@ -251,8 +283,8 @@ impl Overlay {
         })
     }
 
-    pub fn hwnd(&self) -> HWND {
-        self.hwnd
+    pub fn hwnd(&self) -> crate::platform::Window {
+        crate::platform::Window(self.hwnd.0 as isize)
     }
 
     pub fn set(&mut self, state: OverlayState) {
@@ -627,6 +659,7 @@ mod tests {
         assert_eq!(step(1.0, false, ms(1), motion::duration::HOVER, motion::duration::EXIT, true), 0.0);
     }
 
+    #[cfg(windows)] // window styles
     #[test]
     fn only_the_resting_pill_takes_clicks() {
         for state in [OverlayState::Idle, OverlayState::Paused] {

@@ -2,15 +2,14 @@
 //! link that starts the same update as the tray's; a newer release also goes to the tray menu), what Murmur has learned, and the parts that
 //! do the hearing, with their licenses.
 
-use crate::correction_ui::{hwnd_of, keycap, load_system_font, BG, BORDER, GREEN, MUTED, TEXT};
+use crate::correction_ui::{keycap, load_system_font, BG, BORDER, GREEN, MUTED, TEXT};
+use crate::platform::{self, Window};
 use eframe::egui::{self, CornerRadius, Frame, Key, Margin, Modifiers, RichText, Stroke, ViewportCommand};
 use murmur_lib::update::Release;
 use std::cell::Cell;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver};
-use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
 
 const WIDTH: f32 = 420.0;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -82,7 +81,7 @@ struct AboutApp {
     /// The newer release the check found, for the tray to offer once the window is gone.
     found: Rc<Cell<Option<Release>>>,
     clicked: Rc<Cell<bool>>,
-    hwnd: HWND,
+    hwnd: Window,
     frame: u32,
     was_focused: bool,
     /// Set once the window has been asked to close. It's drawn a few more times before it goes:
@@ -111,10 +110,8 @@ impl AboutApp {
         }
         if self.frame == 2 {
             // same as History: take focus once shown, then re-pin topmost
-            unsafe {
-                crate::correction::bring_to_front(self.hwnd);
-                let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            }
+            platform::raise(self.hwnd);
+            platform::keep_on_top(self.hwnd);
         }
         if let Some(u) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             if let Update::Available(r) = &u {
@@ -226,7 +223,7 @@ pub fn show(model: String, terms: usize, installed: bool) -> Option<(Release, bo
         Box::new(move |cc| {
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
             load_system_font(&cc.egui_ctx);
-            let hwnd = hwnd_of(cc).unwrap_or_default();
+            let hwnd = platform::window_of(cc);
             Ok(Box::new(AboutApp { model, terms, update: Update::Checking, rx: None, installed, found: app_found, clicked: app_clicked, hwnd, frame: 0, was_focused: false, closing: false, height: 0.0 }))
         }),
     );
@@ -242,9 +239,9 @@ mod tests {
 
     #[test]
     fn model_label_names_parakeet_and_falls_back_to_the_folder() {
-        let p = Path::new(r"C:\m\sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8");
-        assert_eq!(model_label(p), "Parakeet TDT 0.6B v2 (NVIDIA)");
-        assert_eq!(model_label(Path::new(r"C:\m\whisper-small")), "whisper-small");
+        let p = Path::new("m").join("sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8");
+        assert_eq!(model_label(&p), "Parakeet TDT 0.6B v2 (NVIDIA)");
+        assert_eq!(model_label(&Path::new("m").join("whisper-small")), "whisper-small");
     }
 
     /// Past the frames that start the update check and take focus, so a test touches neither.
@@ -257,7 +254,7 @@ mod tests {
             installed: true,
             found: Rc::new(Cell::new(None)),
             clicked: Rc::new(Cell::new(false)),
-            hwnd: HWND::default(),
+            hwnd: Window::default(),
             frame: 5,
             was_focused: false,
             closing: false,

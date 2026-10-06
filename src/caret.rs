@@ -1,17 +1,27 @@
+use crate::platform::Rect as RECT;
+#[cfg(windows)]
 use windows::core::BOOL;
-use windows::Win32::Foundation::{HWND, POINT, RECT};
+#[cfg(windows)]
+use windows::Win32::Foundation::{HWND, POINT};
+#[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{ClientToScreen, GetMonitorInfoW, MonitorFromRect, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+#[cfg(windows)]
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, SAFEARRAY};
+#[cfg(windows)]
 use windows::Win32::System::Ole::{SafeArrayAccessData, SafeArrayDestroy, SafeArrayGetUBound, SafeArrayUnaccessData};
+#[cfg(windows)]
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, IUIAutomationTextPattern, IUIAutomationTextPattern2, IUIAutomationTextRange,
     TextPatternRangeEndpoint_Start, TextUnit_Character, UIA_TextPattern2Id, UIA_TextPatternId,
 };
+#[cfg(windows)]
 use windows::Win32::UI::HiDpi::{SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{GetGUIThreadInfo, GetWindowRect, GetWindowThreadProcessId, GUITHREADINFO};
 
 /// Where the dictation landed, in physical screen pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(target_os = "macos", allow(dead_code))] // nothing finds a caret on macOS until phase 3
 pub enum Anchor {
     /// The text caret: the dialog goes just below this line.
     Caret(RECT),
@@ -20,6 +30,7 @@ pub enum Anchor {
 }
 
 impl Anchor {
+    #[cfg(windows)]
     fn rect(&self) -> RECT {
         match *self {
             Anchor::Caret(r) | Anchor::Area(r) => r,
@@ -29,6 +40,7 @@ impl Anchor {
 
 /// Runs `f` with per-monitor DPI awareness so every coordinate it sees or sets is in physical
 /// pixels; the rest of Murmur is DPI-unaware and would otherwise get scaled coordinates.
+#[cfg(windows)]
 pub fn physical<T>(f: impl FnOnce() -> T) -> T {
     unsafe {
         let old = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -38,9 +50,29 @@ pub fn physical<T>(f: impl FnOnce() -> T) -> T {
     }
 }
 
-/// Must be called while `target` still has focus. Tries the Win32 caret (Notepad, Office),
+/// macOS has no per-thread DPI awareness to switch.
+#[cfg(target_os = "macos")]
+pub fn physical<T>(f: impl FnOnce() -> T) -> T {
+    f()
+}
+
+// TODO(macos phase 3): the focused element's caret via Accessibility (kAXBoundsForRangeParameterizedAttribute).
+#[cfg(target_os = "macos")]
+pub fn find(_target: isize) -> Option<Anchor> {
+    None
+}
+
+// TODO(macos phase 2): the visible frame of the screen the anchor is on.
+#[cfg(target_os = "macos")]
+pub fn work_area(_anchor: &Anchor) -> RECT {
+    RECT { left: 0, top: 0, right: 1440, bottom: 900 }
+}
+
+/// Must be called while `target` (an HWND) still has focus. Tries the Win32 caret (Notepad, Office),
 /// then the UI Automation caret (Chrome, Electron), then the focused control, then the window.
-pub fn find(target: HWND) -> Option<Anchor> {
+#[cfg(windows)]
+pub fn find(target: isize) -> Option<Anchor> {
+    let target = HWND(target as *mut _);
     physical(|| unsafe {
         if let Some(r) = system_caret(target) {
             return Some(Anchor::Caret(r));
@@ -55,15 +87,18 @@ pub fn find(target: HWND) -> Option<Anchor> {
 }
 
 /// Whether the caret's centre lies within `field`, give or take a pixel of rounding.
+#[cfg_attr(target_os = "macos", allow(dead_code))] // until the Accessibility caret lands
 fn inside(caret: RECT, field: RECT) -> bool {
     let (x, y) = ((caret.left + caret.right) / 2, (caret.top + caret.bottom) / 2);
     x >= field.left - 1 && x <= field.right + 1 && y >= field.top - 1 && y <= field.bottom + 1
 }
 
+#[cfg(windows)]
 fn non_empty(r: RECT) -> bool {
     r.right > r.left && r.bottom > r.top
 }
 
+#[cfg(windows)]
 unsafe fn system_caret(target: HWND) -> Option<RECT> {
     unsafe {
         let tid = GetWindowThreadProcessId(target, None);
@@ -81,6 +116,7 @@ unsafe fn system_caret(target: HWND) -> Option<RECT> {
     }
 }
 
+#[cfg(windows)]
 unsafe fn uia_anchor() -> Option<Anchor> {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED); // already-initialized is fine
@@ -109,6 +145,7 @@ unsafe fn uia_anchor() -> Option<Anchor> {
 }
 
 /// Rectangle of a caret range. An empty range has none; take the previous character's right edge.
+#[cfg(windows)]
 unsafe fn caret_rect(range: &IUIAutomationTextRange) -> Option<RECT> {
     unsafe {
         if let Some(r) = range_rect(range) {
@@ -122,6 +159,7 @@ unsafe fn caret_rect(range: &IUIAutomationTextRange) -> Option<RECT> {
 }
 
 /// First rectangle of a text range; UIA returns them as flat [left, top, width, height] doubles.
+#[cfg(windows)]
 unsafe fn range_rect(range: &IUIAutomationTextRange) -> Option<RECT> {
     unsafe {
         let sa: *mut SAFEARRAY = range.GetBoundingRectangles().ok()?;
@@ -146,6 +184,7 @@ unsafe fn range_rect(range: &IUIAutomationTextRange) -> Option<RECT> {
 }
 
 /// Usable area (excluding the taskbar) of the monitor the anchor is on.
+#[cfg(windows)]
 pub fn work_area(anchor: &Anchor) -> RECT {
     physical(|| unsafe {
         let mon = MonitorFromRect(&anchor.rect(), MONITOR_DEFAULTTONEAREST);

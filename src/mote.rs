@@ -1,15 +1,29 @@
 //! The carved moment: when you let go of the key, a mote flies from the pill to your caret,
 //! waits there while the speech is transcribed, and dissolves into your words.
 
-use crate::canvas::{self, Canvas, Span};
-use crate::editor_kit::{ease, reduced_motion};
+// The Mac mote lands in phase 3; until then its flight and drawing are only used on Windows.
+#![cfg_attr(target_os = "macos", allow(dead_code))]
+
+use crate::canvas::{Canvas, Span};
+#[cfg(windows)]
+use crate::canvas;
+use crate::editor_kit::ease;
+#[cfg(windows)]
+use crate::editor_kit::reduced_motion;
 use crate::motion;
+use crate::platform::Rect as RECT;
+#[cfg(windows)]
 use anyhow::{anyhow, Result};
 use std::time::{Duration, Instant};
+#[cfg(windows)]
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, RECT, WPARAM};
+#[cfg(windows)]
+use windows::Win32::Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, WPARAM};
+#[cfg(windows)]
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+#[cfg(windows)]
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, RegisterClassW, SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE,
     SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
@@ -380,6 +394,7 @@ fn render_tag(s: &Sprite, m: &Message, b: &TagBox, centre: Pt, w: i32, h: i32, f
     c.into_bgra()
 }
 
+#[cfg(windows)]
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
 }
@@ -392,8 +407,14 @@ fn changed(last: &mut Option<(Sprite, i32, i32, i32, i32)>, s: &Sprite, x: i32, 
     differs
 }
 
+#[cfg(target_os = "macos")]
+mod mac;
+#[cfg(target_os = "macos")]
+pub(crate) use mac::Mote;
+
 /// The mote's own click-through window. It's created and moved in physical pixels, the space
 /// `caret::find` reports in, while the rest of Murmur is DPI-unaware.
+#[cfg(windows)]
 pub(crate) struct Mote {
     hwnd: HWND,
     flight: Flight,
@@ -406,6 +427,7 @@ pub(crate) struct Mote {
     last: Option<(Sprite, i32, i32, i32, i32)>,
 }
 
+#[cfg(windows)]
 impl Mote {
     pub(crate) fn create() -> Result<Mote> {
         let hwnd = crate::caret::physical(|| unsafe {
@@ -518,7 +540,6 @@ impl Mote {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
-    use windows::Win32::Foundation::RECT;
 
     fn ms(n: u64) -> Duration {
         Duration::from_millis(n)

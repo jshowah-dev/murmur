@@ -4,17 +4,13 @@ use eframe::egui::{
     Margin, Modifiers, Stroke, TextEdit, ViewportCommand,
 };
 use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
+use crate::platform::{self, Window};
 use murmur_lib::dictionary::Dictionary;
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use similar::{ChangeTag, TextDiff};
 use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
-use windows::Win32::Foundation::{HWND, RECT};
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowRect, SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-};
 
 const WIDTH: f32 = 540.0;
 pub(crate) const BG: Color32 = Color32::from_rgb(0x1F, 0x1F, 0x1F);
@@ -77,7 +73,7 @@ struct FixApp {
     dict: Dictionary,
     learn: Vec<(String, String)>,
     learn_for: String,
-    hwnd: HWND,
+    hwnd: Window,
     frame: u32,
     opened: Instant,
     reduced_motion: bool,
@@ -90,9 +86,8 @@ impl FixApp {
     fn close(&self, ctx: &egui::Context, result: Option<String>) {
         *self.out.borrow_mut() = result;
         // where the card was, for the mote that carries the result to the caret
-        *self.card.borrow_mut() = Some(caret::physical(|| unsafe {
-            let mut r = RECT::default();
-            let _ = GetWindowRect(self.hwnd, &mut r);
+        *self.card.borrow_mut() = Some(caret::physical(|| {
+            let r = platform::window_rect(self.hwnd).unwrap_or_default();
             ((r.left + r.right) as f32 / 2.0, (r.top + r.bottom) as f32 / 2.0)
         }));
         ctx.send_viewport_cmd(ViewportCommand::Close);
@@ -131,10 +126,8 @@ impl eframe::App for FixApp {
         if self.frame == 2 {
             // eframe shows the window after the first frame; only then can it take focus.
             // bring_to_front ends not-topmost, so pin it again: a click elsewhere must not bury it.
-            unsafe {
-                crate::correction::bring_to_front(self.hwnd);
-                let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            }
+            platform::raise(self.hwnd);
+            platform::keep_on_top(self.hwnd);
         }
         let (submit, cancel) =
             ctx.input_mut(|i| (i.consume_key(Modifiers::CTRL, Key::Enter), i.consume_key(Modifiers::NONE, Key::Escape)));
@@ -242,10 +235,21 @@ impl eframe::App for FixApp {
     }
 }
 
-pub(crate) fn load_system_font(ctx: &egui::Context) {
+/// The system's UI font files, best first.
+#[cfg(windows)]
+fn system_fonts() -> Vec<String> {
     let dir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
-    for name in ["SegUIVar.ttf", "segoeui.ttf"] {
-        if let Ok(bytes) = std::fs::read(format!(r"{dir}\Fonts\{name}")) {
+    ["SegUIVar.ttf", "segoeui.ttf"].iter().map(|name| format!(r"{dir}\Fonts\{name}")).collect()
+}
+
+#[cfg(target_os = "macos")]
+fn system_fonts() -> Vec<String> {
+    vec!["/System/Library/Fonts/SFNS.ttf".into()]
+}
+
+pub(crate) fn load_system_font(ctx: &egui::Context) {
+    for path in system_fonts() {
+        if let Ok(bytes) = std::fs::read(path) {
             ctx.add_font(FontInsert::new(
                 "system",
                 FontData::from_owned(bytes),
@@ -256,16 +260,9 @@ pub(crate) fn load_system_font(ctx: &egui::Context) {
     }
 }
 
-pub(crate) fn hwnd_of(cc: &eframe::CreationContext) -> Option<HWND> {
-    match cc.window_handle().ok()?.as_raw() {
-        RawWindowHandle::Win32(h) => Some(HWND(h.hwnd.get() as *mut _)),
-        _ => None,
-    }
-}
-
 /// Shows the fix-last dialog next to where `initial` was dictated. Blocks until the user
 /// replaces (Some(edited)) or cancels (None); also returns the card's centre, physical pixels.
-pub fn show(initial: &str, heard_at: Option<Instant>, dict: Dictionary, target: HWND) -> (Option<String>, Option<(f32, f32)>) {
+pub fn show(initial: &str, heard_at: Option<Instant>, dict: Dictionary, target: isize) -> (Option<String>, Option<(f32, f32)>) {
     // read the caret now, while the target app still has focus
     let anchor = caret::find(target);
     log::info!("fix-last anchor: {anchor:?}");
@@ -293,13 +290,12 @@ pub fn show(initial: &str, heard_at: Option<Instant>, dict: Dictionary, target: 
         Box::new(move |cc| {
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
             load_system_font(&cc.egui_ctx);
-            let hwnd = hwnd_of(cc).unwrap_or_default();
+            let hwnd = platform::window_of(cc);
             if let Some(anchor) = anchor {
-                caret::physical(|| unsafe {
-                    let mut wr = RECT::default();
-                    let _ = GetWindowRect(hwnd, &mut wr);
+                caret::physical(|| {
+                    let wr = platform::window_rect(hwnd).unwrap_or_default();
                     let (x, y) = caret::place(&anchor, wr.right - wr.left, wr.bottom - wr.top, caret::work_area(&anchor));
-                    let _ = SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                    platform::move_to(hwnd, x, y);
                 });
             }
             log::info!("fix-last dialog created in {:?}", started.elapsed());

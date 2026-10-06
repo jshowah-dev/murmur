@@ -2,7 +2,7 @@
 
 use crate::{
     about_ui, audio, audio_out, autostart, caret, config, correction, correction_ui, dictionary, editor, history, history_ui, hotkey, hotkey_ui,
-    inject, model_fetch, motion, mote, notice, overlay, pipeline, setup_ui, snippets, tray, update,
+    inject, model_fetch, motion, mote, notice, overlay, pipeline, platform, setup_ui, snippets, tray, update,
 };
 use anyhow::Result;
 use config::Config;
@@ -18,7 +18,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tray::{Tray, TrayEvent};
-use windows::Win32::Foundation::{HWND, RECT};
+use platform::Rect as RECT;
 
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
 
@@ -46,7 +46,7 @@ fn init_logging(may_truncate: bool) {
 }
 
 fn open_path(p: &std::path::Path) {
-    let _ = std::process::Command::new("explorer.exe").arg(p).spawn();
+    platform::open_path(p);
 }
 
 /// The editor tab asked for on the command line, or `None` for the app itself.
@@ -140,16 +140,19 @@ pub fn main() -> Result<()> {
     }
     log::info!("murmur {} starting, cwd {:?}", env!("CARGO_PKG_VERSION"), std::env::current_dir().ok());
     // second instance would capture the same hotkey and paste every dictation twice
-    let _instance = unsafe {
-        use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
-        use windows::Win32::System::Threading::CreateMutexW;
-        let m = CreateMutexW(None, false, windows::core::w!("Local\\Murmur.SingleInstance"))?;
-        if GetLastError() == ERROR_ALREADY_EXISTS {
-            log::warn!("another instance is running; exiting");
-            return Ok(());
-        }
-        m
+    let Some(_instance) = platform::single_instance("Local\\Murmur.SingleInstance")? else {
+        log::warn!("another instance is running; exiting");
+        return Ok(());
     };
+    #[cfg(target_os = "macos")]
+    {
+        platform::init_app();
+        // pasting is a synthetic Cmd+V, which macOS only lets through once Murmur is allowed
+        if !platform::accessibility_trusted(false) {
+            log::warn!("not allowed to paste yet; asking for Accessibility");
+            platform::accessibility_trusted(true);
+        }
+    }
     let mut problems: Vec<notice::FileProblem> = Vec::new();
     let mut cfg = match Config::load_or_create() {
         Ok(c) => c,
@@ -399,7 +402,7 @@ pub fn main() -> Result<()> {
                     // the registry, not the menu's own check state, says what's on
                     if let Err(e) = autostart::set(!autostart::is_enabled()) {
                         log::error!("autostart: {e:#}");
-                        tray.notify("Murmur", &format!("Couldn't change start with Windows: {e}"));
+                        tray.notify("Murmur", &format!("Couldn't change {}: {e}", tray::AUTOSTART_PHRASE));
                     }
                     tray.set_autostart_checked(autostart::is_enabled());
                 }
@@ -514,7 +517,7 @@ pub fn main() -> Result<()> {
                         // UIA can take tens of ms; the loop mustn't wait for it
                         std::thread::spawn(move || {
                             let t0 = Instant::now();
-                            let found = caret::find(HWND(target as *mut _));
+                            let found = caret::find(target);
                             log::info!("caret lookup: {found:?} in {} ms", t0.elapsed().as_millis());
                             let caret = match found {
                                 Some(caret::Anchor::Caret(r)) => Some(r),
@@ -745,7 +748,7 @@ fn say(mote: &mut Mote, overlay: &Overlay, m: Message, from: (f32, f32), to: Opt
 
 /// The caret in the window in front, if it has one.
 fn foreground_caret() -> Option<(f32, f32)> {
-    match caret::find(HWND(inject::foreground_hwnd() as *mut _)) {
+    match caret::find(inject::foreground_hwnd()) {
         Some(caret::Anchor::Caret(r)) => Some(mote::caret_point(r)),
         _ => None,
     }

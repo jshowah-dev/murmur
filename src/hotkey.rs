@@ -2,7 +2,12 @@ use crossbeam_channel::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, sleep, JoinHandle};
 use std::time::{Duration, Instant};
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_ESCAPE, VK_LSHIFT, VK_RSHIFT, VK_SHIFT};
+
+// virtual-key codes
+const VK_SHIFT: u16 = 0x10;
+const VK_ESCAPE: u16 = 0x1B;
+const VK_LSHIFT: u16 = 0xA0;
+const VK_RSHIFT: u16 = 0xA1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyEvent {
@@ -137,11 +142,11 @@ impl Machine {
 }
 
 pub(crate) fn down(vk: u16) -> bool {
-    unsafe { (GetAsyncKeyState(vk as i32) as u16 & 0x8000) != 0 }
+    crate::platform::key_down(vk)
 }
 
 fn shift_down() -> bool {
-    down(VK_SHIFT.0) || down(VK_LSHIFT.0) || down(VK_RSHIFT.0)
+    down(VK_SHIFT) || down(VK_LSHIFT) || down(VK_RSHIFT)
 }
 
 /// Whether the PTT key is held: every key of a chord is down. No keys is no PTT key, so the
@@ -159,7 +164,7 @@ pub fn spawn(ptt_vks: Arc<Mutex<Vec<u16>>>, max: Duration, tx: Sender<HotkeyEven
             let mut m = Machine::new(max);
             loop {
                 let ptt = ptt_vks.lock().map(|vks| all_down(&vks, down)).unwrap_or(false);
-                let input = Input { ptt, shift: shift_down(), esc: down(VK_ESCAPE.0) };
+                let input = Input { ptt, shift: shift_down(), esc: down(VK_ESCAPE) };
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| m.step(input, Instant::now()))) {
                     Ok(evs) => {
                         for ev in evs {

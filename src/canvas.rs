@@ -1,11 +1,18 @@
+// The Mac pill and mote land in phase 3; until then only Windows draws with the canvas.
+#![cfg_attr(target_os = "macos", allow(dead_code))]
+
+#[cfg(windows)]
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, SIZE};
+#[cfg(windows)]
 use windows::core::w;
+#[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject, GdiFlush, GetDC, GetTextExtentPoint32W,
     ReleaseDC, SelectObject, SetBkMode, SetTextColor, TextOutW, ANTIALIASED_QUALITY, AC_SRC_ALPHA, BITMAPINFO,
     BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DIB_RGB_COLORS, FW_NORMAL,
     HBITMAP, HDC, OUT_DEFAULT_PRECIS, TRANSPARENT,
 };
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
 
 /// Premultiplied RGBA canvas; shapes are drawn with per-pixel coverage so edges are antialiased.
@@ -87,6 +94,7 @@ impl Canvas {
     /// GDI draws white on black with grayscale antialiasing, so any channel is the coverage.
     /// `size` is what `measure` gave for these spans at `px`, so callers that already have it
     /// don't pay for it twice.
+    #[cfg(windows)]
     pub(crate) fn text(&mut self, x: f32, y: f32, spans: &[Span], px: i32, size: (i32, i32), alpha: f32) {
         let (tw, th) = size;
         if tw <= 0 || th <= 0 || alpha <= 0.0 {
@@ -150,6 +158,10 @@ impl Canvas {
         }
     }
 
+    // TODO(macos phase 3): CoreText, for the mote's messages.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn text(&mut self, _x: f32, _y: f32, _spans: &[Span], _px: i32, _size: (i32, i32), _alpha: f32) {}
+
     /// Pack as premultiplied BGRA (0xAARRGGBB little-endian), what UpdateLayeredWindow expects.
     pub(crate) fn into_bgra(self) -> Vec<u32> {
         let q = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u32;
@@ -161,6 +173,7 @@ impl Canvas {
 pub(crate) type Span = (String, u32);
 
 /// Runs `f` with a memory DC holding the UI font, `px` pixels to the em.
+#[cfg(windows)]
 fn with_font<T>(px: i32, f: impl FnOnce(HDC) -> T) -> T {
     unsafe {
         let dc = CreateCompatibleDC(None);
@@ -177,6 +190,7 @@ fn with_font<T>(px: i32, f: impl FnOnce(HDC) -> T) -> T {
     }
 }
 
+#[cfg(windows)]
 fn extent(dc: HDC, wide: &[u16]) -> SIZE {
     let mut sz = SIZE::default();
     let _ = unsafe { GetTextExtentPoint32W(dc, wide, &mut sz) };
@@ -184,6 +198,7 @@ fn extent(dc: HDC, wide: &[u16]) -> SIZE {
 }
 
 /// Width and height of `spans` drawn side by side at `px`; (0, 0) when there's no text.
+#[cfg(windows)]
 pub(crate) fn measure(spans: &[Span], px: i32) -> (i32, i32) {
     if spans.iter().all(|(s, _)| s.is_empty()) {
         return (0, 0);
@@ -196,8 +211,15 @@ pub(crate) fn measure(spans: &[Span], px: i32) -> (i32, i32) {
     })
 }
 
+// TODO(macos phase 3): CoreText, for the mote's messages.
+#[cfg(target_os = "macos")]
+pub(crate) fn measure(_spans: &[Span], _px: i32) -> (i32, i32) {
+    (0, 0)
+}
+
 /// Push premultiplied BGRA `pixels` (`w * h`) to the layered window `hwnd` at (x, y), through a
 /// 32-bit DIB and UpdateLayeredWindow.
+#[cfg(windows)]
 pub(crate) fn push(hwnd: HWND, x: i32, y: i32, w: i32, h: i32, pixels: &[u32]) {
     unsafe {
         let screen = GetDC(None);
@@ -258,6 +280,7 @@ mod tests {
         assert_eq!(px[5 * 20 + 15], 0, "nothing where nothing was drawn");
     }
 
+    #[cfg(windows)] // GDI text
     #[test]
     fn text_is_drawn_in_each_spans_colour() {
         let spans: Vec<Span> = vec![("Hob".into(), 0xFF0000), ("HAWB".into(), 0x0000FF)];
@@ -275,12 +298,14 @@ mod tests {
         }
     }
 
+    #[cfg(windows)] // GDI text
     #[test]
     fn measure_handles_wide_characters_and_nothing() {
         assert!(measure(&[("日本".into(), 0xFFFFFF)], 16).0 > 10);
         assert_eq!(measure(&[], 16), (0, 0));
     }
 
+    #[cfg(windows)] // GDI text
     #[test]
     fn text_respects_alpha() {
         let spans: Vec<Span> = vec![("Hi".into(), 0xFFFFFF)];

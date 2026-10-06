@@ -1,15 +1,15 @@
 //! The push-to-talk key picker: press the key you want to hold to talk. Enter or clicking away keeps it, Esc cancels.
 
-use crate::correction_ui::{hwnd_of, keycap, load_system_font, AMBER, BG, BORDER, MUTED, TEXT};
+use crate::correction_ui::{keycap, load_system_font, AMBER, BG, BORDER, MUTED, TEXT};
+use crate::platform::{self, Window};
 use crate::hotkey::down;
 use eframe::egui::{self, CornerRadius, Frame, Key, Margin, Modifiers, RichText, Stroke, ViewportCommand};
 use murmur_lib::config::{chord_vks, pickable_vks, ptt_label_of, ptt_name_of, ptt_vk_of};
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
-use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::Input::KeyboardAndMouse::VK_SHIFT;
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
+
+const VK_SHIFT: u16 = 0x10;
 
 const WIDTH: f32 = 380.0;
 const POLL: Duration = Duration::from_millis(30);
@@ -84,7 +84,7 @@ struct PickerApp {
     capture: Capture,
     was_shift: bool,
     chosen: Rc<Cell<Option<Vec<u16>>>>,
-    hwnd: HWND,
+    hwnd: Window,
     frame: u32,
     was_focused: bool,
     /// Set once the window has been asked to close. It's drawn a few more times before it goes:
@@ -98,7 +98,7 @@ impl PickerApp {
     fn poll_keys(&mut self, ctx: &egui::Context, focused: bool) {
         // egui can't tell left Ctrl from right or see a modifier on its own, so the keys are polled
         let now: Vec<u16> = self.vks.iter().copied().filter(|vk| focused && down(*vk)).collect();
-        let shift = focused && down(VK_SHIFT.0);
+        let shift = focused && down(VK_SHIFT);
         let other = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { key, pressed: true, .. } if in_use(*key))));
         if let Some(keys) = self.capture.step(&now) {
             if ptt_name_of(&keys).is_some() {
@@ -127,14 +127,12 @@ impl eframe::App for PickerApp {
         self.frame += 1;
         if self.frame == 2 {
             // same as History: take focus once shown, then re-pin topmost
-            unsafe {
-                crate::correction::bring_to_front(self.hwnd);
-                let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            }
+            platform::raise(self.hwnd);
+            platform::keep_on_top(self.hwnd);
         }
         // Esc, Enter or clicking another window closes it
         // winit can miss the focus event when the window brings itself to the front, so ask Windows too
-        let focused = ctx.input(|i| i.focused) || unsafe { GetForegroundWindow() } == self.hwnd;
+        let focused = ctx.input(|i| i.focused) || platform::is_foreground(self.hwnd);
         self.was_focused |= focused;
         let changed = self.picked.clone().filter(|vks| ptt_name_of(vks) != ptt_name_of(&self.current));
         if !self.closing {
@@ -229,7 +227,7 @@ pub fn show(current: Vec<u16>) -> Option<Vec<u16>> {
         Box::new(move |cc| {
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
             load_system_font(&cc.egui_ctx);
-            let hwnd = hwnd_of(cc).unwrap_or_default();
+            let hwnd = platform::window_of(cc);
             let mut vks = pickable_vks();
             vks.extend(chord_vks().into_iter().filter(|vk| !pickable_vks().contains(vk)));
             Ok(Box::new(PickerApp { current, picked: None, refusal: None, vks, capture: Capture::default(), was_shift: true, chosen: app_chosen, hwnd, frame: 0, was_focused: false, closing: false, height: 0.0 }))

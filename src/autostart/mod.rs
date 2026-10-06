@@ -1,4 +1,4 @@
-//! Puts a finished dictation into the app in front.
+//! Start Murmur when you sign in.
 
 #[cfg(windows)]
 mod win;
