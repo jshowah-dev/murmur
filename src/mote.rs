@@ -33,6 +33,14 @@ pub(crate) const FLIGHT: Duration = Duration::from_millis(300);
 #[cfg(target_os = "macos")]
 pub(crate) const FLIGHT: Duration = Duration::from_millis(450);
 
+/// The least time the mote stays at the caret before dissolving. Words land in 0.1–0.3 s on a
+/// Mac, often mid-flight, so without a stay the mote sometimes swells away on arrival and
+/// sometimes sits first, and reads as an inconsistent dot (Jeff, 2026-10-05).
+#[cfg(windows)]
+const DWELL: Duration = Duration::ZERO;
+#[cfg(target_os = "macos")]
+const DWELL: Duration = Duration::from_millis(250);
+
 /// A point on a quadratic arc from `from` to `to` at `t` (0..=1). The arc lobs upward, like
 /// something tossed: its control point sits off the midpoint on the screen-up side.
 pub(crate) fn arc_point(from: Pt, to: Pt, t: f32) -> Pt {
@@ -117,6 +125,7 @@ enum Phase {
     Speaking { at: Pt, start: Instant },
     /// pulling back to a dot from openness `open`
     Furling { at: Pt, start: Instant, open: f32 },
+    /// before `start`, the plain dot
     Leaving { at: Pt, start: Instant, alpha: f32, grow: bool },
 }
 
@@ -236,7 +245,12 @@ impl Flight {
         }
         // read while still sticky, as in `dismiss`
         if let Some(s) = self.sprite(now) {
-            self.phase = Phase::Leaving { at: s.at, start: now, alpha: s.alpha, grow };
+            // a mote that has only just landed stays its minimum first
+            let start = match self.phase {
+                Phase::Settled { since, .. } => now.max(since + motion::scaled(DWELL)),
+                _ => now,
+            };
+            self.phase = Phase::Leaving { at: s.at, start, alpha: s.alpha, grow };
         }
         self.sticky = false;
     }
@@ -257,7 +271,7 @@ impl Flight {
                     let landed = start + motion::scaled(FLIGHT);
                     self.phase = match then {
                         Then::Settle => Phase::Settled { at: to, since: landed },
-                        Then::Dissolve => Phase::Leaving { at: to, start: landed, alpha: 1.0, grow: true },
+                        Then::Dissolve => Phase::Leaving { at: to, start: landed + motion::scaled(DWELL), alpha: 1.0, grow: true },
                         Then::Say => Phase::Speaking { at: to, start: landed },
                     };
                     return self.sprite(now);
@@ -663,6 +677,9 @@ mod tests {
         let mut f = Flight::new(false);
         f.launch(PILL, CARET, t0);
         f.sprite(settled);
+        // settled past the dwell, so it dissolves at once
+        let settled = settled + DWELL;
+        f.sprite(settled);
         f.dissolve(settled);
         let mid = f.sprite(settled + motion::duration::EXIT / 2).unwrap();
         assert!(mid.radius > 1.0 && mid.alpha < 1.0);
@@ -685,9 +702,30 @@ mod tests {
         f.dissolve(t0 + FLIGHT / 3);
         let s = f.sprite(t0 + FLIGHT / 2).unwrap();
         assert!(s.at != CARET && s.alpha == 1.0 && s.radius == 1.0, "keeps flying: {s:?}");
-        let s = f.sprite(t0 + FLIGHT + motion::duration::EXIT / 2).unwrap();
+        let s = f.sprite(t0 + FLIGHT + DWELL + motion::duration::EXIT / 2).unwrap();
         assert!(s.at == CARET && s.radius > 1.0 && s.alpha < 1.0, "dissolves at the caret: {s:?}");
-        assert!(f.sprite(t0 + FLIGHT + motion::duration::EXIT + ms(1)).is_none());
+        assert!(f.sprite(t0 + FLIGHT + DWELL + motion::duration::EXIT + ms(1)).is_none());
+    }
+
+    #[test]
+    fn words_landing_early_wait_out_the_dwell_at_the_caret() {
+        let t0 = Instant::now();
+        let landed = t0 + FLIGHT;
+        let mut f = Flight::new(false);
+        f.launch(PILL, CARET, t0);
+        f.dissolve(t0 + FLIGHT / 3);
+        let s = f.sprite(landed + DWELL / 2).unwrap();
+        assert!(s.at == CARET && s.alpha > 0.99 && s.radius < 1.01, "a plain dot while it dwells: {s:?}");
+        assert!(f.sprite(landed + DWELL + motion::duration::EXIT / 2).unwrap().radius > 1.0, "then dissolves");
+        assert!(f.sprite(landed + DWELL + motion::duration::EXIT + ms(1)).is_none());
+
+        // words just after landing wait out the rest of the dwell, not a whole one
+        let mut g = Flight::new(false);
+        g.launch(PILL, CARET, t0);
+        g.sprite(landed + ms(1));
+        g.dissolve(landed + DWELL / 2);
+        assert!(g.sprite(landed + DWELL / 2 + ms(1)).unwrap().radius < 1.01);
+        assert!(g.sprite(landed + DWELL + motion::duration::EXIT + ms(1)).is_none());
     }
 
     #[test]
