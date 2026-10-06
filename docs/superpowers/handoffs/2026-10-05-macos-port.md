@@ -9,7 +9,9 @@ Murmur dictates on Jeff's MacBook Air (Apple Silicon, macOS 26.6): hold **Right 
   - `602a08a` phase 1: push-to-talk, paste and menu bar on macOS
   - `7ad1e95` fix: a Windows-only parse error found by CI
   - `d98fefa` the pill on macOS
-  - the meter gain fix (see Next steps)
+  - `5669d80` the pill's meter gain on macOS
+  - `5d183c8` the flying mote on macOS, with the Accessibility caret
+  - the web-view caret fix (Chromium answers with the whole line)
 - **Specs:** `docs/superpowers/specs/2026-10-05-murmur-macos-phase1-design.md` (phase 1 decisions, spike findings, file-by-file changes).
 - **Tests on the Mac:** 183 library, 188 app, speech integration; all pass. Windows CI: phase 1 passed; the pill commit's run was in progress at handoff ([runs](https://github.com/jshowah-dev/murmur/actions/workflows/release.yml)).
 
@@ -58,9 +60,10 @@ open target/release/Murmur.app
 - First-run setup should walk through the Accessibility (and optionally Input Monitoring) permissions.
 - The UI font is SF Pro (`/System/Library/Fonts/SFNS.ttf`), unverified in egui.
 
+**The mote:** done and confirmed in Quick Notes, Mail and the Claude app. The `Mote` is shared; on macOS it moves a sprite layer across a still full-screen `platform::Stage` (moving a window per frame smeared). Mac tuning from Jeff: 450 ms flight, dot at 0.8 of its point size. It lands where the words will start (the caret at release), as on Windows; Jeff chose to keep that. `caret.rs` asks Accessibility for the insertion point: a character range in native fields, text markers in web views; Chromium answers a collapsed range with the whole line, so the caret comes from the neighbouring character. Electron/Chromium apps are woken once per pid with `AXManualAccessibility`, so their first dictation may miss. Jeff hasn't yet said whether the motion now looks as clean as Windows.
+
 **Phase 3: the rest of the parity work.**
-- Mote on macOS: reuse `platform::Panel`; messages need CoreText in `canvas.rs` (`text`, `measure`). Until then messages such as "Didn't catch that" only go to the log.
-- Caret via Accessibility (`caret.rs`), email formatting via bundle id + window title (`context.rs`), speaker mute via CoreAudio (`audio_out/mac.rs`), Open at Login via SMAppService (`autostart/mac.rs`), notifications (`tray.rs`).
+- Email formatting via bundle id + window title (`context.rs`), speaker mute via CoreAudio (`audio_out/mac.rs`), Open at Login via SMAppService (`autostart/mac.rs`), notifications (`tray.rs`), the pill's right-click menu.
 - `grep -rn "TODO(macos" src` lists every placeholder.
 
 **Phase 4: distribution.** Apple Developer ID, hardened runtime with the audio-input entitlement, notarization, a DMG, a macOS job in `release.yml`, a Mac updater (today "update available" opens the releases page), and a Mac section in the README.

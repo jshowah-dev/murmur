@@ -121,6 +121,8 @@ mod ax {
     extern "C" {
         fn CFRelease(cf: Ref);
         static kCFBooleanTrue: Ref;
+        static kCFTypeArrayCallBacks: c_void;
+        fn CFArrayCreate(allocator: Ref, values: *const Ref, count: isize, callbacks: *const c_void) -> Ref;
     }
 
     /// Apps already asked to turn their accessibility on, by pid.
@@ -168,6 +170,39 @@ mod ax {
         (err == 0 && !out.is_null()).then(|| Owned(out))
     }
 
+    /// The text-marker range between markers `a` and `b`, in either order.
+    fn marker_range(element: &Owned, a: &Owned, b: &Owned) -> Option<Owned> {
+        let pair = [a.0, b.0];
+        let array = Owned(unsafe { CFArrayCreate(null(), pair.as_ptr(), 2, &kCFTypeArrayCallBacks) });
+        parameterized(element, "AXTextMarkerRangeForUnorderedTextMarkers", &array)
+    }
+
+    fn bounds_of(element: &Owned, range: &Owned) -> Option<Rect> {
+        parameterized(element, "AXBoundsForTextMarkerRange", range).and_then(|b| value::<Rect>(&b, CG_RECT)).filter(|r| r.size.h > 0.0)
+    }
+
+    /// The insertion point in a web view. WebKit (Mail) answers the selection's bounds with the
+    /// caret itself; Chromium with the whole line, so the caret is taken from the character
+    /// before it (its right edge), or at the very start, the one after it (its left edge).
+    fn web_caret(element: &Owned) -> Option<Rect> {
+        let selection = attribute(element, "AXSelectedTextMarkerRange")?;
+        let whole = bounds_of(element, &selection)?;
+        if whole.size.w <= 2.0 {
+            return Some(whole);
+        }
+        let caret = parameterized(element, "AXEndTextMarkerForTextMarkerRange", &selection)?;
+        let before = parameterized(element, "AXPreviousTextMarkerForTextMarker", &caret)
+            .and_then(|prev| marker_range(element, &prev, &caret))
+            .and_then(|r| bounds_of(element, &r))
+            .map(|c| Rect { origin: Point { x: c.origin.x + c.size.w, y: c.origin.y }, size: Size { w: 0.0, h: c.size.h } });
+        before.or_else(|| {
+            parameterized(element, "AXNextTextMarkerForTextMarker", &caret)
+                .and_then(|next| marker_range(element, &caret, &next))
+                .and_then(|r| bounds_of(element, &r))
+                .map(|c| Rect { size: Size { w: 0.0, h: c.size.h }, ..c })
+        })
+    }
+
     fn value<T: Default>(v: &Owned, kind: u32) -> Option<T> {
         let mut out = T::default();
         unsafe { AXValueGetValue(v.0, kind, (&mut out as *mut T).cast()) }.then_some(out)
@@ -191,7 +226,7 @@ mod ax {
         };
         // native text fields answer with a character range; web views (WebKit in Mail, Chromium in
         // browsers and Electron apps) with text markers
-        let caret = bounds("AXSelectedTextRange", "AXBoundsForRange").or_else(|| bounds("AXSelectedTextMarkerRange", "AXBoundsForTextMarkerRange"));
+        let caret = bounds("AXSelectedTextRange", "AXBoundsForRange").or_else(|| web_caret(&focused));
         if let Some(r) = caret {
             return Some(Anchor::Caret(rect(r.origin.x, r.origin.y, r.size.w, r.size.h)));
         }
