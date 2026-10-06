@@ -11,9 +11,10 @@ Murmur dictates on Jeff's MacBook Air (Apple Silicon, macOS 26.6): hold **Right 
   - `d98fefa` the pill on macOS
   - `5669d80` the pill's meter gain on macOS
   - `5d183c8` the flying mote on macOS, with the Accessibility caret
-  - the web-view caret fix (Chromium answers with the whole line)
+  - `aca0463` the web-view caret fix (Chromium answers with the whole line)
+  - `4fba3f9` `Canvas::new` test-only (a Windows-only warning)
 - **Specs:** `docs/superpowers/specs/2026-10-05-murmur-macos-phase1-design.md` (phase 1 decisions, spike findings, file-by-file changes).
-- **Tests on the Mac:** 183 library, 188 app, speech integration; all pass. Windows CI: phase 1 passed; the pill commit's run was in progress at handoff ([runs](https://github.com/jshowah-dev/murmur/actions/workflows/release.yml)).
+- **Tests on the Mac:** 183 library, 191 app, speech integration; all pass. Windows CI passed with no warnings on every commit through `4fba3f9` ([runs](https://github.com/jshowah-dev/murmur/actions/workflows/release.yml)).
 
 ## Decisions (Jeff)
 
@@ -59,6 +60,10 @@ open target/release/Murmur.app
 - Fix-last submits with Ctrl+Enter (`Modifiers::CTRL`); a Mac wants ⌘Enter (`Modifiers::COMMAND`, which is still Ctrl on Windows).
 - First-run setup should walk through the Accessibility (and optionally Input Monitoring) permissions.
 - The UI font is SF Pro (`/System/Library/Fonts/SFNS.ttf`), unverified in egui.
+
+**Do next (Jeff asked, not started):**
+1. **Mote dwell on macOS.** Words land in 0.1–0.3 s on a Mac, often mid-flight, so the mote sometimes swells away on arrival and sometimes sits first; Jeff sees that as an inconsistent dot (fuzzy and large, or tiny). Give it a minimum stay at the caret before dissolving: a `DWELL` constant (macOS 250 ms, Windows 0 so Windows doesn't change). In `Flight::sprite`, `Then::Dissolve` on landing becomes `Phase::Leaving { start: landed + DWELL, .. }` (before `start`, Leaving draws the plain dot); in `Flight::leave`, a `Settled { since }` younger than DWELL starts leaving at `since + DWELL`. The mote's flight is short in the Claude app because its input sits just above the pill.
+2. **Speaker mute on macOS** (`audio_out/mac.rs` is a no-op; YouTube keeps playing). CoreAudio by FFI: the system object's `kAudioHardwarePropertyDefaultOutputDevice` ('dOut'), then `kAudioDevicePropertyMute` ('mute', output scope 'outp', element 0): read it, set 1, put the prior value back on restore, remembering the device. Devices without a mute control: set `kAudioDevicePropertyVolumeScalar` ('volm') to 0 on elements 0, 1, 2 where `AudioObjectHasProperty`, and restore those.
 
 **The mote:** done and confirmed in Quick Notes, Mail and the Claude app. The `Mote` is shared; on macOS it moves a sprite layer across a still full-screen `platform::Stage` (moving a window per frame smeared). Mac tuning from Jeff: 450 ms flight, dot at 0.8 of its point size. It lands where the words will start (the caret at release), as on Windows; Jeff chose to keep that. `caret.rs` asks Accessibility for the insertion point: a character range in native fields, text markers in web views; Chromium answers a collapsed range with the whole line, so the caret comes from the neighbouring character. Electron/Chromium apps are woken once per pid with `AXManualAccessibility`, so their first dictation may miss. Jeff hasn't yet said whether the motion now looks as clean as Windows.
 
