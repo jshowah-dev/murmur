@@ -202,6 +202,38 @@ impl AboutApp {
 /// Shows the About window, centred on screen. Blocks until closed, returning the newer release its
 /// check found, if any, and whether its update link was clicked.
 pub fn show(model: String, terms: usize, installed: bool) -> Option<(Release, bool)> {
+    #[cfg(windows)]
+    return window(model, terms, installed);
+    #[cfg(target_os = "macos")]
+    crate::child::ask(FLAG, &Request { model, terms, installed }).map(|r: Reply| (r.release, r.clicked))
+}
+
+/// The argument that starts Murmur as the About window.
+#[cfg(target_os = "macos")]
+pub const FLAG: &str = "--about";
+
+#[cfg(target_os = "macos")]
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+struct Request {
+    model: String,
+    terms: usize,
+    installed: bool,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+struct Reply {
+    release: Release,
+    clicked: bool,
+}
+
+/// The About window's process.
+#[cfg(target_os = "macos")]
+pub fn run_child() -> anyhow::Result<()> {
+    crate::child::serve(|r: Request| window(r.model, r.terms, r.installed).map(|(release, clicked)| Reply { release, clicked }))
+}
+
+fn window(model: String, terms: usize, installed: bool) -> Option<(Release, bool)> {
     let found = Rc::new(Cell::new(None));
     let clicked = Rc::new(Cell::new(false));
     let (app_found, app_clicked) = (found.clone(), clicked.clone());
@@ -236,6 +268,16 @@ pub fn show(model: String, terms: usize, installed: bool) -> Option<(Release, bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_request_and_a_release_cross_to_and_from_the_child() {
+        let r = Request { model: "Parakeet TDT 0.6B v2".into(), terms: 12, installed: true };
+        assert_eq!(crate::child::round_trip(&r), Some(r));
+        let release = Release { tag: "0.5.0".into(), setup_url: "https://example.com/s.exe".into(), setup_size: 123_456_789, sha_url: "https://example.com/s.sha256".into() };
+        let reply = Reply { release, clicked: true };
+        assert_eq!(crate::child::round_trip(&reply), Some(reply));
+    }
 
     #[test]
     fn model_label_names_parakeet_and_falls_back_to_the_folder() {

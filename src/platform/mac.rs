@@ -137,8 +137,17 @@ pub fn focus_target(target: isize) {
     }
 }
 
-// TODO(macos phase 2): the editor's second launch could bring the first forward.
+// Finding another process's window by title needs Screen Recording; the editor's Dock icon
+// (`show_in_dock`) brings it back instead.
 pub fn raise_titled(_title: &str) {}
+
+/// Gives this process a Dock icon and a place in ⌘Tab, so its window can't be lost behind others.
+/// For the editor, which outlives the menu click that opened it.
+pub fn show_in_dock() {
+    if let Some(mtm) = MainThreadMarker::new() {
+        NSApplication::sharedApplication(mtm).setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    }
+}
 
 pub fn open_path(p: &Path) {
     let _ = std::process::Command::new("open").arg(p).spawn();

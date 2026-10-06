@@ -22,6 +22,7 @@ const MB: u64 = 1024 * 1024;
 const TICK: Duration = Duration::from_millis(250);
 const WIDTH: f32 = 480.0;
 
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum SetupOutcome {
     /// `from`: where the card faded to a dot, physical pixels; None when it didn't (no card,
     /// reduced motion, or no invitation to carry).
@@ -30,7 +31,7 @@ pub enum SetupOutcome {
 }
 
 /// What the setup window has to do on this launch.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Plan {
     Download { then_ready: bool },
     ReadyOnly,
@@ -453,6 +454,32 @@ impl eframe::App for SetupApp {
 /// installed and the window is closed, or the user quits. Without a download or the Access step,
 /// no window.
 pub fn run(models: PathBuf, plan: Plan, ask_access: bool) -> SetupOutcome {
+    #[cfg(windows)]
+    return window(models, plan, ask_access);
+    // a child that died, like one that couldn't run, never installed the model
+    #[cfg(target_os = "macos")]
+    crate::child::ask(FLAG, &Request { models, plan, ask_access }).unwrap_or(SetupOutcome::Quit)
+}
+
+/// The argument that starts Murmur as the setup window.
+#[cfg(target_os = "macos")]
+pub const FLAG: &str = "--setup";
+
+#[cfg(target_os = "macos")]
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+struct Request {
+    models: PathBuf,
+    plan: Plan,
+    ask_access: bool,
+}
+
+/// The setup window's process.
+#[cfg(target_os = "macos")]
+pub fn run_child() -> anyhow::Result<()> {
+    crate::child::serve(|r: Request| Some(window(r.models, r.plan, r.ask_access)))
+}
+
+fn window(models: PathBuf, plan: Plan, ask_access: bool) -> SetupOutcome {
     let (download, then_ready) = match plan {
         Plan::Download { then_ready } => (true, then_ready),
         Plan::ReadyOnly | Plan::Skip if ask_access => (false, false),
@@ -518,6 +545,18 @@ pub fn run(models: PathBuf, plan: Plan, ask_access: bool) -> SetupOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_request_and_the_outcome_cross_to_and_from_the_child() {
+        for plan in [Plan::Download { then_ready: true }, Plan::ReadyOnly, Plan::Skip] {
+            let r = Request { models: PathBuf::from("/Users/a b/Library/Application Support/Murmur/models"), plan, ask_access: true };
+            assert_eq!(crate::child::round_trip(&r), Some(r));
+        }
+        for out in [SetupOutcome::Installed { from: Some((12.5, -3.0)) }, SetupOutcome::Installed { from: None }, SetupOutcome::Quit] {
+            assert_eq!(crate::child::round_trip(&out), Some(out));
+        }
+    }
 
     fn app(stage: Stage) -> SetupApp {
         let (_, rx) = crossbeam_channel::unbounded();

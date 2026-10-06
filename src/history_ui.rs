@@ -154,6 +154,39 @@ impl HistoryApp {
 
 /// Shows recent dictations, newest first, centred on screen. Blocks until closed.
 pub fn show(items: Vec<(String, Instant)>, key: String) {
+    #[cfg(windows)]
+    window(items, key);
+    #[cfg(target_os = "macos")]
+    {
+        let items = items.into_iter().map(|(t, at)| (t, at.elapsed().as_millis() as u64)).collect();
+        let _: Option<bool> = crate::child::ask(FLAG, &Request { items, key });
+    }
+}
+
+/// The argument that starts Murmur as the history window.
+#[cfg(target_os = "macos")]
+pub const FLAG: &str = "--history";
+
+/// Each dictation with how many milliseconds ago it was heard.
+#[cfg(target_os = "macos")]
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+struct Request {
+    items: Vec<(String, u64)>,
+    key: String,
+}
+
+/// The history window's process.
+#[cfg(target_os = "macos")]
+pub fn run_child() -> anyhow::Result<()> {
+    crate::child::serve(|r: Request| {
+        let now = Instant::now();
+        let items = r.items.into_iter().map(|(t, ms)| (t, now.checked_sub(Duration::from_millis(ms)).unwrap_or(now))).collect();
+        window(items, r.key);
+        None::<bool>
+    })
+}
+
+fn window(items: Vec<(String, Instant)>, key: String) {
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Murmur — history")
@@ -184,6 +217,13 @@ pub fn show(items: Vec<(String, Instant)>, key: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_request_crosses_to_the_child() {
+        let r = Request { items: vec![("first\nline \"quoted\"".into(), 1500), ("".into(), 0)], key: "Right Option".into() };
+        assert_eq!(crate::child::round_trip(&r), Some(r));
+    }
 
     #[test]
     fn copied_flash_lasts_the_confirm_token() {

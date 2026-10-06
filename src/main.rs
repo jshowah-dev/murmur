@@ -6,6 +6,8 @@ mod app;
 mod audio_out;
 mod autostart;
 mod caret;
+#[cfg(target_os = "macos")]
+mod child;
 mod canvas;
 mod correction;
 mod correction_ui;

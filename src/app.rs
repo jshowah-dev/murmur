@@ -133,9 +133,20 @@ fn download_model(models: PathBuf, tx: crossbeam_channel::Sender<UpdateMsg>) {
 
 pub fn main() -> Result<()> {
     #[cfg(target_os = "macos")]
-    if std::env::args().nth(1).as_deref() == Some(correction_ui::card_process::FLAG) {
-        init_logging(false);
-        return correction_ui::card_process::run();
+    {
+        // each of Murmur's windows in a process of its own (`child`)
+        let child: Option<fn() -> Result<()>> = match std::env::args().nth(1).as_deref() {
+            Some(correction_ui::card_process::FLAG) => Some(correction_ui::card_process::run),
+            Some(history_ui::FLAG) => Some(history_ui::run_child),
+            Some(hotkey_ui::FLAG) => Some(hotkey_ui::run_child),
+            Some(about_ui::FLAG) => Some(about_ui::run_child),
+            Some(setup_ui::FLAG) => Some(setup_ui::run_child),
+            _ => None,
+        };
+        if let Some(run) = child {
+            init_logging(false);
+            return run();
+        }
     }
     let editor_tab = wants_editor(std::env::args());
     init_logging(editor_tab.is_none());

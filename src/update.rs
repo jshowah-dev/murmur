@@ -19,7 +19,7 @@ const TICK: Duration = Duration::from_secs(15 * 60);
 pub const INSTALL_ARGS: [&str; 5] = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/FORCECLOSEAPPLICATIONS", "/RELAUNCH"];
 
 /// A GitHub release with a setup exe and its `.sha256`. `tag` has no leading "v".
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Release {
     pub tag: String,
     pub setup_url: String,

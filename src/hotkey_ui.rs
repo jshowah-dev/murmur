@@ -207,6 +207,29 @@ impl eframe::App for PickerApp {
 /// Shows the picker, centred on screen, with `current` as the key or chord in use. Blocks until
 /// closed, returning the keys to switch to if others were chosen.
 pub fn show(current: Vec<u16>) -> Option<Vec<u16>> {
+    #[cfg(windows)]
+    return window(current);
+    #[cfg(target_os = "macos")]
+    crate::child::ask(FLAG, &Request { current })
+}
+
+/// The argument that starts Murmur as the key picker.
+#[cfg(target_os = "macos")]
+pub const FLAG: &str = "--ptt-key";
+
+#[cfg(target_os = "macos")]
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+struct Request {
+    current: Vec<u16>,
+}
+
+/// The key picker's process.
+#[cfg(target_os = "macos")]
+pub fn run_child() -> anyhow::Result<()> {
+    crate::child::serve(|r: Request| window(r.current))
+}
+
+fn window(current: Vec<u16>) -> Option<Vec<u16>> {
     let chosen = Rc::new(Cell::new(None));
     let app_chosen = chosen.clone();
     let opts = eframe::NativeOptions {
@@ -242,6 +265,14 @@ pub fn show(current: Vec<u16>) -> Option<Vec<u16>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_request_and_the_keys_cross_to_and_from_the_child() {
+        let r = Request { current: vec![0x5B, 0x12] };
+        assert_eq!(crate::child::round_trip(&r), Some(r));
+        assert_eq!(crate::child::round_trip(&vec![0xA5u16]), Some(vec![0xA5]));
+    }
 
     #[test]
     fn a_key_is_offered_once_it_is_let_go() {

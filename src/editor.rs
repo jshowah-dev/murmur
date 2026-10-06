@@ -208,6 +208,8 @@ pub fn run(tab: Tab) -> Result<()> {
         crate::platform::raise_titled(TITLE);
         return Ok(());
     };
+    #[cfg(target_os = "macos")]
+    crate::platform::show_in_dock();
     let app = EditorApp::new(murmur_lib::dictionary::path(), murmur_lib::snippets::path(), tab);
     eframe::run_native(
         "murmur-dictionary",
