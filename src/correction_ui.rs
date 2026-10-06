@@ -130,7 +130,7 @@ impl eframe::App for FixApp {
             platform::keep_on_top(self.hwnd);
         }
         let (submit, cancel) =
-            ctx.input_mut(|i| (i.consume_key(Modifiers::CTRL, Key::Enter), i.consume_key(Modifiers::NONE, Key::Escape)));
+            ctx.input_mut(|i| (i.consume_key(Modifiers::COMMAND, Key::Enter), i.consume_key(Modifiers::NONE, Key::Escape)));
         if submit {
             return self.close(&ctx, Some(self.text.clone()));
         }
@@ -168,7 +168,7 @@ impl eframe::App for FixApp {
                         keycap(ui, "Esc");
                         ui.label(egui::RichText::new("Cancel").size(12.0).color(MUTED));
                         ui.add_space(8.0);
-                        keycap(ui, "Ctrl+Enter");
+                        keycap(ui, &format!("{}Enter", editor_kit::CMD));
                         ui.label(egui::RichText::new("Replace").size(12.0).color(MUTED));
                     });
                 });
@@ -266,6 +266,17 @@ pub fn show(initial: &str, heard_at: Option<Instant>, dict: Dictionary, target: 
     // read the caret now, while the target app still has focus
     let anchor = caret::find(target);
     log::info!("fix-last anchor: {anchor:?}");
+    #[cfg(windows)]
+    return card(initial, heard_at, dict, anchor);
+    #[cfg(target_os = "macos")]
+    {
+        let _ = dict;
+        card_process::show(initial, heard_at, anchor)
+    }
+}
+
+/// The card itself, in this process.
+fn card(initial: &str, heard_at: Option<Instant>, dict: Dictionary, anchor: Option<caret::Anchor>) -> (Option<String>, Option<(f32, f32)>) {
     let out = Rc::new(RefCell::new(None));
     let card = Rc::new(RefCell::new(None));
     let app_card = card.clone();
@@ -322,6 +333,128 @@ pub fn show(initial: &str, heard_at: Option<Instant>, dict: Dictionary, target: 
     let result = out.borrow_mut().take();
     let at = card.borrow_mut().take();
     (result, at)
+}
+
+/// On macOS the card runs in a process of its own. In Murmur's, the event loop eframe's window
+/// library sets up on the app stops the menu bar icon from opening its menu once the card closes.
+#[cfg(target_os = "macos")]
+pub mod card_process {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::process::{Command, Stdio};
+
+    /// The argument that starts Murmur as the card.
+    pub const FLAG: &str = "--fix-card";
+
+    /// Runs the card in a child process and waits for it.
+    pub(super) fn show(initial: &str, heard_at: Option<Instant>, anchor: Option<caret::Anchor>) -> (Option<String>, Option<(f32, f32)>) {
+        let run = || -> std::io::Result<String> {
+            let mut child = Command::new(std::env::current_exe()?).arg(FLAG).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?;
+            child.stdin.take().expect("piped").write_all(request(initial, heard_at.map(|t| t.elapsed()), anchor).as_bytes())?;
+            let out = child.wait_with_output()?;
+            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        };
+        match run() {
+            Ok(reply) => parse_reply(&reply),
+            Err(e) => {
+                log::error!("fix-last card: {e}");
+                (None, None)
+            }
+        }
+    }
+
+    /// The card process: reads the request on stdin, shows the card, writes the reply on stdout.
+    pub fn run() -> anyhow::Result<()> {
+        let mut input = String::new();
+        std::io::stdin().read_to_string(&mut input)?;
+        let (text, heard_ago, anchor) = parse_request(&input).ok_or_else(|| anyhow::anyhow!("bad fix-card request"))?;
+        let heard_at = heard_ago.and_then(|d| Instant::now().checked_sub(d));
+        let dict = Dictionary::load_or_seed().unwrap_or_default();
+        let (result, at) = card(&text, heard_at, dict, anchor);
+        std::io::stdout().write_all(reply(&result, at).as_bytes())?;
+        Ok(())
+    }
+
+    fn rect(r: &platform::Rect) -> String {
+        format!("{} {} {} {}", r.left, r.top, r.right, r.bottom)
+    }
+
+    /// Line 1: milliseconds since the words were heard, or -. Line 2: the anchor, or -. Then the text.
+    pub(super) fn request(text: &str, heard_ago: Option<Duration>, anchor: Option<caret::Anchor>) -> String {
+        let heard = heard_ago.map_or("-".into(), |d| d.as_millis().to_string());
+        let anchor = match anchor {
+            Some(caret::Anchor::Caret(r)) => format!("caret {}", rect(&r)),
+            Some(caret::Anchor::Area(r)) => format!("area {}", rect(&r)),
+            None => "-".into(),
+        };
+        format!("{heard}\n{anchor}\n{text}")
+    }
+
+    pub(super) fn parse_request(s: &str) -> Option<(String, Option<Duration>, Option<caret::Anchor>)> {
+        let mut lines = s.splitn(3, '\n');
+        let heard = match lines.next()? {
+            "-" => None,
+            ms => Some(Duration::from_millis(ms.parse().ok()?)),
+        };
+        let anchor = match lines.next()? {
+            "-" => None,
+            a => {
+                let mut parts = a.split(' ');
+                let kind = parts.next()?;
+                let n: Vec<i32> = parts.map(|p| p.parse().ok()).collect::<Option<_>>()?;
+                let [left, top, right, bottom] = n[..] else { return None };
+                let r = platform::Rect { left, top, right, bottom };
+                Some(match kind {
+                    "caret" => caret::Anchor::Caret(r),
+                    "area" => caret::Anchor::Area(r),
+                    _ => return None,
+                })
+            }
+        };
+        Some((lines.next().unwrap_or("").to_string(), heard, anchor))
+    }
+
+    /// Line 1: the card's centre, or -. Then = and the edited text, or ! for cancelled.
+    pub(super) fn reply(result: &Option<String>, at: Option<(f32, f32)>) -> String {
+        let at = at.map_or("-".into(), |(x, y)| format!("{x} {y}"));
+        match result {
+            Some(t) => format!("{at}\n={t}"),
+            None => format!("{at}\n!"),
+        }
+    }
+
+    pub(super) fn parse_reply(s: &str) -> (Option<String>, Option<(f32, f32)>) {
+        let (at, rest) = s.split_once('\n').unwrap_or((s, "!"));
+        let at = at.split_once(' ').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)));
+        (rest.strip_prefix('=').map(str::to_string), at)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_request_round_trips_with_a_multi_line_text() {
+            let r = platform::Rect { left: 10, top: -20, right: 30, bottom: 40 };
+            let text = "first line\nsecond = line";
+            for anchor in [Some(caret::Anchor::Caret(r)), Some(caret::Anchor::Area(r)), None] {
+                for heard in [Some(Duration::from_millis(1500)), None] {
+                    assert_eq!(parse_request(&request(text, heard, anchor)), Some((text.to_string(), heard, anchor)));
+                }
+            }
+            assert_eq!(parse_request("x\n-\ntext"), None);
+        }
+
+        #[test]
+        fn a_reply_round_trips_and_nothing_back_is_a_cancel() {
+            for result in [Some("fixed\ntext".to_string()), Some(String::new()), None] {
+                for at in [Some((1.5, -2.0)), None] {
+                    assert_eq!(parse_reply(&reply(&result, at)), (result.clone(), at));
+                }
+            }
+            assert_eq!(parse_reply(""), (None, None), "a card process that died says nothing");
+        }
+    }
 }
 
 #[cfg(test)]

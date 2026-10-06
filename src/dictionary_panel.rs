@@ -2,7 +2,7 @@
 //! any `egui::Ui`, so a future settings window can host it as a tab.
 
 use crate::correction_ui::{AMBER, GREEN, MUTED, TEXT};
-use crate::editor_kit::{has_comments, open_file, progress, reduced_motion, RED};
+use crate::editor_kit::{has_comments, open_file, progress, reduced_motion, CMD, RED};
 use crate::motion;
 use eframe::egui::{
     self, Align, Button, CentralPanel, Frame, Key, Layout, Margin, Modifiers, Panel, RichText, ScrollArea, Sense, TextEdit, TextStyle,
@@ -294,7 +294,7 @@ impl DictionaryPanel {
             });
             return;
         }
-        if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::S)) {
+        if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)) {
             self.save();
         }
         let fresh = self.fresh;
@@ -550,7 +550,7 @@ impl DictionaryPanel {
         let n = edit::changes(&self.loaded, &self.working);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let can = self.is_dirty() && !self.has_errors();
-            if ui.add_enabled(can, Button::new("Save")).on_hover_text("Ctrl+S").clicked() {
+            if ui.add_enabled(can, Button::new("Save")).on_hover_text(format!("{CMD}S")).clicked() {
                 self.save();
             }
             if n > 0 {

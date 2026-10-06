@@ -7,6 +7,13 @@ use std::time::Duration;
 
 pub(crate) const RED: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x6C, 0x6C);
 
+/// The command modifier, as a shortcut hint names it: `egui::Modifiers::COMMAND` is Ctrl on
+/// Windows and ⌘ on a Mac.
+#[cfg(windows)]
+pub(crate) const CMD: &str = "Ctrl+";
+#[cfg(target_os = "macos")]
+pub(crate) const CMD: &str = "⌘";
+
 pub(crate) fn open_file(p: &Path) {
     crate::platform::open_path(p);
 }

@@ -5,7 +5,8 @@ use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSEvent, NSEventMask,
-    NSPanel, NSRunningApplication, NSScreen, NSStatusWindowLevel, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
+    NSPanel, NSRunningApplication, NSScreen, NSStatusWindowLevel, NSView, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSWorkspace,
 };
 use objc2_core_foundation::CFData;
 use objc2_core_graphics::{
@@ -90,15 +91,29 @@ pub fn key_down(vk: u16) -> bool {
     key_code(vk).is_some_and(|code| CGEventSource::key_state(CGEventSourceStateID::CombinedSessionState, code))
 }
 
-// TODO(macos phase 2): Murmur's egui windows ask for always-on-top in their ViewportBuilder.
+/// The ViewportBuilder's always-on-top is a floating window level on macOS, which stays put when
+/// the window is raised, so there's nothing to redo.
 pub fn keep_on_top(_w: Window) {}
 
-// TODO(macos phase 2): setFrameTopLeftPoint on the NSView's window, flipped from top-left coordinates.
-pub fn move_to(_w: Window, _x: i32, _y: i32) {}
+/// The NSWindow holding the egui view `w`.
+fn ns_window(w: Window) -> Option<Retained<NSWindow>> {
+    MainThreadMarker::new()?;
+    let view = unsafe { (w.0 as *const NSView).as_ref() }?;
+    view.window()
+}
 
-// TODO(macos phase 2): the NSView's window frame, flipped to top-left screen coordinates.
-pub fn window_rect(_w: Window) -> Option<Rect> {
-    None
+/// Moves `w`'s top-left to (x, y) points from the top-left of the main display.
+pub fn move_to(w: Window, x: i32, y: i32) {
+    let (Some(win), Some(mtm)) = (ns_window(w), MainThreadMarker::new()) else { return };
+    win.setFrameTopLeftPoint(NSPoint::new(x as f64, primary_height(mtm) - y as f64));
+}
+
+/// `w`'s frame in points from the top-left of the main display.
+pub fn window_rect(w: Window) -> Option<Rect> {
+    let (win, mtm) = (ns_window(w)?, MainThreadMarker::new()?);
+    let f = win.frame();
+    let top = primary_height(mtm) - (f.origin.y + f.size.height);
+    Some(Rect { left: f.origin.x as i32, top: top as i32, right: (f.origin.x + f.size.width) as i32, bottom: (top + f.size.height) as i32 })
 }
 
 pub fn is_minimized(_w: Window) -> bool {

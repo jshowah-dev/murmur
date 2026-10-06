@@ -132,6 +132,11 @@ fn download_model(models: PathBuf, tx: crossbeam_channel::Sender<UpdateMsg>) {
 }
 
 pub fn main() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    if std::env::args().nth(1).as_deref() == Some(correction_ui::card_process::FLAG) {
+        init_logging(false);
+        return correction_ui::card_process::run();
+    }
     let editor_tab = wants_editor(std::env::args());
     init_logging(editor_tab.is_none());
     // the editor is its own process, so it must not take the app's single-instance mutex
