@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -93,18 +93,63 @@ jobs:
           "name=$name" >> $env:GITHUB_OUTPUT
 
       - name: Upload artifact
-        if: github.ref_type != 'tag'
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ steps.pkg.outputs.name }}
+          name: windows
           path: |
             ${{ steps.pkg.outputs.name }}.zip
             ${{ steps.pkg.outputs.name }}.zip.sha256
             ${{ steps.setup.outputs.name }}
             ${{ steps.setup.outputs.name }}.sha256
 
-      - name: Draft release
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check the tag
         if: github.ref_type == 'tag'
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          [ "v$v" = "${{ github.ref_name }}" ] || { echo "tag ${{ github.ref_name }} does not match Cargo.toml version $v"; exit 1; }
+
+      # the same cache trap as on Windows: sherpa-onnx-sys copies its dylibs only when its build script runs
+      - name: Build
+        run: |
+          cargo clean --release -p sherpa-onnx-sys
+          rm -rf target/sherpa-onnx-prebuilt
+          cargo build --release --locked
+
+      - name: Test
+        run: |
+          cargo test --release --locked --bin murmur
+          cargo test --release --locked --lib
+
+      # no signing identity on the runner, so bundle.sh signs ad hoc
+      - name: Package
+        run: |
+          ./scripts/macos/bundle.sh
+          ./scripts/macos/dmg.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos
+          path: |
+            murmur-v*-macos-*.dmg
+            murmur-v*-macos-*.dmg.sha256
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          merge-multiple: true
+      - name: Draft release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" --draft --title "Murmur ${{ github.ref_name }}" "${{ steps.pkg.outputs.name }}.zip" "${{ steps.pkg.outputs.name }}.zip.sha256" "${{ steps.setup.outputs.name }}" "${{ steps.setup.outputs.name }}.sha256"
+        run: gh release create "${{ github.ref_name }}" --repo "${{ github.repository }}" --draft --generate-notes --title "Murmur ${{ github.ref_name }}" murmur-v*
