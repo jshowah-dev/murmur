@@ -16,9 +16,11 @@ const TICK: Duration = Duration::from_secs(15 * 60);
 
 /// Inno Setup switches for an unattended update. `/RELAUNCH` is ours: `murmur.iss` starts Murmur
 /// again after a successful install only when it's present.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const INSTALL_ARGS: [&str; 5] = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/FORCECLOSEAPPLICATIONS", "/RELAUNCH"];
 
-/// A GitHub release with a setup exe and its `.sha256`. `tag` has no leading "v".
+/// A GitHub release with this platform's installer (the setup exe on Windows, the DMG on a Mac)
+/// and its `.sha256`. `tag` has no leading "v".
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Release {
     pub tag: String,
@@ -65,10 +67,34 @@ fn asset(json: &str, name: &str) -> Option<(u64, String)> {
     None
 }
 
-/// The release and its setup assets; None if either the setup exe or its `.sha256` is missing.
+/// This platform's installer in release `tag`, as `release.yml` names it.
+pub fn installer_name(tag: &str) -> String {
+    #[cfg(windows)]
+    return windows_installer(tag);
+    #[cfg(target_os = "macos")]
+    return mac_installer(tag, std::env::consts::ARCH);
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_installer(tag: &str) -> String {
+    format!("murmur-v{tag}-setup.exe")
+}
+
+/// `dmg.sh` names the DMG after `uname -m`, which calls Apple silicon arm64, not aarch64.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn mac_installer(tag: &str, arch: &str) -> String {
+    let arch = if arch == "aarch64" { "arm64" } else { arch };
+    format!("murmur-v{tag}-macos-{arch}.dmg")
+}
+
+/// The release and this platform's installer; None if the installer or its `.sha256` is missing.
 pub fn parse_release(json: &str) -> Option<Release> {
+    parse_release_as(json, installer_name)
+}
+
+fn parse_release_as(json: &str, installer: impl Fn(&str) -> String) -> Option<Release> {
     let tag = latest_tag(json)?;
-    let setup = format!("murmur-v{tag}-setup.exe");
+    let setup = installer(&tag);
     let (setup_size, setup_url) = asset(json, &setup)?;
     let (_, sha_url) = asset(json, &format!("{setup}.sha256"))?;
     Some(Release { tag, setup_url, setup_size, sha_url })
@@ -80,11 +106,31 @@ pub fn parse_sha256_file(text: &str) -> Option<String> {
     (hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())).then_some(hash)
 }
 
-/// True for the copy the installer put in `<localappdata>\Programs\Murmur`. A zip copy or a dev
-/// build only gets the alert: running the installer wouldn't update it.
+/// Whether this is the copy an update would replace. Any other copy only gets the alert: running
+/// the installer wouldn't update it, and a dev build must never replace itself.
+pub fn installed_copy() -> bool {
+    let Ok(exe) = std::env::current_exe() else { return false };
+    #[cfg(windows)]
+    return std::env::var_os("LOCALAPPDATA").is_some_and(|lad| is_installed_copy(&exe, Path::new(&lad)));
+    #[cfg(target_os = "macos")]
+    return is_installed_bundle(&exe);
+}
+
+/// True for the copy the installer put in `<localappdata>\Programs\Murmur`.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn is_installed_copy(exe: &Path, localappdata: &Path) -> bool {
     let installed = localappdata.join("Programs").join("Murmur").join("murmur.exe");
     exe.to_string_lossy().eq_ignore_ascii_case(&installed.to_string_lossy())
+}
+
+/// The bundle an update replaces: the one the DMG says to drag to Applications.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const MAC_APP: &str = "/Applications/Murmur.app";
+
+/// True for `/Applications/Murmur.app`. A copy run from the DMG or a dev build only gets the alert.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn is_installed_bundle(exe: &Path) -> bool {
+    exe == Path::new(MAC_APP).join("Contents/MacOS/murmur")
 }
 
 fn alerted_path() -> PathBuf {
@@ -207,13 +253,69 @@ pub fn download(r: &Release, dir: &Path) -> Result<PathBuf, FetchError> {
         e => FetchError::Interrupted(e.to_string()),
     })?;
     let sha256 = parse_sha256_file(&text).ok_or(FetchError::ChecksumMismatch)?;
-    let asset = Asset { url: r.setup_url.clone(), file: format!("murmur-v{}-setup.exe", r.tag), sha256, size: r.setup_size };
+    let asset = Asset { url: r.setup_url.clone(), file: installer_name(&r.tag), sha256, size: r.setup_size };
     Fetcher::standard().download(&asset, dir, &mut |_| {}, &AtomicBool::new(false))
 }
 
 /// Starts the installer and returns; the caller quits Murmur so the files are free.
+#[cfg(windows)]
 pub fn install(setup: &Path) -> std::io::Result<()> {
     std::process::Command::new(setup).args(INSTALL_ARGS).spawn().map(drop)
+}
+
+/// Copies the new Murmur.app out of `dmg` to beside the installed one, then starts a helper that
+/// swaps it in and relaunches once this process has exited; the caller quits Murmur. Launching
+/// earlier would only meet the single-instance lock and exit.
+#[cfg(target_os = "macos")]
+pub fn install(dmg: &Path) -> std::io::Result<()> {
+    use std::process::{Command, Stdio};
+    let app = Path::new(MAC_APP);
+    // beside the installed copy, so the swap is a rename on one volume
+    let staged = app.with_file_name(".Murmur-update.app");
+    let mount = dmg.with_extension("mount");
+    let _ = fs::remove_dir_all(&staged);
+    fs::create_dir_all(&mount)?;
+    run(Command::new("hdiutil").args(["attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint"]).arg(&mount).arg(dmg))?;
+    // ditto keeps the signature intact
+    let copied = run(Command::new("ditto").arg(mount.join("Murmur.app")).arg(&staged));
+    let _ = run(Command::new("hdiutil").args(["detach", "-force"]).arg(&mount));
+    let _ = fs::remove_dir(&mount);
+    copied?;
+    let log = fs::File::create(download_dir().join("install.log"))?;
+    Command::new("/bin/sh")
+        .args(["-c", SWAP_SCRIPT, "swap"])
+        .arg(std::process::id().to_string())
+        .arg(&staged)
+        .arg(app)
+        .stdin(Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log)
+        .spawn()
+        .map(drop)
+}
+
+/// `$1` pid to wait for, `$2` the staged bundle, `$3` the installed one. Moves the old bundle
+/// aside before renaming the new one in and puts it back if that fails, so there's always a
+/// Murmur to relaunch.
+#[cfg(target_os = "macos")]
+const SWAP_SCRIPT: &str = r#"
+while kill -0 "$1" 2>/dev/null; do sleep 0.2; done
+old="$(dirname "$3")/.Murmur-old.app"
+rm -rf "$old"
+if mv "$3" "$old"; then
+  if mv "$2" "$3"; then rm -rf "$old"; echo "updated $3"; else mv "$old" "$3"; fi
+fi
+open "$3"
+"#;
+
+#[cfg(target_os = "macos")]
+fn run(cmd: &mut std::process::Command) -> std::io::Result<()> {
+    let out = cmd.output()?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let why = String::from_utf8_lossy(&out.stderr);
+    Err(std::io::Error::other(format!("{:?} failed: {}", cmd.get_program(), why.trim())))
 }
 
 /// A failed update download, for a balloon. `FetchError`'s own text is about the model.
@@ -253,7 +355,7 @@ mod tests {
 
     #[test]
     fn parse_release_reads_the_real_v044_json() {
-        let r = parse_release(FIXTURE).unwrap();
+        let r = parse_release_as(FIXTURE, windows_installer).unwrap();
         assert_eq!(r.tag, "0.4.4");
         assert_eq!(r.setup_size, 10_691_109);
         assert_eq!(r.setup_url, "https://github.com/jshowah-dev/murmur/releases/download/v0.4.4/murmur-v0.4.4-setup.exe");
@@ -265,16 +367,42 @@ mod tests {
         let json = r#"{"tag_name": "v1.2.3", "assets": [
             {"name": "murmur-v1.2.3-setup.exe", "size": 42, "browser_download_url": "https://x/setup.exe"},
             {"name": "murmur-v1.2.3-setup.exe.sha256", "size": 90, "browser_download_url": "https://x/setup.exe.sha256"}]}"#;
-        let r = parse_release(json).unwrap();
+        let r = parse_release_as(json, windows_installer).unwrap();
         assert_eq!((r.tag.as_str(), r.setup_size, r.setup_url.as_str(), r.sha_url.as_str()), ("1.2.3", 42, "https://x/setup.exe", "https://x/setup.exe.sha256"));
     }
 
     #[test]
     fn release_without_a_setup_asset_is_none() {
         let json = r#"{"tag_name":"v1.2.3","assets":[{"name":"murmur-v1.2.3-windows-x64.zip","size":1,"browser_download_url":"https://x/z"}]}"#;
-        assert_eq!(parse_release(json), None);
+        assert_eq!(parse_release_as(json, windows_installer), None);
         let no_sha = r#"{"tag_name":"v1.2.3","assets":[{"name":"murmur-v1.2.3-setup.exe","size":1,"browser_download_url":"https://x/s"}]}"#;
-        assert_eq!(parse_release(no_sha), None);
+        assert_eq!(parse_release_as(no_sha, windows_installer), None);
+    }
+
+    // v0.5.0's assets as published
+    const BOTH: &str = r#"{"tag_name":"v0.5.0","assets":[
+        {"name":"murmur-v0.5.0-macos-arm64.dmg","size":15950118,"browser_download_url":"https://x/m.dmg"},
+        {"name":"murmur-v0.5.0-macos-arm64.dmg.sha256","size":97,"browser_download_url":"https://x/m.dmg.sha256"},
+        {"name":"murmur-v0.5.0-setup.exe","size":10,"browser_download_url":"https://x/s.exe"},
+        {"name":"murmur-v0.5.0-setup.exe.sha256","size":90,"browser_download_url":"https://x/s.exe.sha256"}]}"#;
+
+    #[test]
+    fn each_platform_takes_its_own_installer() {
+        let mac = parse_release_as(BOTH, |t| mac_installer(t, "aarch64")).unwrap();
+        assert_eq!((mac.setup_url.as_str(), mac.setup_size, mac.sha_url.as_str()), ("https://x/m.dmg", 15_950_118, "https://x/m.dmg.sha256"));
+        let win = parse_release_as(BOTH, windows_installer).unwrap();
+        assert_eq!((win.setup_url.as_str(), win.sha_url.as_str()), ("https://x/s.exe", "https://x/s.exe.sha256"));
+        // no Intel build is published
+        assert_eq!(parse_release_as(BOTH, |t| mac_installer(t, "x86_64")), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn only_the_applications_bundle_updates_itself() {
+        assert!(is_installed_bundle(Path::new("/Applications/Murmur.app/Contents/MacOS/murmur")));
+        assert!(!is_installed_bundle(Path::new("/Users/jane/code/murmur/target/release/Murmur.app/Contents/MacOS/murmur")));
+        assert!(!is_installed_bundle(Path::new("/Volumes/Murmur 0.5.0/Murmur.app/Contents/MacOS/murmur")));
+        assert!(!is_installed_bundle(Path::new("/Users/jane/Applications/Murmur.app/Contents/MacOS/murmur")));
     }
 
     #[test]
@@ -380,11 +508,12 @@ mod tests {
 
     #[test]
     fn check_at_reports_only_a_newer_release() {
-        let base = serve(vec![("/latest", FIXTURE.as_bytes().to_vec())]);
+        // both platforms' installers, so it passes on either
+        let base = serve(vec![("/latest", BOTH.as_bytes().to_vec())]);
         let url = format!("{base}/latest");
-        assert_eq!(check_at(&url, "0.4.3").unwrap().map(|r| r.tag), Some("0.4.4".into()));
-        assert_eq!(check_at(&url, "0.4.4").unwrap(), None);
-        assert!(check_at(&format!("{base}/missing"), "0.4.3").is_err());
+        assert_eq!(check_at(&url, "0.4.21").unwrap().map(|r| r.tag), Some("0.5.0".into()));
+        assert_eq!(check_at(&url, "0.5.0").unwrap(), None);
+        assert!(check_at(&format!("{base}/missing"), "0.4.21").is_err());
     }
 
     #[test]
@@ -393,7 +522,7 @@ mod tests {
         let r = served_release(&setup, format!("{}  murmur-v9.9.9-setup.exe\n", hex(Sha256::digest(&setup).as_slice())));
         let dir = tmp("ok");
         let got = download(&r, &dir).unwrap();
-        assert_eq!(got, dir.join("murmur-v9.9.9-setup.exe"));
+        assert_eq!(got, dir.join(installer_name("9.9.9")));
         assert_eq!(std::fs::read(&got).unwrap(), setup);
     }
 
@@ -403,7 +532,7 @@ mod tests {
         let r = served_release(&setup, format!("{}  murmur-v9.9.9-setup.exe\n", hex(Sha256::digest(b"something else").as_slice())));
         let dir = tmp("mismatch");
         assert!(matches!(download(&r, &dir), Err(FetchError::ChecksumMismatch)));
-        assert!(!dir.join("murmur-v9.9.9-setup.exe").exists());
+        assert!(!dir.join(installer_name("9.9.9")).exists());
     }
 
     #[test]

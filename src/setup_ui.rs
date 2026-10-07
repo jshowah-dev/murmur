@@ -339,6 +339,8 @@ impl SetupApp {
             ui.label(RichText::new("Murmur pastes what you say by pressing ⌘V for you. macOS lets it once you allow it.").size(13.0).color(MUTED));
             ui.add_space(12.0);
             ui.label(RichText::new("Allow Murmur under Privacy & Security › Accessibility").size(15.0).color(TEXT));
+            // each update of an ad hoc signed build leaves a stale entry that looks allowed but isn't
+            ui.label(RichText::new("If Murmur is already listed, remove it with − and allow it again.").size(12.0).color(MUTED));
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 if ui.button("Open Settings").clicked() {
@@ -729,6 +731,7 @@ mod tests {
         a.download = false;
         let (text, close) = frame(&ctx, &mut a, vec![]);
         assert!(text.iter().any(|t| t == "Allow Murmur under Privacy & Security › Accessibility"), "{text:?}");
+        assert!(text.iter().any(|t| t.starts_with("If Murmur is already listed, remove it")), "{text:?}");
         assert!(text.iter().any(|t| t == "Open Settings") && text.iter().any(|t| t == "Not now"), "{text:?}");
         assert!(!close && a.stage == Stage::Access, "waits while not allowed");
         a.trusted = |_| true;

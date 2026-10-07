@@ -269,10 +269,7 @@ pub fn main() -> Result<()> {
     update::spawn_checker(move |r| {
         let _ = checker_tx.send(UpdateMsg::Available(r));
     });
-    let installed_copy = match (std::env::current_exe(), std::env::var_os("LOCALAPPDATA")) {
-        (Ok(exe), Some(lad)) => update::is_installed_copy(&exe, std::path::Path::new(&lad)),
-        _ => false,
-    };
+    let installed_copy = update::installed_copy();
     let mut offer = update::Offer::default();
     // The mic stays open while not paused: a rolling buffer of the last PRE_ROLL_SAMPLES is
     // fed to the pipeline ahead of the live audio on key-down, so the first consonant is not
