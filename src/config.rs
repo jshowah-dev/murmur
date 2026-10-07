@@ -25,7 +25,8 @@ pub struct Config {
     /// Shape the text for the app it lands in. Only email is recognised: a dictated greeting
     /// and sign-off get their own lines. false = the same output everywhere.
     pub format_by_context: bool,
-    /// Exe names treated as email, compared without regard to case.
+    /// Apps treated as email, compared without regard to case: exe names on Windows, bundle ids
+    /// on macOS. Each system ignores the other's, so one list serves both.
     pub email_apps: Vec<String>,
     /// Window-title fragments treated as email. They count in browsers only.
     pub email_titles: Vec<String>,
@@ -46,10 +47,50 @@ impl Default for Config {
             hands_free_max_minutes: 5,
             debug_log: false,
             format_by_context: true,
-            email_apps: ["OUTLOOK.EXE", "olk.exe", "thunderbird.exe"].iter().map(|s| s.to_string()).collect(),
+            email_apps: EMAIL_APPS.iter().map(|s| s.to_string()).collect(),
             email_titles: ["Gmail", "Outlook", "Proton Mail", "Yahoo Mail"].iter().map(|s| s.to_string()).collect(),
         }
     }
+}
+
+const EMAIL_APPS: &[&str] = &["OUTLOOK.EXE", "olk.exe", "thunderbird.exe", "com.apple.mail", "com.microsoft.Outlook", "org.mozilla.thunderbird"];
+/// `email_apps` as releases before the Mac port wrote it.
+const WINDOWS_ONLY_EMAIL_APPS: &[&str] = &["OUTLOOK.EXE", "olk.exe", "thunderbird.exe"];
+
+/// Brings an `email_apps` still at the Windows-only default up to the current one, in `cfg` and
+/// in config.toml, where it can be seen and edited. A list someone changed is left alone.
+pub fn upgrade_email_apps(cfg: &mut Config) -> Result<bool> {
+    if cfg.email_apps != WINDOWS_ONLY_EMAIL_APPS {
+        return Ok(false);
+    }
+    cfg.email_apps = Config::default().email_apps;
+    let path = config_dir().join("config.toml");
+    let text = std::fs::read_to_string(&path).context("read config.toml")?;
+    write_with_backup(&path, &set_email_apps_lines(&text, &cfg.email_apps))?;
+    Ok(true)
+}
+
+/// `text` with its top-level `email_apps = [...]`, over however many lines, replaced by `apps`.
+fn set_email_apps_lines(text: &str, apps: &[String]) -> String {
+    let set = format!("email_apps = [\n{}]\n", apps.iter().map(|a| format!("    \"{a}\",\n")).collect::<String>());
+    let mut out = String::with_capacity(text.len() + set.len());
+    let (mut in_table, mut depth, mut done) = (false, 0i32, false);
+    for line in text.split_inclusive('\n') {
+        in_table |= line.trim_start().starts_with('[') && depth == 0;
+        if depth > 0 {
+            depth += line.matches('[').count() as i32 - line.matches(']').count() as i32;
+            continue;
+        }
+        let starts = line.trim_start().strip_prefix("email_apps").map(str::trim_start).is_some_and(|r| r.starts_with('='));
+        if starts && !in_table && !done {
+            depth = line.matches('[').count() as i32 - line.matches(']').count() as i32;
+            out.push_str(&set);
+            done = true;
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
 }
 
 /// The push-to-talk key out of the box: Right Ctrl, or Right Option on a Mac, which has no Right Ctrl.
@@ -387,8 +428,27 @@ mod tests {
     fn format_by_context_defaults() {
         let c = Config::default();
         assert!(c.format_by_context);
-        assert_eq!(c.email_apps, vec!["OUTLOOK.EXE", "olk.exe", "thunderbird.exe"]);
+        assert_eq!(c.email_apps, vec!["OUTLOOK.EXE", "olk.exe", "thunderbird.exe", "com.apple.mail", "com.microsoft.Outlook", "org.mozilla.thunderbird"]);
         assert_eq!(c.email_titles, vec!["Gmail", "Outlook", "Proton Mail", "Yahoo Mail"]);
+    }
+
+    #[test]
+    fn email_apps_is_replaced_over_its_lines_and_nothing_else_changes() {
+        let apps = vec!["a.exe".to_string(), "com.b".to_string()];
+        let text = "# mine\nptt_key = \"RAlt\"\nemail_apps = [\n    \"OUTLOOK.EXE\",\n    \"olk.exe\",\n]\nemail_titles = [\n    \"Gmail\",\n]\n";
+        assert_eq!(
+            set_email_apps_lines(text, &apps),
+            "# mine\nptt_key = \"RAlt\"\nemail_apps = [\n    \"a.exe\",\n    \"com.b\",\n]\nemail_titles = [\n    \"Gmail\",\n]\n"
+        );
+        let one_line = "email_apps = [\"x\"]\nthreads = 8\n";
+        assert_eq!(set_email_apps_lines(one_line, &apps), "email_apps = [\n    \"a.exe\",\n    \"com.b\",\n]\nthreads = 8\n");
+        let written = set_email_apps_lines(&toml::to_string_pretty(&Config::default()).unwrap(), &apps);
+        assert_eq!(toml::from_str::<Config>(&written).unwrap().email_apps, apps, "still parses");
+    }
+
+    #[test]
+    fn only_the_windows_only_default_counts_as_old() {
+        assert_eq!(WINDOWS_ONLY_EMAIL_APPS, &EMAIL_APPS[..3], "the old default is where the new one starts");
     }
 
     #[test]
