@@ -2,7 +2,7 @@
 
 Offline push-to-talk dictation for Windows and macOS (preview). Hold a key, speak, let go — the text is typed wherever your cursor is. Speech recognition runs entirely on your machine; nothing you say leaves it.
 
-<!-- demo GIF -->
+![Hold a key, speak, let go: the words are typed into Notepad](assets/demo.gif)
 
 ## Features
 
