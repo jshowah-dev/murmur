@@ -155,6 +155,8 @@ impl Tray {
         if !unsafe { SetWindowSubclass(HWND(_icon.window_handle() as *mut _), Some(balloon_proc), 1, 0) }.as_bool() {
             log::warn!("balloon clicks unavailable: SetWindowSubclass failed");
         }
+        #[cfg(target_os = "macos")]
+        crate::platform::init_notifications(&BALLOON_CLICKED);
         let shows = Cell::new((false, false));
         Ok(Tray { _icon, menu, pause, fix, ptt, autostart, update, model, shown: Cell::new((false, false)), ids, click: RefCell::new(BalloonClick::Nothing), shows })
     }
@@ -266,7 +268,7 @@ impl Tray {
         // a click belongs to the balloon on screen, which is the last one shown
         *self.click.borrow_mut() = click;
         #[cfg(target_os = "macos")]
-        let ok = false; // TODO(macos phase 3): a notification
+        let ok = crate::platform::notify(title, body);
         #[cfg(windows)]
         let ok = balloon(&self._icon, title, body);
         log::info!("notify: {title}: {body} (balloon accepted: {ok})");
@@ -325,7 +327,7 @@ fn open_in_notepad(p: &Path) {
     }
 }
 
-/// Set by `balloon_proc`, taken by `poll`.
+/// Set by `balloon_proc` (a notification's click on macOS), taken by `poll`.
 static BALLOON_CLICKED: AtomicBool = AtomicBool::new(false);
 /// tray-icon's private callback message (`WM_USER_TRAYICON`, tray-icon 0.25) and shellapi.h's
 /// NIN_BALLOONUSERCLICK, which arrives as its lparam. If tray-icon renumbers, clicks just stop working.
