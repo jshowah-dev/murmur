@@ -1,6 +1,6 @@
 //! The pill on macOS: drawn by the shared `Pill` and `render`, shown in a `platform::Panel`
-//! above the Dock. It lets every click through, so it has no right-click menu or hover hint;
-//! the menu bar item has the menu.
+//! above the Dock. It lets clicks through except while the cursor is over it, where a
+//! right-click opens the menu bar item's menu. No hover hint yet.
 
 use super::{nearness, render_scaled, OverlayState, Pill};
 use crate::platform::{self, Panel, Rect};
@@ -51,8 +51,9 @@ impl Overlay {
         (x + w / 2.0, y)
     }
 
+    /// The view the menu is shown in.
     pub fn hwnd(&self) -> platform::Window {
-        platform::Window::default()
+        self.panel.view()
     }
 
     pub fn set(&mut self, state: OverlayState) {
@@ -70,8 +71,9 @@ impl Overlay {
 
     pub fn animate(&mut self) {
         let (x, y, w, h) = self.at;
+        let (cx, cy) = platform::cursor();
+        self.panel.set_clickable(cx >= x && cx < x + w && cy >= y && cy < y + h);
         let near = || {
-            let (cx, cy) = platform::cursor();
             let pill = Rect { left: x as i32, top: y as i32, right: (x + w) as i32, bottom: (y + h) as i32 };
             nearness((cx as i32, cy as i32), pill)
         };
@@ -91,8 +93,9 @@ impl Overlay {
         self.pill.pulse();
     }
 
+    /// True once per right-click on the pill.
     pub fn take_right_click(&self) -> bool {
-        false
+        platform::take_pill_right_click()
     }
 
     /// Hands AppKit its waiting events. Quitting goes through the menu, so this never ends the loop.

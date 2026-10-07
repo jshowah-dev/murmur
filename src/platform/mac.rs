@@ -5,7 +5,7 @@ use block2::{DynBlock, RcBlock};
 use objc2::runtime::{AnyObject, Bool, ProtocolObject};
 use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSEvent, NSEventMask,
+    NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSEvent, NSEventMask, NSEventType,
     NSPanel, NSRunningApplication, NSScreen, NSStatusWindowLevel, NSView, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
     NSWorkspace,
 };
@@ -24,7 +24,7 @@ use objc2_user_notifications::{
 use objc2_quartz_core::{CALayer, CATransaction};
 use std::fs::{File, TryLockError};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
 /// A screen rectangle in Win32's shape, so the shared code needs one kind of rectangle.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -206,8 +206,24 @@ pub fn pump() {
     let app = NSApplication::sharedApplication(mtm);
     let past = NSDate::distantPast();
     while let Some(ev) = unsafe { app.nextEventMatchingMask_untilDate_inMode_dequeue(NSEventMask::Any, Some(&past), NSDefaultRunLoopMode, true) } {
+        // a right-click on the pill is the menu's, and the pill has nothing else to do with it
+        let pill = PILL_WINDOW.load(Ordering::Relaxed);
+        if ev.r#type() == NSEventType::RightMouseDown && pill != 0 && ev.windowNumber() == pill {
+            PILL_RIGHT_CLICKED.store(true, Ordering::Relaxed);
+            continue;
+        }
         app.sendEvent(&ev);
     }
+}
+
+/// The pill's window number, once it has taken a click, and whether it was right-clicked since
+/// `take_pill_right_click` last asked.
+static PILL_WINDOW: AtomicIsize = AtomicIsize::new(0);
+static PILL_RIGHT_CLICKED: AtomicBool = AtomicBool::new(false);
+
+/// True once per right-click on the pill.
+pub fn take_pill_right_click() -> bool {
+    PILL_RIGHT_CLICKED.swap(false, Ordering::Relaxed)
 }
 
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -355,6 +371,20 @@ impl Panel {
         self.panel.setFrame_display(frame, false);
         CATransaction::commit();
         front(&self.panel);
+    }
+
+    /// Takes clicks only while the cursor is over it, so the app underneath gets them otherwise.
+    /// A right-click there then shows up in `take_pill_right_click`.
+    pub fn set_clickable(&self, clickable: bool) {
+        if self.panel.ignoresMouseEvents() == clickable {
+            self.panel.setIgnoresMouseEvents(!clickable);
+            PILL_WINDOW.store(self.panel.windowNumber(), Ordering::Relaxed);
+        }
+    }
+
+    /// Its content view, which a menu is shown in.
+    pub fn view(&self) -> Window {
+        Window(self.panel.contentView().map_or(0, |v| Retained::as_ptr(&v) as isize))
     }
 }
 

@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(windows)]
 use std::sync::atomic::AtomicU32;
-#[cfg(windows)]
 use tray_icon::menu::ContextMenu;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
@@ -191,9 +190,15 @@ impl Tray {
         }
     }
 
-    /// The pill has no menu on macOS yet: it isn't on screen until phase 3.
+    /// Shows the menu at the cursor, in `owner` (the pill's view). The pick arrives through `poll`
+    /// like one from the menu bar. The pill never takes the focus, so the app you were in keeps it.
     #[cfg(target_os = "macos")]
-    pub fn show_menu(&self, _owner: crate::platform::Window) {}
+    pub fn show_menu(&self, owner: crate::platform::Window) {
+        if owner.0 != 0 {
+            // SAFETY: the pill's content view, which lives as long as the pill
+            unsafe { self.menu.show_context_menu_for_nsview(owner.0 as *const std::ffi::c_void, None) };
+        }
+    }
 
     pub fn set_paused(&self, paused: bool) {
         self.pause.set_text(if paused { "Resume" } else { "Pause" });
