@@ -3,3 +3,4 @@
 *.wav
 !tests/fixtures/*.wav
 /murmur-v*-setup.exe
+/murmur-v*-macos-*.dmg*
