@@ -1,0 +1,19 @@
+/* Generated from the design kit; edit the kit, not this file. */
+:root {
+  --motion-duration-hover: 150ms;
+  --motion-duration-enter: 150ms;
+  --motion-duration-exit: 100ms;
+  --motion-duration-emphasis: 300ms;
+  --motion-duration-bump: 350ms;
+  --motion-duration-fill: 400ms;
+  --motion-duration-confirm: 1000ms;
+  --motion-duration-locate: 1200ms;
+  --motion-duration-read-per-char: 60ms;
+  --motion-easing-standard: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --motion-easing-enter: cubic-bezier(0, 0, 0.58, 1);
+  --motion-easing-exit: cubic-bezier(0.42, 0, 1, 1);
+  --motion-distance-enter: 10px;
+  --motion-scale-bump: 1.4;
+  --focus-width: 2px;
+  --focus-offset: 2px;
+}

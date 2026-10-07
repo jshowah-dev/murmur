@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Murmur — offline dictation</title>
+<meta name="description" content="Hold a key, speak, let go: the words are typed wherever your cursor is. Speech recognition runs on your machine. For Windows and macOS.">
+<meta name="color-scheme" content="dark">
+<meta property="og:title" content="Murmur — offline dictation for Windows and Mac">
+<meta property="og:description" content="Hold a key, speak, let go. Nothing you say leaves your machine.">
+<meta property="og:image" content="https://jshowah-dev.github.io/murmur/poster.jpg">
+<link rel="icon" href="murmur.png">
+<link rel="stylesheet" href="motion.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="top">
+  <a class="brand" href="#top" aria-label="Murmur">
+    <img src="murmur.png" width="28" height="28" alt="">
+    <span>Murmur</span>
+  </a>
+  <nav aria-label="Primary">
+    <a href="#film">Film</a>
+    <a href="#get">Download</a>
+    <a href="https://github.com/jshowah-dev/murmur">GitHub</a>
+  </nav>
+</header>
+
+<main id="top">
+
+<section class="hero">
+  <p class="tag">Offline dictation for Windows + Mac</p>
+  <h1><span class="block">Hold a key.</span> <span class="nw">Say it.</span> <span class="nw">Let go.</span></h1>
+
+  <div class="stage" id="stage">
+    <div class="ask">
+      <p class="ask-line" id="ask-line">Hold <strong id="key-name">Right Ctrl</strong> and talk.</p>
+      <button class="keycap" id="keycap" type="button" aria-describedby="key-help">
+        <span class="keycap-glyph" id="key-glyph" aria-hidden="true">ctrl</span>
+        <span class="keycap-name" id="key-cap-name">Right Ctrl</span>
+      </button>
+      <p class="help" id="key-help">Press and hold your real key, or press and hold this one.</p>
+      <p class="hint" id="hint" role="status" aria-live="polite"></p>
+    </div>
+
+    <div class="notes" id="notes">
+      <div class="notes-bar" aria-hidden="true"><span></span><span></span><span></span><b>Notes</b></div>
+      <div class="field" id="field" role="textbox" aria-readonly="true" aria-label="Demo text field" aria-live="polite">
+        <span class="placeholder" id="placeholder">Your words land here.</span><span class="typed" id="typed"></span><span class="caret" id="caret"></span>
+      </div>
+      <div class="pill" id="pill" aria-hidden="true">
+        <span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span>
+      </div>
+    </div>
+  </div>
+
+  <p class="fine">A scripted demo. No microphone, nothing recorded.</p>
+</section>
+
+<section class="points" aria-labelledby="points-h">
+  <h2 id="points-h" class="sr-only">What it does</h2>
+  <ol>
+    <li>
+      <span class="n">01</span>
+      <div>
+        <h3>Nothing leaves your machine</h3>
+        <p>Speech recognition runs on your CPU with a local model. No account, no cloud, no network after the one-time model download.</p>
+      </div>
+    </li>
+    <li>
+      <span class="n">02</span>
+      <div>
+        <h3>Types where your cursor is</h3>
+        <p>Any app that accepts typing. Hands-free by double-tap, spoken commands like “new line”, filler words dropped, last 25 dictations in the tray.</p>
+      </div>
+    </li>
+    <li>
+      <span class="n">03</span>
+      <div>
+        <h3>Learns your words</h3>
+        <p>A dictionary for names and jargon with phonetic matching, snippets for saved text, and “fix last” teaches it from your corrections.</p>
+      </div>
+    </li>
+  </ol>
+</section>
+
+<section class="film" id="film" aria-labelledby="film-h">
+  <h2 id="film-h">Two minutes, start to finish</h2>
+  <video controls preload="none" poster="poster.jpg" playsinline>
+    <source src="murmur-film.mp4" type="video/mp4">
+    <a href="https://github.com/jshowah-dev/murmur#readme">Read how it works on GitHub.</a>
+  </video>
+</section>
+
+<section class="get" id="get" aria-labelledby="get-h">
+  <h2 id="get-h">Download</h2>
+  <div class="platforms" id="platforms">
+    <article class="platform" id="plat-windows" data-os="windows">
+      <h3>Windows</h3>
+      <p class="req">Windows 10 or 11, x64. No GPU needed.</p>
+      <a class="btn" href="https://github.com/jshowah-dev/murmur/releases/latest">Get the installer</a>
+      <p class="note">Installs for your user only, no admin prompt. Not code-signed yet: if SmartScreen says “Windows protected your PC”, click <b>More info → Run anyway</b>.</p>
+    </article>
+    <article class="platform" id="plat-macos" data-os="macos">
+      <h3>macOS <span class="badge">preview</span></h3>
+      <p class="req">macOS 13 or later, Apple Silicon (M1 or newer).</p>
+      <a class="btn" href="https://github.com/jshowah-dev/murmur/releases/latest">Get the DMG</a>
+      <p class="note">Not signed by Apple yet. On first launch open <b>System Settings → Privacy &amp; Security</b> and click <b>Open Anyway</b>. Needed once per version.</p>
+    </article>
+  </div>
+  <p class="fine">First launch downloads the speech model, about 460 MB, one time. Free, MIT licensed, <a href="https://github.com/jshowah-dev/murmur">source on GitHub</a>.</p>
+</section>
+
+</main>
+
+<footer>
+  <span>Murmur</span>
+  <span>This page loads nothing from anyone else: no trackers, no web fonts, no outside scripts.</span>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
