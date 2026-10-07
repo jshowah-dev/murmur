@@ -24,7 +24,7 @@ use objc2_user_notifications::{
 use objc2_quartz_core::{CALayer, CATransaction};
 use std::fs::{File, TryLockError};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
 
 /// A screen rectangle in Win32's shape, so the shared code needs one kind of rectangle.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -515,14 +515,19 @@ pub fn notify(title: &str, body: &str) -> bool {
     let content = UNMutableNotificationContent::new();
     content.setTitle(&NSString::from_str(title));
     content.setBody(&NSString::from_str(body));
-    // one id, so a new notification replaces the last, like a balloon: a click belongs to the last
-    let request = UNNotificationRequest::requestWithIdentifier_content_trigger(&NSString::from_str("murmur"), &content, None);
+    // a click belongs to the last notification, so it's the only one left, like a balloon. A fresh
+    // id each time: one reused right after a click replaces it without a banner.
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let id = format!("murmur-{}", NEXT.fetch_add(1, Ordering::Relaxed));
+    let request = UNNotificationRequest::requestWithIdentifier_content_trigger(&NSString::from_str(&id), &content, None);
     let posted = RcBlock::new(|err: *mut NSError| {
         if let Some(e) = unsafe { err.as_ref() } {
             log::warn!("notification: {}", e.localizedDescription());
         }
     });
-    UNUserNotificationCenter::currentNotificationCenter().addNotificationRequest_withCompletionHandler(&request, Some(&posted));
+    let center = UNUserNotificationCenter::currentNotificationCenter();
+    center.removeAllDeliveredNotifications();
+    center.addNotificationRequest_withCompletionHandler(&request, Some(&posted));
     true
 }
 
