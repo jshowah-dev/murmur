@@ -120,6 +120,17 @@ pub fn clean(text: &str, dict: &Dictionary, snippets: &Snippets, cfg: &Config, p
     crate::snippets::restore(&s, &expansions)
 }
 
+/// `text` with a leading space when it would otherwise run on from `before`, the character
+/// already in front of the insertion point: back-to-back dictations read "now.Where's" without it.
+pub fn spaced_after(before: Option<char>, text: &str) -> String {
+    let joins = |c: char| c.is_whitespace() || matches!(c, '(' | '[' | '{' | '"' | '\'' | '\u{201C}' | '\u{2018}' | '/' | '-');
+    let attaches = |c: char| c.is_whitespace() || matches!(c, ',' | '.' | ';' | ':' | '!' | '?' | ')' | ']' | '}');
+    match (before, text.chars().next()) {
+        (Some(b), Some(t)) if !joins(b) && !attaches(t) => format!(" {text}"),
+        _ => text.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::config::Config;
@@ -270,5 +281,19 @@ The build is ready.
 Thanks,
 Jeff"
         );
+    }
+
+    #[test]
+    fn spaced_after_separates_back_to_back_dictations() {
+        use super::spaced_after;
+        assert_eq!(spaced_after(Some('.'), "Where's the handoff?"), " Where's the handoff?");
+        assert_eq!(spaced_after(Some('w'), "And more."), " And more.");
+        assert_eq!(spaced_after(None, "Start."), "Start.", "empty field or unknown");
+        assert_eq!(spaced_after(Some(' '), "Next."), "Next.");
+        assert_eq!(spaced_after(Some('\n'), "Next."), "Next.");
+        assert_eq!(spaced_after(Some('('), "aside"), "aside");
+        assert_eq!(spaced_after(Some('.'), "\nNext"), "\nNext", "a leading new line command");
+        assert_eq!(spaced_after(Some('d'), ", then"), ", then");
+        assert_eq!(spaced_after(Some('.'), ""), "");
     }
 }

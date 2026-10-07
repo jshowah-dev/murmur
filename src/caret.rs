@@ -12,7 +12,7 @@ use windows::Win32::System::Ole::{SafeArrayAccessData, SafeArrayDestroy, SafeArr
 #[cfg(windows)]
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, IUIAutomationTextPattern, IUIAutomationTextPattern2, IUIAutomationTextRange,
-    TextPatternRangeEndpoint_Start, TextUnit_Character, UIA_TextPattern2Id, UIA_TextPatternId,
+    TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start, TextUnit_Character, UIA_TextPattern2Id, UIA_TextPatternId,
 };
 #[cfg(windows)]
 use windows::Win32::UI::HiDpi::{SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
@@ -62,6 +62,12 @@ pub fn find(target: isize) -> Option<Anchor> {
     ax::find(target)
 }
 
+/// The character just before the insertion point in the focused text field, if the app says.
+#[cfg(target_os = "macos")]
+pub fn char_before() -> Option<char> {
+    ax::char_before()
+}
+
 /// The usable part of the screen the anchor is on, or the nearest one.
 #[cfg(target_os = "macos")]
 pub fn work_area(anchor: &Anchor) -> RECT {
@@ -102,6 +108,14 @@ mod ax {
     const CG_POINT: u32 = 1;
     const CG_SIZE: u32 = 2;
     const CG_RECT: u32 = 3;
+    const CF_RANGE: u32 = 4;
+
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy)]
+    struct CfRange {
+        location: isize,
+        length: isize,
+    }
 
     #[link(name = "ApplicationServices", kind = "framework")]
     extern "C" {
@@ -112,6 +126,7 @@ mod ax {
         fn AXUIElementCopyParameterizedAttributeValue(element: Ref, attribute: Ref, parameter: Ref, value: *mut Ref) -> i32;
         fn AXUIElementSetMessagingTimeout(element: Ref, seconds: f32) -> i32;
         fn AXValueGetValue(value: Ref, kind: u32, out: *mut c_void) -> bool;
+        fn AXValueCreate(kind: u32, value: *const c_void) -> Ref;
     }
 
     #[link(name = "CoreFoundation", kind = "framework")]
@@ -120,6 +135,10 @@ mod ax {
         static kCFBooleanTrue: Ref;
         static kCFTypeArrayCallBacks: c_void;
         fn CFArrayCreate(allocator: Ref, values: *const Ref, count: isize, callbacks: *const c_void) -> Ref;
+        fn CFGetTypeID(cf: Ref) -> usize;
+        fn CFStringGetTypeID() -> usize;
+        fn CFStringGetLength(s: Ref) -> isize;
+        fn CFStringGetCharacterAtIndex(s: Ref, idx: isize) -> u16;
     }
 
     /// Apps already asked to turn their accessibility on, by pid.
@@ -209,6 +228,42 @@ mod ax {
         RECT { left: x.round() as i32, top: y.round() as i32, right: (x + w).round() as i32, bottom: (y + h).round() as i32 }
     }
 
+    /// Last character of a CFString; half of a surrogate pair reads as U+FFFD, still not a space.
+    fn last_char(s: &Owned) -> Option<char> {
+        unsafe {
+            if CFGetTypeID(s.0) != CFStringGetTypeID() {
+                return None;
+            }
+            let n = CFStringGetLength(s.0);
+            if n <= 0 {
+                return None;
+            }
+            let unit = CFStringGetCharacterAtIndex(s.0, n - 1);
+            Some(char::from_u32(unit as u32).unwrap_or('\u{FFFD}'))
+        }
+    }
+
+    pub(super) fn char_before() -> Option<char> {
+        let system = Owned(unsafe { AXUIElementCreateSystemWide() });
+        unsafe { AXUIElementSetMessagingTimeout(system.0, 0.25) };
+        let focused = attribute(&system, "AXFocusedUIElement")?;
+        // native text fields: a character range
+        if let Some(sel) = attribute(&focused, "AXSelectedTextRange").and_then(|v| value::<CfRange>(&v, CF_RANGE)) {
+            if sel.location <= 0 {
+                return None;
+            }
+            let range = CfRange { location: sel.location - 1, length: 1 };
+            let param = Owned(unsafe { AXValueCreate(CF_RANGE, (&range as *const CfRange).cast()) });
+            return parameterized(&focused, "AXStringForRange", &param).and_then(|s| last_char(&s));
+        }
+        // web views: text markers
+        let selection = attribute(&focused, "AXSelectedTextMarkerRange")?;
+        let start = parameterized(&focused, "AXStartTextMarkerForTextMarkerRange", &selection)?;
+        let prev = parameterized(&focused, "AXPreviousTextMarkerForTextMarker", &start)?;
+        let range = marker_range(&focused, &prev, &start)?;
+        parameterized(&focused, "AXStringForTextMarkerRange", &range).and_then(|s| last_char(&s))
+    }
+
     pub(super) fn find(pid: isize) -> Option<Anchor> {
         wake(pid as i32);
         let system = Owned(unsafe { AXUIElementCreateSystemWide() });
@@ -249,6 +304,24 @@ pub fn find(target: isize) -> Option<Anchor> {
         GetWindowRect(target, &mut r).ok()?;
         non_empty(r).then_some(Anchor::Area(r))
     })
+}
+
+/// The character just before the insertion point in the focused text control, if UI Automation says.
+#[cfg(windows)]
+pub fn char_before() -> Option<char> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED); // already-initialized is fine
+        let uia: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()?;
+        let el = uia.GetFocusedElement().ok()?;
+        let tp = el.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId).ok()?;
+        let range = tp.GetSelection().ok()?.GetElement(0).ok()?;
+        // collapse to the selection's start, then reach back one character
+        range.MoveEndpointByRange(TextPatternRangeEndpoint_End, &range, TextPatternRangeEndpoint_Start).ok()?;
+        if range.MoveEndpointByUnit(TextPatternRangeEndpoint_Start, TextUnit_Character, -1).ok()? == 0 {
+            return None;
+        }
+        range.GetText(1).ok()?.to_string().chars().last()
+    }
 }
 
 /// Whether the caret's centre lies within `field`, give or take a pixel of rounding.

@@ -163,7 +163,8 @@ impl State {
             cleanup::clean(&raw, &d, &self.snippets.current, &self.cfg, profile)
         };
         // paste falls back to typing the text in, so an error here is only logged
-        let inject = inject::paste(&cleaned).map_err(|e| log::error!("paste: {e:#}")).ok();
+        let pasted = cleanup::spaced_after(crate::caret::char_before(), &cleaned);
+        let inject = inject::paste(&pasted).map_err(|e| log::error!("paste: {e:#}")).ok();
         log::info!("dictated {} chars, release_to_text_ms={}", cleaned.chars().count(), stop_start.elapsed().as_millis());
         let _ = self.tx.send(PipelineMsg::Done(Entry { raw, cleaned, inject, at: Instant::now() }));
     }
