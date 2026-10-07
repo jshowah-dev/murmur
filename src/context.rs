@@ -26,7 +26,24 @@ impl Profile {
 }
 
 /// A webmail title only counts in one of these, so "Outlook migration.docx" in Word is not email.
-const BROWSERS: &[&str] = &["chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "vivaldi.exe", "arc.exe"];
+/// Exe names on Windows, bundle ids on macOS, in lower case.
+const BROWSERS: &[&str] = &[
+    "chrome.exe",
+    "msedge.exe",
+    "firefox.exe",
+    "brave.exe",
+    "opera.exe",
+    "vivaldi.exe",
+    "arc.exe",
+    "com.apple.safari",
+    "com.google.chrome",
+    "com.microsoft.edgemac",
+    "org.mozilla.firefox",
+    "com.brave.browser",
+    "com.operasoftware.opera",
+    "com.vivaldi.vivaldi",
+    "company.thebrowser.browser",
+];
 
 fn is_browser(exe: &str) -> bool {
     BROWSERS.contains(&exe.to_lowercase().as_str())
@@ -89,10 +106,53 @@ pub fn detect(cfg: &Config) -> Profile {
     }
 }
 
-// TODO(macos): the frontmost app's bundle id and, for a browser, its window title via Accessibility.
-#[cfg(not(windows))]
-pub fn detect(_cfg: &Config) -> Profile {
-    Profile::Plain
+/// The profile for the app in front right now, by its bundle id. A browser's window title is
+/// read through Accessibility (Murmur is allowed it, to paste), used for the match and dropped,
+/// as on Windows.
+#[cfg(target_os = "macos")]
+pub fn detect(cfg: &Config) -> Profile {
+    let Some(app) = objc2_app_kit::NSWorkspace::sharedWorkspace().frontmostApplication() else { return Profile::Plain };
+    let Some(id) = app.bundleIdentifier().map(|s| s.to_string()) else { return Profile::Plain };
+    let title = if is_browser(&id) { ax::window_title(app.processIdentifier()).unwrap_or_default() } else { String::new() };
+    classify(&id, &title, cfg)
+}
+
+#[cfg(target_os = "macos")]
+mod ax {
+    use objc2_core_foundation::{CFRetained, CFString, CFType};
+    use std::ffi::c_void;
+    use std::ptr::NonNull;
+
+    type Ref = *const c_void;
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXUIElementCreateApplication(pid: i32) -> Ref;
+        fn AXUIElementCopyAttributeValue(element: Ref, attribute: Ref, value: *mut Ref) -> i32;
+        fn AXUIElementSetMessagingTimeout(element: Ref, seconds: f32) -> i32;
+    }
+
+    /// Takes ownership of a CoreFoundation object from a Create or Copy call.
+    fn owned(r: Ref) -> Option<CFRetained<CFType>> {
+        NonNull::new(r as *mut CFType).map(|p| unsafe { CFRetained::from_raw(p) })
+    }
+
+    fn attribute(element: &CFType, attr: &str) -> Option<CFRetained<CFType>> {
+        let attr = CFString::from_str(attr);
+        let mut out = std::ptr::null();
+        let err = unsafe { AXUIElementCopyAttributeValue(element as *const CFType as Ref, &*attr as *const CFString as Ref, &mut out) };
+        if err == 0 { owned(out) } else { None }
+    }
+
+    /// The title of `pid`'s focused window.
+    pub fn window_title(pid: i32) -> Option<String> {
+        let app = owned(unsafe { AXUIElementCreateApplication(pid) })?;
+        // a busy browser mustn't hold up the paste for long
+        unsafe { AXUIElementSetMessagingTimeout(&*app as *const CFType as Ref, 0.25) };
+        let window = attribute(&app, "AXFocusedWindow")?;
+        let title = attribute(&window, "AXTitle")?;
+        title.downcast_ref::<CFString>().map(|s| s.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -114,6 +174,18 @@ mod tests {
         assert_eq!(classify("MSEDGE.EXE", "Mail - Jeff - outlook - Microsoft Edge", &c), Profile::Email);
         assert_eq!(classify("firefox.exe", "Proton Mail — Mozilla Firefox", &c), Profile::Email);
         assert_eq!(classify("chrome.exe", "Rust docs - Google Chrome", &c), Profile::Plain);
+    }
+
+    #[test]
+    fn mac_mail_apps_and_browsers_match_by_bundle_id() {
+        let c = Config::default();
+        for id in ["com.apple.mail", "com.microsoft.Outlook", "org.mozilla.thunderbird"] {
+            assert_eq!(classify(id, "", &c), Profile::Email, "{id}");
+        }
+        assert_eq!(classify("com.apple.Safari", "Inbox (3) - me@gmail.com - Gmail", &c), Profile::Email);
+        assert_eq!(classify("com.google.Chrome", "Mail - Jeff - Outlook", &c), Profile::Email);
+        assert_eq!(classify("com.apple.Safari", "Rust docs", &c), Profile::Plain);
+        assert_eq!(classify("com.apple.TextEdit", "Gmail notes.txt", &c), Profile::Plain);
     }
 
     #[test]

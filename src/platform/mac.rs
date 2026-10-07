@@ -1,10 +1,11 @@
 use super::Window;
 use anyhow::{Context, Result};
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
-use objc2::{MainThreadMarker, MainThreadOnly};
+use block2::{DynBlock, RcBlock};
+use objc2::runtime::{AnyObject, Bool, ProtocolObject};
+use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSEvent, NSEventMask,
+    NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSEvent, NSEventMask, NSEventType,
     NSPanel, NSRunningApplication, NSScreen, NSStatusWindowLevel, NSView, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
     NSWorkspace,
 };
@@ -13,10 +14,17 @@ use objc2_core_graphics::{
     kCGColorSpaceSRGB, CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGEventSource, CGEventSourceStateID, CGImage,
     CGImageAlphaInfo, CGImageByteOrderInfo,
 };
-use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSDictionary, NSNumber, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    NSBundle, NSDate, NSDefaultRunLoopMode, NSDictionary, NSError, NSNumber, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
+};
+use objc2_user_notifications::{
+    UNAuthorizationOptions, UNMutableNotificationContent, UNNotification, UNNotificationPresentationOptions, UNNotificationRequest,
+    UNNotificationResponse, UNUserNotificationCenter, UNUserNotificationCenterDelegate,
+};
 use objc2_quartz_core::{CALayer, CATransaction};
 use std::fs::{File, TryLockError};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
 /// A screen rectangle in Win32's shape, so the shared code needs one kind of rectangle.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -198,8 +206,24 @@ pub fn pump() {
     let app = NSApplication::sharedApplication(mtm);
     let past = NSDate::distantPast();
     while let Some(ev) = unsafe { app.nextEventMatchingMask_untilDate_inMode_dequeue(NSEventMask::Any, Some(&past), NSDefaultRunLoopMode, true) } {
+        // a right-click on the pill is the menu's, and the pill has nothing else to do with it
+        let pill = PILL_WINDOW.load(Ordering::Relaxed);
+        if ev.r#type() == NSEventType::RightMouseDown && pill != 0 && ev.windowNumber() == pill {
+            PILL_RIGHT_CLICKED.store(true, Ordering::Relaxed);
+            continue;
+        }
         app.sendEvent(&ev);
     }
+}
+
+/// The pill's window number, once it has taken a click, and whether it was right-clicked since
+/// `take_pill_right_click` last asked.
+static PILL_WINDOW: AtomicIsize = AtomicIsize::new(0);
+static PILL_RIGHT_CLICKED: AtomicBool = AtomicBool::new(false);
+
+/// True once per right-click on the pill.
+pub fn take_pill_right_click() -> bool {
+    PILL_RIGHT_CLICKED.swap(false, Ordering::Relaxed)
 }
 
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -348,6 +372,20 @@ impl Panel {
         CATransaction::commit();
         front(&self.panel);
     }
+
+    /// Takes clicks only while the cursor is over it, so the app underneath gets them otherwise.
+    /// A right-click there then shows up in `take_pill_right_click`.
+    pub fn set_clickable(&self, clickable: bool) {
+        if self.panel.ignoresMouseEvents() == clickable {
+            self.panel.setIgnoresMouseEvents(!clickable);
+            PILL_WINDOW.store(self.panel.windowNumber(), Ordering::Relaxed);
+        }
+    }
+
+    /// Its content view, which a menu is shown in.
+    pub fn view(&self) -> Window {
+        Window(self.panel.contentView().map_or(0, |v| Retained::as_ptr(&v) as isize))
+    }
 }
 
 /// A click-through panel over the whole screen that never moves: what moves is a layer inside
@@ -449,5 +487,71 @@ mod tests {
         assert_eq!(key_code(VK_F1 + 12), Some(0x69)); // F13
         assert_eq!(key_code(VK_F1 + 20), None); // F21: none on a Mac
         assert_eq!(key_code(0x41), None);
+    }
+}
+
+/// Notifications go through UserNotifications. `init_notifications` asks macOS once (it remembers
+/// the answer) and sets `clicked` when one is clicked. Outside an app bundle (tests, `cargo run`)
+/// the notification center throws, so there are none.
+pub fn init_notifications(clicked: &'static AtomicBool) {
+    if NSBundle::mainBundle().bundleIdentifier().is_none() {
+        return;
+    }
+    let center = UNUserNotificationCenter::currentNotificationCenter();
+    let delegate = NoticeDelegate::new(clicked);
+    center.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+    // the center holds its delegate weakly, and Murmur needs it until it quits
+    std::mem::forget(delegate);
+    let answered = RcBlock::new(|allowed: Bool, _: *mut NSError| log::info!("notifications allowed: {}", allowed.as_bool()));
+    center.requestAuthorizationWithOptions_completionHandler(UNAuthorizationOptions::Alert, &answered);
+}
+
+/// Posts a notification; false if there's no notification center. Not allowed (yet) means
+/// macOS drops it quietly.
+pub fn notify(title: &str, body: &str) -> bool {
+    if NSBundle::mainBundle().bundleIdentifier().is_none() {
+        return false;
+    }
+    let content = UNMutableNotificationContent::new();
+    content.setTitle(&NSString::from_str(title));
+    content.setBody(&NSString::from_str(body));
+    // one id, so a new notification replaces the last, like a balloon: a click belongs to the last
+    let request = UNNotificationRequest::requestWithIdentifier_content_trigger(&NSString::from_str("murmur"), &content, None);
+    let posted = RcBlock::new(|err: *mut NSError| {
+        if let Some(e) = unsafe { err.as_ref() } {
+            log::warn!("notification: {}", e.localizedDescription());
+        }
+    });
+    UNUserNotificationCenter::currentNotificationCenter().addNotificationRequest_withCompletionHandler(&request, Some(&posted));
+    true
+}
+
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[name = "MurmurNoticeDelegate"]
+    #[ivars = &'static AtomicBool]
+    struct NoticeDelegate;
+
+    unsafe impl NSObjectProtocol for NoticeDelegate {}
+
+    unsafe impl UNUserNotificationCenterDelegate for NoticeDelegate {
+        #[unsafe(method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:))]
+        fn did_receive(&self, _center: &UNUserNotificationCenter, _response: &UNNotificationResponse, done: &DynBlock<dyn Fn()>) {
+            self.ivars().store(true, Ordering::Relaxed);
+            done.call(());
+        }
+
+        // shown even while Murmur is the app in front
+        #[unsafe(method(userNotificationCenter:willPresentNotification:withCompletionHandler:))]
+        fn will_present(&self, _center: &UNUserNotificationCenter, _n: &UNNotification, done: &DynBlock<dyn Fn(UNNotificationPresentationOptions)>) {
+            done.call((UNNotificationPresentationOptions::Banner | UNNotificationPresentationOptions::List,));
+        }
+    }
+);
+
+impl NoticeDelegate {
+    fn new(clicked: &'static AtomicBool) -> Retained<Self> {
+        let this = Self::alloc().set_ivars(clicked);
+        unsafe { msg_send![super(this), init] }
     }
 }

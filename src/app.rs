@@ -183,6 +183,11 @@ pub fn main() -> Result<()> {
     if cfg.debug_log {
         log::set_max_level(log::LevelFilter::Debug);
     }
+    match config::upgrade_email_apps(&mut cfg) {
+        Ok(true) => log::info!("email_apps: added the Mac mail apps to the default list"),
+        Ok(false) => {}
+        Err(e) => log::warn!("email_apps: {e:#}"),
+    }
     let dict = Arc::new(Mutex::new(match Dictionary::load_or_seed() {
         Ok(d) => d,
         Err(e) => {

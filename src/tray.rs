@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(windows)]
 use std::sync::atomic::AtomicU32;
-#[cfg(windows)]
 use tray_icon::menu::ContextMenu;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
@@ -155,6 +154,8 @@ impl Tray {
         if !unsafe { SetWindowSubclass(HWND(_icon.window_handle() as *mut _), Some(balloon_proc), 1, 0) }.as_bool() {
             log::warn!("balloon clicks unavailable: SetWindowSubclass failed");
         }
+        #[cfg(target_os = "macos")]
+        crate::platform::init_notifications(&BALLOON_CLICKED);
         let shows = Cell::new((false, false));
         Ok(Tray { _icon, menu, pause, fix, ptt, autostart, update, model, shown: Cell::new((false, false)), ids, click: RefCell::new(BalloonClick::Nothing), shows })
     }
@@ -189,9 +190,15 @@ impl Tray {
         }
     }
 
-    /// The pill has no menu on macOS yet: it isn't on screen until phase 3.
+    /// Shows the menu at the cursor, in `owner` (the pill's view). The pick arrives through `poll`
+    /// like one from the menu bar. The pill never takes the focus, so the app you were in keeps it.
     #[cfg(target_os = "macos")]
-    pub fn show_menu(&self, _owner: crate::platform::Window) {}
+    pub fn show_menu(&self, owner: crate::platform::Window) {
+        if owner.0 != 0 {
+            // SAFETY: the pill's content view, which lives as long as the pill
+            unsafe { self.menu.show_context_menu_for_nsview(owner.0 as *const std::ffi::c_void, None) };
+        }
+    }
 
     pub fn set_paused(&self, paused: bool) {
         self.pause.set_text(if paused { "Resume" } else { "Pause" });
@@ -266,7 +273,7 @@ impl Tray {
         // a click belongs to the balloon on screen, which is the last one shown
         *self.click.borrow_mut() = click;
         #[cfg(target_os = "macos")]
-        let ok = false; // TODO(macos phase 3): a notification
+        let ok = crate::platform::notify(title, body);
         #[cfg(windows)]
         let ok = balloon(&self._icon, title, body);
         log::info!("notify: {title}: {body} (balloon accepted: {ok})");
@@ -325,7 +332,7 @@ fn open_in_notepad(p: &Path) {
     }
 }
 
-/// Set by `balloon_proc`, taken by `poll`.
+/// Set by `balloon_proc` (a notification's click on macOS), taken by `poll`.
 static BALLOON_CLICKED: AtomicBool = AtomicBool::new(false);
 /// tray-icon's private callback message (`WM_USER_TRAYICON`, tray-icon 0.25) and shellapi.h's
 /// NIN_BALLOONUSERCLICK, which arrives as its lparam. If tray-icon renumbers, clicks just stop working.
