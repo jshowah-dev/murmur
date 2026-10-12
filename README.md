@@ -48,14 +48,13 @@ Murmur lives in the menu bar, with a small pill above the Dock. To start it when
 
 ## Updating
 
-Murmur doesn't update itself. To get notified of new versions, click **Watch → Custom → Releases** on this repository.
+Murmur checks for a new version a minute after it starts and then every hour, and **About Murmur** checks whenever you open it. When there is one, Murmur shows a notification and adds **Update to vX.Y.Z…** to its menu. Click either: Murmur downloads the new version, checks it against the release's published checksum, installs it and restarts. If the Dictionary & Snippets window is open, Murmur asks you to close it first, then choose **Update** again.
 
-**Windows:**
+**Windows:** this updates the copy the installer put in place, and keeps your start-with-Windows choice. Zip users see **Get vX.Y.Z…** instead, which opens [Releases](../../releases): quit Murmur (tray icon → Quit), unzip the new zip over the old folder, replacing the files, and start `murmur.exe`.
 
-1. Download the new `murmur-vX.Y.Z-setup.exe` from [Releases](../../releases) and run it. It closes Murmur, updates it in place and keeps your start-with-Windows choice.
-2. Zip users: quit Murmur (tray icon → Quit), unzip the new zip over the old folder, replacing the files, and start `murmur.exe`.
+**macOS:** this updates the copy in Applications; a copy run from anywhere else sees **Get vX.Y.Z…**, which opens [Releases](../../releases). Because the preview isn't signed by Apple, macOS treats each version as a new app and forgets that Murmur was allowed to paste. When Murmur asks after restarting, open **System Settings → Privacy & Security → Accessibility**, select Murmur, remove it with **−**, then allow it again. Switching it off and on isn't enough.
 
-**macOS:** quit Murmur, open the new DMG and drag Murmur onto Applications, replacing the old one, then open it (and click **Open Anyway** again, as on first install). Because the preview isn't signed by Apple, macOS treats each version as a new app: in **System Settings → Privacy & Security → Accessibility**, select Murmur, remove it with **−**, then allow it again when Murmur asks. Switching it off and on isn't enough.
+To update by hand, download the new `murmur-vX.Y.Z-setup.exe` from [Releases](../../releases) and run it, or on a Mac quit Murmur, drag Murmur from the new DMG onto Applications, open it, click **Open Anyway** as on first install, and allow it under Accessibility again as above.
 
 Your settings, dictionary, snippets and the model are kept (`%APPDATA%\Murmur` and `%LOCALAPPDATA%\Murmur\models` on Windows, `~/Library/Application Support/Murmur` on a Mac), so nothing is downloaded again.
 
@@ -79,6 +78,7 @@ Murmur lives in the system tray on Windows (teal microphone; grey when paused) a
 | Push-to-talk key: (your key)… | Pick another key or chord by pressing it |
 | Open config folder | Open the folder with your settings, dictionary and snippets |
 | Start with Windows / Open at Login | Start Murmur when you sign in (on/off) |
+| Update to vX.Y.Z… | Shown when a new version is out: download and install it (see [Updating](#updating)) |
 | About Murmur | Version, update check, what Murmur has learned, and licences |
 | Quit | Exit Murmur |
 
@@ -178,7 +178,7 @@ Your Name"""
 ## Privacy
 
 - Audio is processed in memory and never saved or sent anywhere.
-- The only network access is the one-time model download from the [sherpa-onnx releases](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models).
+- Murmur goes online only to download the speech model (once, from the [sherpa-onnx releases](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models)), to check this repository for a new version, and to download an update you choose to install.
 - `murmur.log` in the config folder records events, not what you said, unless you turn on `debug_log`.
 - To recognise an email app, Murmur reads the name and window title of the program you are dictating into. They are used for that one check and never stored or logged.
 
