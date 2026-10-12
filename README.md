@@ -153,6 +153,28 @@ Best,
 Your Name"""
 ```
 
+## Troubleshooting
+
+**Nothing happens when I hold the key.** Check the tray or menu bar icon: grey means Murmur is paused, so choose **Resume**. If another app already uses the key, pick a different one with **Push-to-talk key…** in the menu. On a Mac, modifier keys (Option, Command, Control) work as they are, but an F-key or Caps Lock also needs Murmur allowed under **System Settings → Privacy & Security → Input Monitoring**.
+
+**"Can't open the microphone".** Murmur records from your system's default input. On Windows, check **Settings → Privacy & security → Microphone** and make sure **Let desktop apps access your microphone** is on. On a Mac, allow Murmur under **System Settings → Privacy & Security → Microphone**. If you switch microphones (plugging in earbuds, say), Murmur picks up the new default by itself.
+
+**"Didn't catch that".** Murmur heard no words. Make sure the right microphone is set as the default input (Windows: **Settings → System → Sound**; Mac: **System Settings → Sound → Input**) and that it isn't muted. Speak right after pressing the key, and keep holding it until you've finished.
+
+**The text doesn't appear.** Murmur pastes by putting the text on the clipboard and pressing Ctrl+V (Cmd+V on a Mac) for you, then putting your clipboard back.
+- On a Mac, pasting needs the **Accessibility** permission. Without it the text is left on the clipboard, so paste it yourself. After an update, remove Murmur from the Accessibility list and allow it again (see [Updating](#updating)).
+- On Windows, Murmur can't type into programs running as administrator. Run the program normally, or copy the text from **History…** and paste it yourself.
+
+**Background noise gets typed.** Murmur transcribes whatever the microphone picks up, including a TV or other people talking. A headset or a microphone close to your mouth helps most.
+
+**Dictation is slow.** Recognition runs on your CPU. Set `threads` in `config.toml` to the number of cores your processor has (the default is 8) and restart Murmur. The first dictation after a long break also takes a moment longer while the model reloads (see `idle_unload_minutes`).
+
+**The speech model won't download.** Murmur needs about 1.2 GB free on the drive with your user folder while it downloads and unpacks the model. Choose **Retry** on the setup screen: an interrupted download picks up where it left off.
+
+**"Murmur couldn't read config.toml"** (or `dictionary.toml`, `snippets.toml`). A file edited by hand has a mistake in it. Click the notice to open the file at fault; it names the line. Until it's fixed, Murmur carries on with defaults or your previous terms and snippets.
+
+**Something else.** `murmur.log` in the config folder (**Open config folder** in the menu) records what Murmur did, but not what you said. Attach it when you [open an issue](../../issues).
+
 ## Privacy
 
 - Audio is processed in memory and never saved or sent anywhere.
