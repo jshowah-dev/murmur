@@ -2,6 +2,18 @@
 // pour into Murmur's pill, and one mote flies to the caret and bursts into the clean sentence.
 // Hold your push-to-talk key (or press and hold the pill) to drive it yourself.
 (() => {
+  // A reload starts at the top. Browsers otherwise go back to where you were, or to the section a
+  // Download link last put in the address, which on this short page is the very bottom.
+  if (performance.getEntriesByType?.("navigation")[0]?.type === "reload") {
+    history.scrollRestoration = "manual";
+    if (location.hash) history.replaceState(null, "", location.pathname + location.search);
+    const top = () => scrollTo({ top: 0, behavior: "instant" });
+    top();
+    addEventListener("load", top, { once: true });
+    // back and forward still return you to where you were
+    addEventListener("pagehide", () => { history.scrollRestoration = "auto"; }, { once: true });
+  }
+
   const $ = (id) => document.getElementById(id);
   const stage = $("stage"), cv = $("fx"), ctx = cv.getContext("2d");
   const field = $("field"), statusEl = $("status"), pill = $("pill"), live = $("said-live");
