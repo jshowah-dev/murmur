@@ -31,6 +31,7 @@ pub enum TrayEvent {
     /// The "update available" balloon was clicked.
     BalloonUpdate,
     DownloadModel,
+    Help,
     About,
     Quit,
 }
@@ -46,20 +47,20 @@ pub struct Tray {
     model: MenuItem,
     /// whether (model, update) are in the menu
     shown: Cell<(bool, bool)>,
-    ids: [(MenuId, TrayEvent); 12],
+    ids: [(MenuId, TrayEvent); 13],
     /// what a click on the balloon on screen does
     click: RefCell<BalloonClick>,
     /// (paused, live) as the icon shows them
     shows: Cell<(bool, bool)>,
 }
 
-/// Menu position of "About Murmur" before any optional item is added.
-const ABOUT_AT: usize = 10;
+/// Menu position of "Help" before any optional item is added.
+const HELP_AT: usize = 10;
 
-/// Where the model and update items go when shown: above About, model first.
+/// Where the model and update items go when shown: above Help, model first.
 fn extras_positions(model: bool, update: bool) -> (Option<usize>, Option<usize>) {
-    let m = model.then_some(ABOUT_AT);
-    let u = update.then_some(ABOUT_AT + model as usize);
+    let m = model.then_some(HELP_AT);
+    let u = update.then_some(HELP_AT + model as usize);
     (m, u)
 }
 
@@ -125,12 +126,13 @@ impl Tray {
         let ptt = MenuItem::new(ptt_item_label(ptt_label), true, None);
         let cfg = MenuItem::new("Open config folder", true, None);
         let autostart = CheckMenuItem::new(AUTOSTART_LABEL, true, crate::autostart::is_enabled(), None);
+        let help = MenuItem::new("Help", true, None);
         let about = MenuItem::new("About Murmur", true, None);
         let quit = MenuItem::new("Quit", true, None);
         // not in the menu until there's something to offer
         let update = MenuItem::new("Update", true, None);
         let model = MenuItem::new("Download new speech model", true, None);
-        menu.append_items(&[&pause, &fix, &hist, &PredefinedMenuItem::separator(), &dict, &snip, &ptt, &cfg, &autostart, &PredefinedMenuItem::separator(), &about, &quit])?;
+        menu.append_items(&[&pause, &fix, &hist, &PredefinedMenuItem::separator(), &dict, &snip, &ptt, &cfg, &autostart, &PredefinedMenuItem::separator(), &help, &about, &quit])?;
         let ids = [
             (pause.id().clone(), TrayEvent::TogglePause),
             (fix.id().clone(), TrayEvent::FixLast),
@@ -142,6 +144,7 @@ impl Tray {
             (autostart.id().clone(), TrayEvent::ToggleAutostart),
             (update.id().clone(), TrayEvent::Update),
             (model.id().clone(), TrayEvent::DownloadModel),
+            (help.id().clone(), TrayEvent::Help),
             (about.id().clone(), TrayEvent::About),
             (quit.id().clone(), TrayEvent::Quit),
         ];
@@ -427,8 +430,8 @@ mod tests {
     }
 
     #[test]
-    fn optional_items_sit_above_about() {
-        // Pause, Fix last, History, ─, Dictionary, Snippets, Push-to-talk key, Config, Start with Windows, ─, [model], [update], About, Quit
+    fn optional_items_sit_above_help() {
+        // Pause, Fix last, History, ─, Dictionary, Snippets, Push-to-talk key, Config, Start with Windows, ─, [model], [update], Help, About, Quit
         assert_eq!(extras_positions(false, false), (None, None));
         assert_eq!(extras_positions(false, true), (None, Some(10)));
         assert_eq!(extras_positions(true, false), (Some(10), None));
