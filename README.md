@@ -19,6 +19,17 @@ Offline push-to-talk dictation for Windows and macOS (preview). Hold a key, spea
 
 ## Install
 
+### System requirements
+
+| | Windows | macOS (preview) |
+|---|---|---|
+| System | Windows 10 or 11, 64-bit (x64) | macOS 13 or later |
+| Processor | 64-bit (x64). No GPU needed | Apple Silicon (M1 or newer) |
+| Memory | About 1.2 GB for the speech model while it's loaded | About 1.2 GB for the speech model while it's loaded |
+| Disk | About 700 MB: the app (36 MB) and the speech model (661 MB). 1.2 GB free for the one-time model download | About 700 MB, mostly the speech model. 1.2 GB free for the one-time model download |
+
+Recognition runs on your processor, so speed depends on it. On a 4-core 2.8 GHz Intel Xeon, 10 seconds of speech took 1.7 s to transcribe with `threads = 4`. Murmur transcribes long dictations in chunks while you're still talking, so the wait after you let go stays short. Set [`threads`](#configuration) to the number of cores your processor has: on that 4-core machine, the default of 8 took twice as long. Murmur frees the model's memory after 15 idle minutes (`idle_unload_minutes`).
+
 ### Windows
 
 Requires Windows 10 or 11 (x64). No GPU needed.
@@ -90,7 +101,7 @@ Settings live in `config.toml` in the config folder (`%APPDATA%\Murmur` on Windo
 |---|---|---|
 | `ptt_key` | `"RControl"` (Windows), `"RAlt"` (Mac) | Push-to-talk key: `RControl`, `LControl`, `RAlt`, `LAlt`, `RShift`, `CapsLock`, `ScrollLock`, `Pause`, or `F1`–`F24`. On a Mac, Alt is Option, and `ROption`, `LOption`, `RCommand` and `LCommand` work too. Easier: **Push-to-talk key** in the menu |
 | `model_dir` | `%LOCALAPPDATA%\Murmur\models\…` (Windows), `%HOME%/Library/Application Support/Murmur/models/…` (Mac) | Speech model folder. Only the default location is downloaded automatically |
-| `threads` | `8` | CPU threads for recognition |
+| `threads` | `8` | CPU threads for recognition. Set it to your processor's core count; more threads than cores is slower |
 | `min_silence_ms` | `500` | Silence that ends a speech segment |
 | `fillers` | `["um", "uh", "er", "hmm", "mm"]` | Words removed from the output |
 | `spoken_commands` | `true` | Turn "new line" / "new paragraph" into line breaks |
