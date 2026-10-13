@@ -227,3 +227,5 @@ It builds on:
 - **[Parakeet TDT 0.6B v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2)** by NVIDIA, licensed under [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/). Murmur uses the int8 ONNX conversion published by the sherpa-onnx project. The model is downloaded on first run and is not distributed with Murmur.
 - **[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)** by k2-fsa (Apache-2.0), which bundles [ONNX Runtime](https://github.com/microsoft/onnxruntime) (MIT).
 - **[Silero VAD](https://github.com/snakers4/silero-vad)** (MIT), for voice activity detection.
+
+The [website](https://jshowah-dev.github.io/murmur/) uses the Bricolage Grotesque, Figtree and JetBrains Mono typefaces, licensed under the [SIL Open Font License 1.1](site/fonts/); they are served from this repository.
