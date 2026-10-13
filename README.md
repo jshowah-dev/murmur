@@ -90,6 +90,7 @@ Murmur lives in the system tray on Windows (teal microphone; grey when paused) a
 | Open config folder | Open the folder with your settings, dictionary and snippets |
 | Start with Windows / Open at Login | Start Murmur when you sign in (on/off) |
 | Update to vX.Y.Z… | Shown when a new version is out: download and install it (see [Updating](#updating)) |
+| Help | Open this README in your browser |
 | About Murmur | Version, update check, what Murmur has learned, and licences |
 | Quit | Exit Murmur |
 

@@ -45,6 +45,9 @@ fn init_logging(may_truncate: bool) {
     log::set_max_level(log::LevelFilter::Info);
 }
 
+/// What the tray's Help opens: the README, which covers usage, settings and troubleshooting.
+const HELP_PAGE: &str = "https://github.com/jshowah-dev/murmur/blob/main/README.md";
+
 fn open_path(p: &std::path::Path) {
     platform::open_path(p);
 }
@@ -422,6 +425,7 @@ pub fn main() -> Result<()> {
                     while hk_rx.try_recv().is_ok() {}
                 }
                 TrayEvent::OpenConfigDir => open_path(&config::config_dir()),
+                TrayEvent::Help => open_path(std::path::Path::new(HELP_PAGE)),
                 TrayEvent::ToggleAutostart => {
                     // the registry, not the menu's own check state, says what's on
                     if let Err(e) = autostart::set(!autostart::is_enabled()) {
