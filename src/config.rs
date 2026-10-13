@@ -9,7 +9,10 @@ pub struct Config {
     pub ptt_key: String,
     pub model_dir: String,
     pub idle_unload_minutes: u64,
-    pub threads: i32,
+    /// CPU threads for recognition. None = one per core, up to 8: see `recognition_threads`.
+    /// Left out of a new config.toml so the default follows the machine.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threads: Option<i32>,
     pub min_silence_ms: u32,
     pub fillers: Vec<String>,
     pub spoken_commands: bool,
@@ -38,7 +41,7 @@ impl Default for Config {
             ptt_key: DEFAULT_PTT_KEY.into(),
             model_dir: DEFAULT_MODEL_DIR.into(),
             idle_unload_minutes: 15,
-            threads: 8,
+            threads: None,
             min_silence_ms: 500,
             fillers: ["um", "uh", "er", "hmm", "mm"].iter().map(|s| s.to_string()).collect(),
             spoken_commands: true,
@@ -407,6 +410,24 @@ impl Config {
     pub fn hands_free_max(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.hands_free_max_minutes.max(1) * 60)
     }
+
+    /// `threads` if set, else one per core up to 8. `threads = 8` counts as unset: releases
+    /// up to 0.5.0 wrote it into every config.toml, and on fewer cores it's slower.
+    pub fn recognition_threads(&self) -> i32 {
+        match self.threads {
+            Some(n) if n > 0 && n != OLD_DEFAULT_THREADS => n,
+            _ => threads_for(std::thread::available_parallelism().ok().map(|n| n.get())),
+        }
+    }
+}
+
+/// The `threads` default every config.toml got before it followed the core count.
+const OLD_DEFAULT_THREADS: i32 = 8;
+
+/// One thread per core, up to 8; 4 if the count is unknown. The count includes a Mac's
+/// efficiency cores: on an M5 (4 + 6) 4, 6 and 8 threads tie, and all 10 are about 20% slower.
+fn threads_for(cores: Option<usize>) -> i32 {
+    cores.map_or(4, |n| n.min(8) as i32)
 }
 
 #[cfg(test)]
@@ -487,7 +508,8 @@ mod tests {
         let c = Config::default();
         assert_eq!(c.ptt_key, if cfg!(windows) { "RControl" } else { "RAlt" });
         assert_eq!(c.idle_unload_minutes, 15);
-        assert_eq!(c.threads, 8);
+        assert_eq!(c.threads, None);
+        assert!((1..=8).contains(&c.recognition_threads()));
         assert_eq!(c.min_silence_ms, 500);
         assert!(c.spoken_commands);
         assert_eq!(c.fillers, vec!["um", "uh", "er", "hmm", "mm"]);
@@ -625,7 +647,31 @@ mod tests {
         let text = set_ptt_key_line(&toml::to_string_pretty(&Config::default()).unwrap(), "CapsLock");
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(back.ptt_key, "CapsLock");
-        assert_eq!(back.threads, 8);
+        assert_eq!(back.threads, None);
+    }
+
+    #[test]
+    fn threads_follow_the_core_count_up_to_8() {
+        assert_eq!(threads_for(Some(1)), 1);
+        assert_eq!(threads_for(Some(4)), 4);
+        assert_eq!(threads_for(Some(8)), 8);
+        assert_eq!(threads_for(Some(16)), 8);
+        assert_eq!(threads_for(None), 4);
+    }
+
+    #[test]
+    fn a_new_config_toml_leaves_threads_out() {
+        let text = toml::to_string_pretty(&Config::default()).unwrap();
+        assert!(!text.contains("threads"), "{text}");
+        assert_eq!(toml::from_str::<Config>(&text).unwrap().threads, None);
+    }
+
+    #[test]
+    fn a_set_thread_count_wins_except_the_old_default() {
+        let auto = Config::default().recognition_threads();
+        for (text, want) in [("threads = 2\n", 2), ("threads = 12\n", 12), ("threads = 8\n", auto), ("threads = 0\n", auto), ("", auto)] {
+            assert_eq!(toml::from_str::<Config>(text).unwrap().recognition_threads(), want, "{text:?}");
+        }
     }
 
     const OLD: &str = "%LOCALAPPDATA%\\Murmur\\models\\old-model";

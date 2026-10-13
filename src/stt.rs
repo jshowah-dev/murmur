@@ -25,7 +25,7 @@ impl Recognizer {
         config.model_config.provider = Some("cpu".into());
         let t0 = Instant::now();
         let inner = OfflineRecognizer::create(&config).ok_or_else(|| anyhow!("create recognizer from {}", dir.display()))?;
-        log::info!("model loaded in {:.2}s", t0.elapsed().as_secs_f32());
+        log::info!("model loaded in {:.2}s on {threads} threads", t0.elapsed().as_secs_f32());
         Ok(Recognizer { inner })
     }
 

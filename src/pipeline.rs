@@ -67,7 +67,7 @@ impl State {
             self.vad = Some(Vad::new(&self.cfg.vad_model_path(), self.cfg.min_silence_ms)?);
         }
         if self.rec.is_none() {
-            self.rec = Some(Recognizer::load(&self.cfg.model_dir_path(), self.cfg.threads)?);
+            self.rec = Some(Recognizer::load(&self.cfg.model_dir_path(), self.cfg.recognition_threads())?);
         }
         self.last_used = Instant::now();
         Ok(())
