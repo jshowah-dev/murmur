@@ -1,6 +1,6 @@
 # Murmur
 
-Offline push-to-talk dictation for Windows and macOS (preview). Hold a key, speak, let go — the text is typed wherever your cursor is. Speech recognition runs entirely on your machine; nothing you say leaves it.
+Offline push-to-talk dictation for Windows and macOS. Hold a key, speak, let go — the text is typed wherever your cursor is. Speech recognition runs entirely on your machine; nothing you say leaves it.
 
 ![Hold a key, speak, let go: the words are typed into Notepad](assets/demo.gif)
 
@@ -21,7 +21,7 @@ Offline push-to-talk dictation for Windows and macOS (preview). Hold a key, spea
 
 ### System requirements
 
-| | Windows | macOS (preview) |
+| | Windows | macOS |
 |---|---|---|
 | System | Windows 10 or 11, 64-bit (x64) | macOS 13 or later |
 | Processor | 64-bit (x64). No GPU needed | Apple Silicon (M1 or newer) |
@@ -40,12 +40,12 @@ Requires Windows 10 or 11 (x64). No GPU needed.
 
 To start Murmur with Windows, tick **Start with Windows** in the tray menu.
 
-### macOS (preview)
+### macOS
 
-Requires macOS 13 or later on Apple Silicon (M1 or newer). The Mac build is a preview: it isn't signed by Apple yet, which adds a step on first launch and after every update (below).
+Requires macOS 13 or later on Apple Silicon (M1 or newer). The Mac build is signed and notarized by Apple.
 
 1. Download `murmur-vX.Y.Z-macos-arm64.dmg` from [Releases](../../releases), open it and drag **Murmur** onto **Applications**.
-2. Open Murmur. macOS says it can't verify it: open **System Settings → Privacy & Security**, scroll down, click **Open Anyway** next to Murmur and confirm. This is needed once per version.
+2. Open Murmur. macOS asks once to confirm it was downloaded from the internet; click **Open**.
 3. Murmur asks to be allowed under **Accessibility**, which it needs to paste. Its setup card takes you to the right place in System Settings and moves on once you've allowed it. macOS asks for the microphone the first time you dictate.
 4. Murmur downloads the speech model (about 460 MB, one time) to `~/Library/Application Support/Murmur/models`, then shows a short "you're ready" screen.
 
@@ -63,9 +63,9 @@ Murmur checks for a new version a minute after it starts and then every hour, an
 
 **Windows:** this updates the copy the installer put in place, and keeps your start-with-Windows choice. Zip users see **Get vX.Y.Z…** instead, which opens [Releases](../../releases): quit Murmur (tray icon → Quit), unzip the new zip over the old folder, replacing the files, and start `murmur.exe`.
 
-**macOS:** this updates the copy in Applications; a copy run from anywhere else sees **Get vX.Y.Z…**, which opens [Releases](../../releases). Because the preview isn't signed by Apple, macOS treats each version as a new app and forgets that Murmur was allowed to paste. When Murmur asks after restarting, open **System Settings → Privacy & Security → Accessibility**, select Murmur, remove it with **−**, then allow it again. Switching it off and on isn't enough.
+**macOS:** this updates the copy in Applications; a copy run from anywhere else sees **Get vX.Y.Z…**, which opens [Releases](../../releases). Murmur keeps its Accessibility and microphone permissions across updates. The one exception is updating from 0.5.0 or earlier, which were signed differently: when Murmur asks after restarting, open **System Settings → Privacy & Security → Accessibility**, select Murmur, remove it with **−**, then allow it again. Switching it off and on isn't enough.
 
-To update by hand, download the new `murmur-vX.Y.Z-setup.exe` from [Releases](../../releases) and run it, or on a Mac quit Murmur, drag Murmur from the new DMG onto Applications, open it, click **Open Anyway** as on first install, and allow it under Accessibility again as above.
+To update by hand, download the new `murmur-vX.Y.Z-setup.exe` from [Releases](../../releases) and run it, or on a Mac quit Murmur, drag Murmur from the new DMG onto Applications and open it.
 
 Your settings, dictionary, snippets and the model are kept (`%APPDATA%\Murmur` and `%LOCALAPPDATA%\Murmur\models` on Windows, `~/Library/Application Support/Murmur` on a Mac), so nothing is downloaded again.
 
@@ -174,7 +174,7 @@ Your Name"""
 **"Didn't catch that".** Murmur heard no words. Make sure the right microphone is set as the default input (Windows: **Settings → System → Sound**; Mac: **System Settings → Sound → Input**) and that it isn't muted. Speak right after pressing the key, and keep holding it until you've finished.
 
 **The text doesn't appear.** Murmur pastes by putting the text on the clipboard and pressing Ctrl+V (Cmd+V on a Mac) for you, then putting your clipboard back.
-- On a Mac, pasting needs the **Accessibility** permission. Without it the text is left on the clipboard, so paste it yourself. After an update, remove Murmur from the Accessibility list and allow it again (see [Updating](#updating)).
+- On a Mac, pasting needs the **Accessibility** permission. Without it the text is left on the clipboard, so paste it yourself. After updating from 0.5.0 or earlier, remove Murmur from the Accessibility list and allow it again (see [Updating](#updating)).
 - On Windows, Murmur can't type into programs running as administrator. Run the program normally, or copy the text from **History…** and paste it yourself.
 
 **Background noise gets typed.** Murmur transcribes whatever the microphone picks up, including a TV or other people talking. A headset or a microphone close to your mouth helps most.
@@ -220,7 +220,7 @@ Requires the Rust stable toolchain and the Xcode Command Line Tools (`xcode-sele
 ./scripts/macos/bundle.sh
 ```
 
-This builds `target/release/Murmur.app`, with the sherpa-onnx dylibs inside it. macOS ties Murmur's Accessibility and microphone permissions to its signature, so with no signing identity every rebuild counts as a new app. To keep the permissions across rebuilds, make a self-signed code-signing certificate named "Murmur Dev" in Keychain Access (**Certificate Assistant → Create a Certificate**, type Code Signing); `bundle.sh` uses it, or set `MURMUR_SIGN_IDENTITY`. `./scripts/macos/dmg.sh` then packs the app into a DMG.
+This builds `target/release/Murmur.app`, with the sherpa-onnx dylibs inside it. macOS ties Murmur's Accessibility and microphone permissions to its signature, so with no signing identity every rebuild counts as a new app. To keep the permissions across rebuilds, make a self-signed code-signing certificate named "Murmur Dev" in Keychain Access (**Certificate Assistant → Create a Certificate**, type Code Signing); `bundle.sh` uses it, or set `MURMUR_SIGN_IDENTITY`. `./scripts/macos/dmg.sh` then packs the app into a DMG. For a release, set `MURMUR_SIGN_IDENTITY` to a "Developer ID Application" identity (that turns on the hardened runtime) for both scripts, and `MURMUR_NOTARY_PROFILE` to a `xcrun notarytool store-credentials` profile for `dmg.sh`, which then signs, notarizes and staples the DMG.
 
 ### Tests
 

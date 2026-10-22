@@ -25,7 +25,7 @@
   const KEY = isMac ? { codes: ["AltRight", "AltLeft"], name: "Right Option" } : { codes: ["ControlRight", "ControlLeft"], name: "Right Ctrl" };
   $("key-name").textContent = KEY.name;
   $(isMac ? "plat-macos" : "plat-windows").classList.add("you");
-  if (isMac) { $("cta-label").textContent = "Download the Mac preview"; $("cta-alt").textContent = "Windows"; }
+  if (isMac) { $("cta-label").textContent = "Download for Mac"; $("cta-alt").textContent = "Windows"; }
   if (matchMedia("(pointer: coarse)").matches) $("try").textContent = "Press and hold the pill to try it. A scripted demo, no microphone.";
 
   const FILLERS = new Set(["um", "uh", "er", "hmm", "mm"]);
