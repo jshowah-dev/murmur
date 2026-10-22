@@ -127,7 +127,40 @@ jobs:
           cargo test --release --locked --bin murmur
           cargo test --release --locked --lib
 
-      # no signing identity on the runner, so bundle.sh signs ad hoc
+      # With the MACOS_CERT_P12 secret (a base64 .p12 holding the Developer ID Application certificate and
+      # its key) and MACOS_CERT_PASSWORD, bundle.sh signs with it. With the NOTARY_* secrets as well,
+      # dmg.sh notarizes and staples the DMG. Without them (forks, a missing secret) both fall back to
+      # ad hoc signing and no notarization.
+      - name: Import the signing certificate
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CERT_P12" ]; then
+            echo "no MACOS_CERT_P12 secret: signing ad hoc"
+            exit 0
+          fi
+          kc="$RUNNER_TEMP/murmur.keychain-db"
+          kc_pw=$(uuidgen)
+          security create-keychain -p "$kc_pw" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kc_pw" "$kc"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pw" "$kc" > /dev/null
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          identity=$(security find-identity -v -p codesigning "$kc" | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -n 1)
+          [ -n "$identity" ] || { echo "no Developer ID Application identity in MACOS_CERT_P12"; exit 1; }
+          echo "MURMUR_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+          if [ -n "$NOTARY_PASSWORD" ]; then
+            xcrun notarytool store-credentials murmur-notary --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD"
+            echo "MURMUR_NOTARY_PROFILE=murmur-notary" >> "$GITHUB_ENV"
+          fi
+
       - name: Package
         run: |
           ./scripts/macos/bundle.sh
