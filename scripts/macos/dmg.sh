@@ -15,5 +15,14 @@ ditto "$app" "$stage/Murmur.app"
 ln -s /Applications "$stage/Applications"
 hdiutil create -volname "Murmur $version" -srcfolder "$stage" -format UDZO -ov "$name.dmg" > /dev/null
 rm -rf "$stage"
+
+# With MURMUR_NOTARY_PROFILE (a `xcrun notarytool store-credentials` profile name) the DMG is signed
+# with the app's Developer ID identity, notarized and stapled; the checksum below covers the result.
+if [ -n "${MURMUR_NOTARY_PROFILE:-}" ]; then
+  identity=${MURMUR_SIGN_IDENTITY:?set MURMUR_SIGN_IDENTITY to the Developer ID Application identity}
+  codesign --force --sign "$identity" --timestamp "$name.dmg"
+  xcrun notarytool submit "$name.dmg" --keychain-profile "$MURMUR_NOTARY_PROFILE" --wait
+  xcrun stapler staple "$name.dmg"
+fi
 shasum -a 256 "$name.dmg" > "$name.dmg.sha256"
 echo "built $name.dmg"
