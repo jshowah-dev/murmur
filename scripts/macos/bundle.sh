@@ -7,6 +7,10 @@
 # codesigning` lists them) so a rebuilt app keeps its permissions; otherwise a "Murmur Dev"
 # certificate or the first Apple Development identity is used, and with none the app is signed
 # ad hoc, which macOS treats as a new app on every build.
+#
+# A "Developer ID Application" identity (the one releases use) also turns on the hardened runtime
+# and a secure timestamp, which notarization requires; entitlements.plist keeps the microphone
+# working under it.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -64,9 +68,14 @@ if [ -z "$identity" ]; then
   identity=-
   echo "warning: no signing identity found; signing ad hoc, so macOS asks for permissions again after every build" >&2
 fi
+flags=()
+case "$identity" in
+  "Developer ID Application:"*) flags=(--options runtime --timestamp) ;;
+esac
 for lib in "$app"/Contents/MacOS/*.dylib; do
-  codesign --force --sign "$identity" "$lib"
+  codesign --force --sign "$identity" ${flags[@]+"${flags[@]}"} "$lib"
 done
-codesign --force --sign "$identity" --identifier dev.jshowah.murmur "$app"
+codesign --force --sign "$identity" ${flags[@]+"${flags[@]}"} --entitlements scripts/macos/entitlements.plist \
+  --identifier dev.jshowah.murmur "$app"
 codesign --verify --strict "$app"
 echo "built $app (v$version, signed by ${identity/#-/ad hoc})"
