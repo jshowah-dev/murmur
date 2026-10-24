@@ -19,6 +19,9 @@ pub struct Config {
     pub spoken_commands: bool,
     /// Drop stutters: a word said twice ("the the") and a word cut off and restarted ("rel relevant").
     pub drop_stutters: bool,
+    /// Keep the second of two like items with a marker between them: "Tuesday, no, Wednesday",
+    /// "at 3, I mean 4".
+    pub self_corrections: bool,
     /// Keep the mic open between dictations so the first consonant is not lost to device
     /// start-up. It closes after `idle_unload_minutes` without a dictation. false = open on press.
     pub mic_always_on: bool,
@@ -52,6 +55,7 @@ impl Default for Config {
             fillers: ["um", "uh", "er", "hmm", "mm"].iter().map(|s| s.to_string()).collect(),
             spoken_commands: true,
             drop_stutters: true,
+            self_corrections: true,
             mic_always_on: true,
             mute_output: true,
             hands_free_max_minutes: 5,
@@ -535,6 +539,7 @@ mod tests {
         assert_eq!(c.min_silence_ms, 500);
         assert!(c.spoken_commands);
         assert!(c.drop_stutters);
+        assert!(c.self_corrections);
         assert_eq!(c.symbols.get("dot").map(String::as_str), Some("."));
         assert_eq!(c.symbols.get("at sign").map(String::as_str), Some("@"));
         assert_eq!(c.fillers, vec!["um", "uh", "er", "hmm", "mm"]);

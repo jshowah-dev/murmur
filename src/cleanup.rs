@@ -77,6 +77,80 @@ fn drop_stutters(text: &str, dict: &Dictionary) -> String {
     out.join(" ")
 }
 
+/// Said between two like items, these take back the first: "Tuesday, no, Wednesday".
+const MARKERS: &[&[&str]] = &[&["no"], &["i", "mean"], &["actually"], &["sorry"]];
+const DAYS: &[&str] = &["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "today", "tomorrow", "tonight", "yesterday"];
+const MONTHS: &[&str] = &["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+const NUMBER_WORDS: &[&str] = &[
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen",
+    "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty", "thirty", "forty", "fifty", "sixty",
+    "seventy", "eighty", "ninety", "hundred",
+];
+
+#[derive(PartialEq)]
+enum Kind {
+    Day,
+    Month,
+    /// Times too: "3, I mean 4pm".
+    Number,
+    Name,
+}
+
+/// What kind of item `tok` is, if any. A capitalised word is a name unless it opens the sentence
+/// or is "I"; a month must be capitalised, so "may" stays a verb.
+fn kind(tok: &str, opens_sentence: bool) -> Option<Kind> {
+    let w = bare(tok);
+    let capital = tok.trim_start_matches(|c: char| !c.is_alphanumeric()).starts_with(|c: char| c.is_uppercase());
+    if DAYS.contains(&w.as_str()) {
+        Some(Kind::Day)
+    } else if capital && MONTHS.contains(&w.as_str()) {
+        Some(Kind::Month)
+    } else if w.starts_with(|c: char| c.is_ascii_digit()) || NUMBER_WORDS.contains(&w.as_str()) {
+        Some(Kind::Number)
+    } else if capital && !opens_sentence && w != "i" && !w.starts_with("i'") {
+        Some(Kind::Name)
+    } else {
+        None
+    }
+}
+
+/// How many tokens from `at` make up a marker, if one starts there. Only its last word may carry
+/// a comma: "No." is an answer.
+fn marker_len(tokens: &[String], at: usize) -> Option<usize> {
+    MARKERS.iter().find_map(|m| {
+        let said = tokens.get(at..at + m.len())?;
+        let fits = said.iter().zip(m.iter()).enumerate().all(|(k, (tok, word))| {
+            let tok = if k + 1 == m.len() { tok.strip_suffix(',').unwrap_or(tok) } else { tok.as_str() };
+            tok.eq_ignore_ascii_case(word)
+        });
+        fits.then_some(m.len())
+    })
+}
+
+/// "Tuesday, no, Wednesday" → "Wednesday": a marker between two items of the same kind keeps
+/// only the second. The first must run on into the marker, so "Is it Tuesday? No, Wednesday."
+/// stays an answer.
+fn drop_self_corrections(text: &str) -> String {
+    let mut tokens: Vec<String> = text.split(' ').filter(|t| !t.is_empty()).map(String::from).collect();
+    let before = tokens.len();
+    let mut i = 0;
+    while i < tokens.len() {
+        let x = tokens[i].strip_suffix(',').unwrap_or(&tokens[i]);
+        let runs_on = x.ends_with(|c: char| c.is_alphanumeric() || c == '%');
+        let opens = i == 0 || tokens[i - 1].ends_with(['.', '!', '?']);
+        let y = marker_len(&tokens, i + 1).map(|n| i + 1 + n);
+        match (runs_on, y) {
+            (true, Some(y)) if y < tokens.len() && kind(&tokens[i], opens).is_some_and(|k| kind(&tokens[y], false) == Some(k)) => {
+                // stay on i: "Tuesday, no, Wednesday, no, Thursday" goes again
+                tokens.drain(i..y);
+            }
+            _ => i += 1,
+        }
+    }
+    // rebuilt only on a change, so spacing elsewhere is left as it was
+    if tokens.len() == before { text.to_string() } else { tokens.join(" ") }
+}
+
 /// Helper verbs that open a question when flipped before their subject: "is there", "can you".
 /// "had" is left out: "Had I known, ..." opens a statement far more often than a question.
 const HELPERS: &[&str] = &[
@@ -362,6 +436,9 @@ pub fn clean(text: &str, dict: &Dictionary, snippets: &Snippets, cfg: &Config, p
     if cfg.drop_stutters {
         s = drop_stutters(&s, dict);
     }
+    if cfg.self_corrections {
+        s = drop_self_corrections(&s);
+    }
     // before the dictionary so phonetic matching cannot rewrite trigger words
     let (mut s, expansions) = snippets.mark(&s);
     // before the dictionary too, so a sound-alike term cannot take "dot" or "dash"
@@ -600,6 +677,30 @@ best,
         let mut off = c.clone();
         off.spoken_commands = false;
         assert_eq!(clean("A. Scratch that. B.", &d, &Snippets::default(), &off), "A. Scratch that. B.");
+    }
+
+    #[test]
+    fn a_marker_between_like_items_keeps_the_second() {
+        let (d, c) = bare_env();
+        let cl = |s: &str| clean(s, &d, &Snippets::default(), &c);
+        assert_eq!(cl("Let's meet Tuesday, no, Wednesday."), "Let's meet Wednesday.");
+        assert_eq!(cl("Call me at 3, I mean 4."), "Call me at 4.");
+        assert_eq!(cl("It's due in March, actually, April."), "It's due in April.");
+        assert_eq!(cl("Send it to Jim, sorry, Jen."), "Send it to Jen.");
+        assert_eq!(cl("Book two, no, three rooms."), "Book three rooms.");
+        assert_eq!(cl("At 3pm, no, 4:30pm."), "At 4:30pm.");
+        assert_eq!(cl("Monday, no, Tuesday, no, Friday works."), "Friday works.");
+        // an answer, not a correction
+        assert_eq!(cl("Is it Tuesday? No, Wednesday."), "Is it Tuesday? No, Wednesday.");
+        // items of different kinds
+        assert_eq!(cl("Thanks Mike, sorry, Monday doesn't work."), "Thanks Mike, sorry, Monday doesn't work.");
+        assert_eq!(cl("I saw Jim, sorry, I was late."), "I saw Jim, sorry, I was late.");
+        assert_eq!(cl("I have 2 kids, no, 3 dogs."), "I have 2 kids, no, 3 dogs.");
+        // a capitalised word that opens the sentence isn't a name
+        assert_eq!(cl("Okay, sorry, Jim is here."), "Okay, sorry, Jim is here.");
+        let mut off = c.clone();
+        off.self_corrections = false;
+        assert_eq!(clean("Tuesday, no, Wednesday.", &d, &Snippets::default(), &off), "Tuesday, no, Wednesday.");
     }
 
     #[test]
