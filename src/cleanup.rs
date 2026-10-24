@@ -77,6 +77,69 @@ fn drop_stutters(text: &str, dict: &Dictionary) -> String {
     out.join(" ")
 }
 
+/// Helper verbs that open a question when flipped before their subject: "is there", "can you".
+/// "had" is left out: "Had I known, ..." opens a statement far more often than a question.
+const HELPERS: &[&str] = &[
+    "is", "are", "was", "were", "am", "do", "does", "did", "can", "could", "will", "would", "should", "shall", "may",
+    "might", "must", "have", "has", "isn't", "aren't", "wasn't", "weren't", "don't", "doesn't", "didn't", "can't",
+    "couldn't", "won't", "wouldn't", "shouldn't", "haven't", "hasn't", "hadn't", "mustn't",
+];
+/// Subjects of a flipped helper. "do" and "have" take only people, so "Do it now." and
+/// "Have a look." stay commands.
+const PEOPLE: &[&str] = &["i", "you", "we", "they", "he", "she", "anyone", "anybody", "someone", "somebody", "everyone"];
+const THINGS: &[&str] = &[
+    "it", "there", "this", "that", "these", "those", "the", "a", "an", "my", "your", "our", "their", "his", "her", "its",
+    "any", "anything", "something", "everything", "all",
+];
+const WH: &[&str] = &["what", "why", "how", "where", "when", "who"];
+const WH_IS: &[&str] = &["what's", "why's", "how's", "where's", "when's", "who's"];
+/// Words that lead into a question without changing it: "So, can you check it."
+const LEADS: &[&str] = &["and", "but", "so", "okay", "ok", "also", "well", "hey", "then", "now"];
+
+fn flipped(helper: &str, subject: &str) -> bool {
+    HELPERS.contains(&helper)
+        && (PEOPLE.contains(&subject) || (!matches!(helper, "do" | "have") && THINGS.contains(&subject)))
+}
+
+/// A sentence shaped like a question: a flipped helper or wh-word at the start ("Do we ship
+/// today", "What do you think"), or a tag at the end ("..., right", "..., isn't it").
+fn is_question(sentence: &str) -> bool {
+    let words = |s: &str| s.split_whitespace().map(|t| bare(&t.replace('\u{2019}', "'"))).collect::<Vec<_>>();
+    let all = words(sentence);
+    let w: Vec<&str> = all.iter().map(String::as_str).skip_while(|w| LEADS.contains(w)).collect();
+    let opens = match w.as_slice() {
+        [first, ..] if WH_IS.contains(first) => true,
+        [first, second, ..] if WH.contains(first) => HELPERS.contains(second),
+        [first, second, ..] => flipped(first, second),
+        _ => false,
+    };
+    let tagged = sentence.rsplit_once(',').is_some_and(|(_, tail)| match words(tail).as_slice() {
+        [one] => one == "right" || one == "correct",
+        [helper, subject] => flipped(helper, subject),
+        _ => false,
+    });
+    opens || tagged
+}
+
+/// A question-shaped sentence ending in "." ends in "?" instead. A "." inside a word ("3.5",
+/// "showah.co") is not a sentence end.
+fn mark_questions(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut start = 0;
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, ch)) = chars.next() {
+        let at_end = chars.peek().is_none_or(|(_, c)| c.is_whitespace());
+        if ch == '\n' || (matches!(ch, '.' | '!' | '?') && at_end) {
+            let sentence = &text[start..i];
+            out.push_str(sentence);
+            out.push(if ch == '.' && is_question(sentence) { '?' } else { ch });
+            start = i + ch.len_utf8();
+        }
+    }
+    out.push_str(&text[start..]);
+    out
+}
+
 /// Lowercased token with STT punctuation stripped, so "New" / "line." match command words.
 fn bare(tok: &str) -> String {
     tok.trim_matches(|c: char| !c.is_alphanumeric()).to_ascii_lowercase()
@@ -160,7 +223,7 @@ pub fn clean(text: &str, dict: &Dictionary, snippets: &Snippets, cfg: &Config, p
     if cfg.spoken_commands {
         s = apply_commands(&s);
     }
-    let s = tidy(&s);
+    let s = mark_questions(&tidy(&s));
     // trim spaces only: a leading/trailing "new line" command is deliberate
     let s = s.trim_matches(' ');
     // before the snippets come back, so their text is never reshaped or read as a name
@@ -303,6 +366,45 @@ best,
             "Check the repo report.",
             // a mis-start that is not a prefix stays as dictated
             "That's not rev relevant.",
+        ] {
+            assert_eq!(clean(keep, &d, &Snippets::default(), &c), keep);
+        }
+    }
+
+    #[test]
+    fn question_shaped_sentences_get_a_question_mark() {
+        let (d, c) = bare_env();
+        for (said, want) in [
+            ("Is there a test for this.", "Is there a test for this?"),
+            ("Can you check the build.", "Can you check the build?"),
+            ("Do we ship today.", "Do we ship today?"),
+            ("Should I merge it.", "Should I merge it?"),
+            ("Would it be faster.", "Would it be faster?"),
+            ("Isn't it done.", "Isn't it done?"),
+            ("What do you think.", "What do you think?"),
+            ("What\u{2019}s the status.", "What\u{2019}s the status?"),
+            ("So, can you look at it.", "So, can you look at it?"),
+            ("It's ready, right.", "It's ready, right?"),
+            ("The build passed, didn't it.", "The build passed, didn't it?"),
+            ("It's done. Can you test it. Thanks.", "It's done. Can you test it? Thanks."),
+            ("Is it version 3.5 now.", "Is it version 3.5 now?"),
+        ] {
+            assert_eq!(clean(said, &d, &Snippets::default(), &c), want);
+        }
+    }
+
+    #[test]
+    fn statements_keep_their_period() {
+        let (d, c) = bare_env();
+        for keep in [
+            "Do it now.",
+            "Have a look at this.",
+            "Do the dishes.",
+            "It is there.",
+            "What I mean is it works.",
+            "Turn right.",
+            "We can, if you want.",
+            "Can you believe it!",
         ] {
             assert_eq!(clean(keep, &d, &Snippets::default(), &c), keep);
         }
