@@ -725,10 +725,10 @@ pub fn main() -> Result<()> {
     Ok(())
 }
 
-/// Voice level to pill meter. A MacBook's built-in mic reads about seven times quieter than
-/// the Windows mics this was tuned on (loudest speech rms 0.02 against 0.15).
+/// Voice level to pill meter, mapping each system's typical loudest speech rms to about 0.8:
+/// a laptop's Intel Smart Sound array reads 0.075 on Windows, a MacBook's built-in mic 0.02.
 #[cfg(windows)]
-const METER_GAIN: f32 = 6.0;
+const METER_GAIN: f32 = 11.0;
 #[cfg(target_os = "macos")]
 const METER_GAIN: f32 = 40.0;
 
