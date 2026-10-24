@@ -106,6 +106,9 @@ Settings live in `config.toml` in the config folder (`%APPDATA%\Murmur` on Windo
 | `min_silence_ms` | `500` | Silence that ends a speech segment |
 | `fillers` | `["um", "uh", "er", "hmm", "mm"]` | Words removed from the output |
 | `spoken_commands` | `true` | Turn "new line" / "new paragraph" into line breaks |
+| `drop_stutters` | `true` | Drop a word said twice ("the the") or cut off and restarted ("pro professional"). Words doubled on purpose ("had had", "very very") stay |
+| `self_corrections` | `true` | Keep the second item when you correct yourself: "Tuesday, no, Wednesday" becomes "Wednesday", "at 3, I mean 4" becomes "at 4" |
+| `[symbols]` | slash, backslash, dot, dash, hyphen, underscore, colon, at sign, open paren, close paren, percent | Spoken words that become symbols: "jeff at sign showah dot co" becomes "jeff@showah.co". Say "literal dot" to keep the word. A `[symbols]` table you write replaces the whole list; an empty one keeps every symbol a word |
 | `format_by_context` | `true` | Shape the text for the app it lands in. Today that means email: a greeting and a sign-off get their own lines. `false` = the same output everywhere |
 | `email_apps` | Outlook and Thunderbird on Windows; Mail, Outlook and Thunderbird on a Mac | Programs treated as email: exe names on Windows, bundle ids on a Mac (`com.apple.mail`). One list serves both; each system ignores the other's |
 | `email_titles` | `["Gmail", "Outlook", "Proton Mail", "Yahoo Mail"]` | Window-title text treated as email, in browsers only |
