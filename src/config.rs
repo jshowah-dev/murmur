@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -35,6 +36,9 @@ pub struct Config {
     pub email_apps: Vec<String>,
     /// Window-title fragments treated as email. They count in browsers only.
     pub email_titles: Vec<String>,
+    /// Spoken words that become symbols ("dot" → "."). A `[symbols]` table in config.toml
+    /// replaces the whole list. Empty = symbols stay as words.
+    pub symbols: BTreeMap<String, String>,
 }
 
 impl Default for Config {
@@ -55,11 +59,26 @@ impl Default for Config {
             format_by_context: true,
             email_apps: EMAIL_APPS.iter().map(|s| s.to_string()).collect(),
             email_titles: ["Gmail", "Outlook", "Proton Mail", "Yahoo Mail"].iter().map(|s| s.to_string()).collect(),
+            symbols: SYMBOLS.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
         }
     }
 }
 
-const EMAIL_APPS: &[&str] = &["OUTLOOK.EXE", "olk.exe", "thunderbird.exe", "com.apple.mail", "com.microsoft.Outlook", "org.mozilla.thunderbird"];
+const SYMBOLS: &[(&str, &str)] = &[
+    ("slash", "/"),
+    ("backslash", "\\"),
+    ("dot", "."),
+    ("dash", "-"),
+    ("hyphen", "-"),
+    ("underscore", "_"),
+    ("colon", ":"),
+    ("at sign", "@"),
+    ("open paren", "("),
+    ("close paren", ")"),
+    ("percent", "%"),
+];
+
+const EMAIL_APPS: &[&str] =&["OUTLOOK.EXE", "olk.exe", "thunderbird.exe", "com.apple.mail", "com.microsoft.Outlook", "org.mozilla.thunderbird"];
 /// `email_apps` as releases before the Mac port wrote it.
 const WINDOWS_ONLY_EMAIL_APPS: &[&str] = &["OUTLOOK.EXE", "olk.exe", "thunderbird.exe"];
 
@@ -516,6 +535,8 @@ mod tests {
         assert_eq!(c.min_silence_ms, 500);
         assert!(c.spoken_commands);
         assert!(c.drop_stutters);
+        assert_eq!(c.symbols.get("dot").map(String::as_str), Some("."));
+        assert_eq!(c.symbols.get("at sign").map(String::as_str), Some("@"));
         assert_eq!(c.fillers, vec!["um", "uh", "er", "hmm", "mm"]);
         assert_eq!(c.hands_free_max_minutes, 5);
         assert!(!c.debug_log);
@@ -729,5 +750,6 @@ mod tests {
         let back: Config = toml::from_str(&s).unwrap();
         assert_eq!(back.ptt_key, c.ptt_key);
         assert_eq!(back.model_dir, c.model_dir);
+        assert_eq!(back.symbols, c.symbols);
     }
 }
