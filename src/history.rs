@@ -48,6 +48,9 @@ impl History {
     pub fn len(&self) -> usize {
         self.items.len()
     }
+    pub fn pop_last(&mut self) -> Option<Entry> {
+        self.items.pop_back()
+    }
     pub fn replace_last_cleaned(&mut self, text: String) {
         if let Some(e) = self.items.back_mut() {
             e.cleaned = text;

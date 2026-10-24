@@ -116,15 +116,39 @@ pub fn fix_last(history: &mut History, dict: &Arc<Mutex<Dictionary>>) -> FixOutc
     out
 }
 
+/// The dictation was pasted (not typed) into `hwnd` within the last minute, so one undo there
+/// takes it back out.
+fn pasted_here(e: &crate::history::Entry, hwnd: isize) -> bool {
+    e.inject.as_ref().is_some_and(|r| r.hwnd == hwnd && r.at.elapsed() < Duration::from_secs(60) && r.method == InjectMethod::Paste)
+}
+
+/// "Scratch that" said on its own: undoes the last dictation's paste when it is fresh and in the
+/// window in front. Returns whether it did.
+pub fn scratch_last(history: &mut History) -> bool {
+    let fresh = history.last().is_some_and(|e| pasted_here(e, inject::foreground_hwnd()));
+    if fresh {
+        inject::undo();
+        history.pop_last();
+    }
+    fresh
+}
+
+/// "Scratch that. <new text>": takes the last dictation back out as `scratch_last` does, then
+/// pastes `e` in its place (or just pastes it, when the last one is stale).
+pub fn replace_last(history: &mut History, mut e: crate::history::Entry) -> crate::history::Entry {
+    if scratch_last(history) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // read after the undo: the caret now sits where the scratched text began
+    let pasted = crate::cleanup::spaced_after(crate::caret::char_before(), &e.cleaned);
+    e.inject = inject::paste(&pasted).map_err(|err| log::error!("paste: {err:#}")).ok();
+    e
+}
+
 /// Replaces the last dictation in place when it's fresh, else puts the correction on the
 /// clipboard. Returns whether it replaced.
 fn paste_or_copy_correction(history: &mut History, last: &crate::history::Entry, target_hwnd: isize, edited: String) -> bool {
-    let fresh = last
-        .inject
-        .as_ref()
-        .map(|r| r.hwnd == target_hwnd && r.at.elapsed() < Duration::from_secs(60) && r.method == InjectMethod::Paste)
-        .unwrap_or(false);
-    if fresh {
+    if pasted_here(last, target_hwnd) {
         // the dialog took focus; hand it back to the target before undo+paste
         crate::platform::focus_target(target_hwnd);
         std::thread::sleep(Duration::from_millis(150));

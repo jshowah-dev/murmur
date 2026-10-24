@@ -177,9 +177,14 @@ pub fn paste(text: &str) -> Result<InjectRecord> {
     Ok(record(hwnd, InjectMethod::Paste))
 }
 
+/// Undo the last edit in the foreground app.
+pub fn undo() {
+    chord(VK_Z);
+}
+
 /// Undo the previous paste in the target app, then paste `text`.
 pub fn undo_then_paste(text: &str) -> Result<InjectRecord> {
-    chord(VK_Z);
+    undo();
     sleep(Duration::from_millis(100));
     paste(text)
 }
