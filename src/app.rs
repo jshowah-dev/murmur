@@ -583,6 +583,10 @@ pub fn main() -> Result<()> {
             }
         }
         while let Ok(m) = msg_rx.try_recv() {
+            let m = match m {
+                PipelineMsg::Replace(e) => PipelineMsg::Done(correction::replace_last(&mut history, e)),
+                m => m,
+            };
             match m {
                 PipelineMsg::Processing => overlay.set(OverlayState::Processing),
                 PipelineMsg::Done(e) => {
@@ -646,6 +650,7 @@ pub fn main() -> Result<()> {
                 }
                 // the dictation goes on with the previous version, so its landing is left alone
                 PipelineMsg::FileProblem(p) => tray.show(&notice::reload_balloon(&p)),
+                PipelineMsg::Replace(_) => {} // turned into Done above
             }
         }
         while let Ok(m) = up_rx.try_recv() {

@@ -161,6 +161,15 @@ pub fn scratches_itself(raw: &str, cfg: &Config) -> bool {
     cfg.spoken_commands && !s.trim().is_empty() && drop_scratched(&s).is_empty()
 }
 
+/// The dictation opens with "Scratch that." and goes on, so the new text replaces the one before it.
+pub fn opens_with_scratch(raw: &str, cfg: &Config) -> bool {
+    let s = strip_fillers(raw, &cfg.fillers);
+    let tokens: Vec<&str> = s.split_whitespace().collect();
+    let Some(end) = tokens.iter().position(|t| t.ends_with(['.', '!', '?'])) else { return false };
+    let words: Vec<String> = tokens[..=end].iter().map(|t| bare(t)).collect();
+    cfg.spoken_commands && is_scratch_words(&words) && end + 1 < tokens.len()
+}
+
 /// What follows the last "Scratch that." said as its own sentence; the text before it is dropped.
 fn drop_scratched(text: &str) -> String {
     let tokens: Vec<&str> = text.split(' ').filter(|t| !t.is_empty()).collect();
@@ -603,9 +612,14 @@ best,
         assert!(super::scratches_itself("A. Scratch that.", &c));
         assert!(!super::scratches_itself("Um.", &c));
         assert!(!super::scratches_itself("Scratch that. B.", &c));
+        assert!(super::opens_with_scratch("Um, scratch that. B.", &c));
+        assert!(!super::opens_with_scratch("Scratch that.", &c));
+        assert!(!super::opens_with_scratch("A. Scratch that. B.", &c));
+        assert!(!super::opens_with_scratch("Scratch that idea. B.", &c));
         let mut off = c.clone();
         off.spoken_commands = false;
         assert!(!super::is_scratch("Scratch that.", &off));
+        assert!(!super::opens_with_scratch("Scratch that. B.", &off));
     }
 
     #[test]

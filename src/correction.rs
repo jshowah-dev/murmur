@@ -133,6 +133,18 @@ pub fn scratch_last(history: &mut History) -> bool {
     fresh
 }
 
+/// "Scratch that. <new text>": takes the last dictation back out as `scratch_last` does, then
+/// pastes `e` in its place (or just pastes it, when the last one is stale).
+pub fn replace_last(history: &mut History, mut e: crate::history::Entry) -> crate::history::Entry {
+    if scratch_last(history) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // read after the undo: the caret now sits where the scratched text began
+    let pasted = crate::cleanup::spaced_after(crate::caret::char_before(), &e.cleaned);
+    e.inject = inject::paste(&pasted).map_err(|err| log::error!("paste: {err:#}")).ok();
+    e
+}
+
 /// Replaces the last dictation in place when it's fresh, else puts the correction on the
 /// clipboard. Returns whether it replaced.
 fn paste_or_copy_correction(history: &mut History, last: &crate::history::Entry, target_hwnd: isize, edited: String) -> bool {
