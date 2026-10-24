@@ -43,6 +43,12 @@ fn init_logging(may_truncate: bool) {
         let _ = simplelog::WriteLogger::init(log::LevelFilter::Debug, simplelog::Config::default(), f);
     }
     log::set_max_level(log::LevelFilter::Info);
+    // a panic's message goes to stderr, which a tray app doesn't have
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        log::error!("panic on thread '{}': {info}", std::thread::current().name().unwrap_or("unnamed"));
+        default(info);
+    }));
 }
 
 /// What the tray's Help opens: the README, which covers usage, settings and troubleshooting.

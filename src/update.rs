@@ -200,7 +200,7 @@ fn latest_url() -> String {
 }
 
 fn get_text(url: &str) -> Result<String, ureq::Error> {
-    let agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(8))).build().new_agent();
+    let agent = ureq::Agent::config_builder().tls_config(crate::model_fetch::os_tls()).timeout_global(Some(Duration::from_secs(8))).build().new_agent();
     agent.get(url).header("User-Agent", "murmur").call()?.body_mut().read_to_string()
 }
 
