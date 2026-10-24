@@ -145,6 +145,39 @@ fn bare(tok: &str) -> String {
     tok.trim_matches(|c: char| !c.is_alphanumeric()).to_ascii_lowercase()
 }
 
+fn is_scratch_words(words: &[String]) -> bool {
+    matches!(words, [verb, that] if (verb == "scratch" || verb == "delete") && that == "that")
+}
+
+/// The whole dictation is "scratch that" or "delete that": undo the one before it.
+pub fn is_scratch(raw: &str, cfg: &Config) -> bool {
+    let words: Vec<String> = strip_fillers(raw, &cfg.fillers).split_whitespace().map(bare).collect();
+    cfg.spoken_commands && is_scratch_words(&words)
+}
+
+/// The dictation ends in "Scratch that.", so nothing of it is left to paste.
+pub fn scratches_itself(raw: &str, cfg: &Config) -> bool {
+    let s = strip_fillers(raw, &cfg.fillers);
+    cfg.spoken_commands && !s.trim().is_empty() && drop_scratched(&s).is_empty()
+}
+
+/// What follows the last "Scratch that." said as its own sentence; the text before it is dropped.
+fn drop_scratched(text: &str) -> String {
+    let tokens: Vec<&str> = text.split(' ').filter(|t| !t.is_empty()).collect();
+    let mut keep_from = 0;
+    let mut start = 0;
+    for (i, tok) in tokens.iter().enumerate() {
+        if tok.ends_with(['.', '!', '?']) {
+            let words: Vec<String> = tokens[start..=i].iter().map(|t| bare(t)).collect();
+            if is_scratch_words(&words) {
+                keep_from = i + 1;
+            }
+            start = i + 1;
+        }
+    }
+    tokens[keep_from..].join(" ")
+}
+
 fn apply_commands(text: &str) -> String {
     let tokens: Vec<&str> = text.split(' ').collect();
     let mut out: Vec<String> = Vec::new();
@@ -313,6 +346,9 @@ fn apply_symbols(text: &str, symbols: &std::collections::BTreeMap<String, String
 
 pub fn clean(text: &str, dict: &Dictionary, snippets: &Snippets, cfg: &Config, profile: Profile) -> String {
     let mut s = strip_fillers(text, &cfg.fillers);
+    if cfg.spoken_commands {
+        s = drop_scratched(&s);
+    }
     // after the fillers, so "the, um, the" is seen as a repeat
     if cfg.drop_stutters {
         s = drop_stutters(&s, dict);
@@ -542,6 +578,34 @@ best,
         ] {
             assert_eq!(clean(keep, &d, &Snippets::default(), &c), keep);
         }
+    }
+
+    #[test]
+    fn scratch_that_drops_what_came_before() {
+        let (d, c) = bare_env();
+        assert_eq!(clean("Send it Monday. Scratch that. Send it Friday.", &d, &Snippets::default(), &c), "Send it Friday.");
+        assert_eq!(clean("One. Delete that! Two. Scratch that. Three.", &d, &Snippets::default(), &c), "Three.");
+        assert_eq!(clean("Send it Monday. Um, scratch that. Friday.", &d, &Snippets::default(), &c), "Friday.");
+        // not its own sentence, so it is just words
+        assert_eq!(clean("I had to scratch that idea.", &d, &Snippets::default(), &c), "I had to scratch that idea.");
+        let mut off = c.clone();
+        off.spoken_commands = false;
+        assert_eq!(clean("A. Scratch that. B.", &d, &Snippets::default(), &off), "A. Scratch that. B.");
+    }
+
+    #[test]
+    fn a_scratch_on_its_own_is_a_command() {
+        let (_, c) = bare_env();
+        assert!(super::is_scratch("Scratch that.", &c));
+        assert!(super::is_scratch("Um, delete that", &c));
+        assert!(!super::is_scratch("Scratch that idea.", &c));
+        assert!(!super::is_scratch("A. Scratch that.", &c));
+        assert!(super::scratches_itself("A. Scratch that.", &c));
+        assert!(!super::scratches_itself("Um.", &c));
+        assert!(!super::scratches_itself("Scratch that. B.", &c));
+        let mut off = c.clone();
+        off.spoken_commands = false;
+        assert!(!super::is_scratch("Scratch that.", &off));
     }
 
     #[test]

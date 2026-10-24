@@ -619,6 +619,19 @@ pub fn main() -> Result<()> {
                         setup_ui::mark_welcomed();
                     }
                 }
+                PipelineMsg::Scratch { undo } => {
+                    overlay.set(resting(paused));
+                    overlay.set_quiet(false);
+                    awaiting = None;
+                    expect_words = false;
+                    unheard_pending = false;
+                    let said = match undo {
+                        true if correction::scratch_last(&mut history) => SCRATCHED,
+                        true => NOTHING_TO_SCRATCH,
+                        false => SCRATCHED,
+                    };
+                    said_in = say(&mut mote, &overlay, Message::plain(said), overlay.centre_physical(), None);
+                }
                 PipelineMsg::Error(s) => {
                     overlay.set(resting(paused));
                     awaiting = None;
@@ -718,6 +731,9 @@ const METER_GAIN: f32 = 40.0;
 const PRE_ROLL_SAMPLES: usize = 8_000;
 
 const UNHEARD: &str = "Didn't catch that";
+const SCRATCHED: &str = "Scratched";
+/// The last dictation is over a minute old, typed in, or in another window: one undo can't take it out.
+const NOTHING_TO_SCRATCH: &str = "Nothing to scratch";
 
 /// What the pill says on first run until you first press the key.
 fn invite(key: &str) -> Message {

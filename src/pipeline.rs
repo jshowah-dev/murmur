@@ -25,6 +25,9 @@ pub enum PipelineCmd {
 pub enum PipelineMsg {
     Processing,
     Done(Entry),
+    /// "Scratch that": nothing was pasted. `undo` when it was said on its own, so the
+    /// dictation before it should come back out.
+    Scratch { undo: bool },
     /// Said above the pill: the dictation couldn't go ahead.
     Error(String),
     /// A settings file changed and is broken; the previous version stays in use.
@@ -164,6 +167,12 @@ impl State {
             return;
         }
         log::debug!("raw: {raw}");
+        if cleanup::scratches_itself(&raw, &self.cfg) {
+            let undo = cleanup::is_scratch(&raw, &self.cfg);
+            log::info!("scratch that (undo {undo})");
+            let _ = self.tx.send(PipelineMsg::Scratch { undo });
+            return;
+        }
         if let Some(p) = self.snippets.refresh() {
             let _ = self.tx.send(PipelineMsg::FileProblem(p));
         }

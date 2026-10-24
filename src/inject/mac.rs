@@ -61,10 +61,15 @@ pub fn paste(text: &str) -> Result<InjectRecord> {
     Ok(record(pid))
 }
 
+/// Undo the last edit in the foreground app.
+pub fn undo() {
+    command(KEY_Z);
+}
+
 /// Undo the previous paste in the target app, then paste `text`.
 #[allow(dead_code)] // fix-last's card, phase 2 on macOS
 pub fn undo_then_paste(text: &str) -> Result<InjectRecord> {
-    command(KEY_Z);
+    undo();
     sleep(Duration::from_millis(100));
     paste(text)
 }
