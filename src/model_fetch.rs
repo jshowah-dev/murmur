@@ -113,9 +113,16 @@ pub struct Fetcher {
     chunk: u64,
 }
 
+/// Certificates checked by the OS, not a bundled root list: a network that inspects TLS (a work
+/// laptop) re-signs with its own root, which only the OS's store trusts.
+pub fn os_tls() -> ureq::tls::TlsConfig {
+    ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build()
+}
+
 impl Fetcher {
     pub fn new(chunk: u64, per_chunk: Duration) -> Fetcher {
         let agent = ureq::Agent::config_builder()
+            .tls_config(os_tls())
             .timeout_connect(Some(Duration::from_secs(15)))
             .timeout_recv_response(Some(Duration::from_secs(30)))
             .timeout_recv_body(Some(per_chunk))
@@ -123,6 +130,7 @@ impl Fetcher {
             .into();
         // for servers that ignore Range and send the whole file in one response
         let whole = ureq::Agent::config_builder()
+            .tls_config(os_tls())
             .timeout_connect(Some(Duration::from_secs(15)))
             .timeout_recv_response(Some(Duration::from_secs(30)))
             .build()

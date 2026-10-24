@@ -12,10 +12,10 @@ use windows::Win32::Foundation::GetLastError;
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos, GetForegroundWindow, GetWindowRect, LoadCursorW, PeekMessageW,
-    RegisterClassW, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, GWL_EXSTYLE,
+    PostQuitMessage, RegisterClassW, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, GWL_EXSTYLE,
     HWND_TOPMOST, IDC_ARROW, MSG,
     PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WM_QUIT,
-    WM_MOUSEMOVE, WM_RBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    WM_ENDSESSION, WM_MOUSEMOVE, WM_RBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
@@ -281,6 +281,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             // the menu takes over from the hint; the menu's mouse capture also ends leave tracking
             HOVERED.store(false, Ordering::Relaxed);
             RIGHT_CLICKED.store(true, Ordering::Relaxed);
+            return LRESULT(0);
+        }
+        // Restart Manager (an installer replacing murmur.exe) or a sign-out: carrying on makes
+        // the installer wait out its timeout before it kills us
+        WM_ENDSESSION if wp.0 != 0 => {
+            log::info!("session ending (lparam {:#x}); exiting", lp.0);
+            unsafe { PostQuitMessage(0) };
             return LRESULT(0);
         }
         _ => {}
