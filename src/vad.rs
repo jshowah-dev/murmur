@@ -25,6 +25,8 @@ pub struct Vad {
     pending: Vec<f32>,
     /// Every sample fed to the detector since the last reset; `SpeechSegment::start` indexes it.
     fed: Vec<f32>,
+    /// Where in `fed` the last finished segment ended.
+    last_end: usize,
 }
 
 impl Vad {
@@ -43,7 +45,7 @@ impl Vad {
         config.num_threads = 1;
         config.provider = Some("cpu".into());
         let inner = VoiceActivityDetector::create(&config, 120.0).ok_or_else(|| anyhow!("create VAD from {}", model.display()))?;
-        Ok(Vad { inner, pending: Vec::new(), fed: Vec::new() })
+        Ok(Vad { inner, pending: Vec::new(), fed: Vec::new(), last_end: 0 })
     }
 
     fn drain(&mut self) -> Vec<Segment> {
@@ -54,6 +56,7 @@ impl Vad {
             let end = (start + seg.samples().len()).min(self.fed.len());
             // from what was fed, not the detector's copy, which is louder by GAIN
             out.push(Segment { samples: self.fed[from..end].to_vec() });
+            self.last_end = end;
             self.inner.pop();
         }
         out
@@ -91,9 +94,19 @@ impl Vad {
         self.drain()
     }
 
+    /// How long the speaker has been quiet since the last finished segment, 0 while speaking.
+    pub fn quiet_samples(&self) -> usize {
+        if self.inner.detected() {
+            0
+        } else {
+            self.fed.len().saturating_sub(self.last_end)
+        }
+    }
+
     pub fn reset(&mut self) {
         self.pending.clear();
         self.fed.clear();
+        self.last_end = 0;
         self.inner.reset();
         let _ = self.drain();
     }
@@ -126,6 +139,29 @@ mod tests {
         let body: f32 = seg.samples[PRE_ROLL..].iter().map(|s| s * s).sum::<f32>() / (seg.samples.len() - PRE_ROLL) as f32;
         eprintln!("segments={} first_len={} head={head:e} body={body:e}", segs.len(), seg.samples.len());
         assert!(head < body * 0.5, "pre-roll should be quieter than the speech: head={head} body={body}");
+    }
+
+    /// After the speech WAV and 1.5 s of silence, the quiet time covers most of that silence.
+    #[test]
+    fn quiet_samples_counts_the_pause_after_speech() {
+        let cfg = crate::config::Config::default();
+        let wav = cfg.model_dir_path().join("test_wavs").join("0.wav");
+        if !cfg.vad_model_path().exists() || !wav.exists() {
+            eprintln!("model not installed; skipped");
+            return;
+        }
+        let wave = sherpa_onnx::Wave::read(&wav.to_string_lossy()).expect("read wav");
+        let mut vad = Vad::new(&cfg.vad_model_path(), 500).unwrap();
+        let mut audio = wave.samples().to_vec();
+        audio.extend(std::iter::repeat(0.0).take(24_000));
+        let segs = vad.push(&audio);
+        assert!(!segs.is_empty(), "the pause should end a segment");
+        let quiet = vad.quiet_samples();
+        eprintln!("quiet={quiet}");
+        // the WAV ends with a little quiet of its own
+        assert!((16_000..32_000).contains(&quiet), "quiet={quiet}");
+        vad.reset();
+        assert_eq!(vad.quiet_samples(), 0);
     }
 
     /// The detector hears the mic GAIN times louder, but what's transcribed is the mic as it was.
