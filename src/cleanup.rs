@@ -195,7 +195,16 @@ fn tidy(text: &str) -> String {
     }
     let mut out = String::with_capacity(s.len());
     let mut cap = true;
+    let mut prev = ' ';
     for ch in s.chars() {
+        // a dot inside a word is not a sentence end: "showah.co", not "showah.Co"
+        if cap && matches!(prev, '.' | '!' | '?') && !ch.is_whitespace() {
+            cap = false;
+        }
+        // the model runs a currency sign onto the word before it: "costs$125"
+        if matches!(ch, '$' | '€' | '£') && prev.is_alphanumeric() {
+            out.push(' ');
+        }
         if cap && ch.is_alphabetic() {
             out.extend(ch.to_uppercase());
             cap = false;
@@ -204,9 +213,100 @@ fn tidy(text: &str) -> String {
         }
         if matches!(ch, '.' | '!' | '?' | '\n') {
             cap = true;
-        } else if !ch.is_whitespace() {
+        } else if !ch.is_whitespace() && !matches!(ch, '(' | '[' | '{' | '"' | '\u{201C}') {
             cap = false;
         }
+        prev = ch;
+    }
+    out
+}
+
+/// Words a path or address does not run on from: "the path is slash users" → "is /users".
+const NO_GLUE: &[&str] = &[
+    "is", "are", "was", "it's", "at", "in", "to", "from", "into", "under", "on", "of", "and", "or", "called", "named", "type",
+];
+
+/// Spoken symbols: "showah dot co" → "showah.co", "open paren that close paren" → "(that)".
+/// A symbol word after "a", "an" or "the" stays a word ("a dash of"). "literal dot" keeps the
+/// word; "symbol dash" always gives the symbol. Email only takes "@" and a dot between two words.
+fn apply_symbols(text: &str, symbols: &std::collections::BTreeMap<String, String>, profile: Profile) -> String {
+    // a blank key in config.toml would match nowhere and everywhere
+    let mut phrases: Vec<(Vec<&str>, &str)> = symbols
+        .iter()
+        .map(|(said, sym)| (said.split_whitespace().collect::<Vec<_>>(), sym.as_str()))
+        .filter(|(words, _)| !words.is_empty())
+        .collect();
+    phrases.sort_by_key(|(words, _)| std::cmp::Reverse(words.len()));
+    let tokens: Vec<&str> = text.split(' ').collect();
+    // the phrase at `i`, with its length; only its last word may carry punctuation
+    let phrase_at = |i: usize| {
+        phrases.iter().find_map(|(words, sym)| {
+            let toks = tokens.get(i..i + words.len())?;
+            let fits = words.iter().zip(toks).enumerate().all(|(k, (w, t))| {
+                bare(t).eq_ignore_ascii_case(w) && (k + 1 == words.len() || t.chars().all(char::is_alphanumeric))
+            });
+            fits.then_some((words.len(), *sym))
+        })
+    };
+    // each piece with whether it joins the piece before and the piece after it
+    let mut pieces: Vec<(String, bool, bool)> = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        let lead = bare(tokens[i]);
+        let forced = lead == "symbol" && phrase_at(i + 1).is_some();
+        if lead == "literal" {
+            if let Some((n, _)) = phrase_at(i + 1) {
+                pieces.extend(tokens[i + 1..=i + n].iter().map(|t| (t.to_string(), false, false)));
+                i += 1 + n;
+                continue;
+            }
+        }
+        let at = if forced { i + 1 } else { i };
+        let Some((n, sym)) = phrase_at(at) else {
+            pieces.push((tokens[i].to_string(), false, false));
+            i += 1;
+            continue;
+        };
+        let last = tokens[at + n - 1];
+        let trail = &last[last.trim_end_matches(|c: char| !c.is_alphanumeric()).len()..];
+        let prev = pieces.last().map(|(p, _, _)| p.as_str());
+        let next = tokens.get(at + n).copied();
+        // a comma before or after is a pause, so nothing joins across it
+        let word_before = prev.is_some_and(|p| p.ends_with(|c: char| c.is_alphanumeric()));
+        let left = word_before && !prev.is_some_and(|p| NO_GLUE.contains(&bare(p).as_str()));
+        let right = trail.is_empty() && next.is_some();
+        let (left, right) = match sym {
+            "(" | "[" | "{" => (false, right),
+            ")" | "]" | "}" => (word_before, false),
+            "%" => (prev.is_some_and(|p| p.ends_with(|c: char| c.is_ascii_digit())), false),
+            ":" => (word_before, right && next.is_some_and(|t| t.starts_with(|c: char| c.is_ascii_digit()))),
+            _ => (left, right),
+        };
+        let article = prev.is_some_and(|p| matches!(bare(p).as_str(), "a" | "an" | "the"));
+        let allowed = match profile {
+            _ if forced => true,
+            _ if article => false,
+            Profile::Email => sym == "@" || (sym == "." && left && right),
+            // a joiner needs something after it with no pause: "the hundred yard dash." stays
+            Profile::Plain => match sym {
+                "(" | "[" | "{" | ")" | "]" | "}" => true,
+                "%" | ":" => left,
+                _ => right,
+            },
+        };
+        if allowed {
+            pieces.push((format!("{sym}{trail}"), left, right));
+        } else {
+            pieces.extend(tokens[at..at + n].iter().map(|t| (t.to_string(), false, false)));
+        }
+        i = at + n;
+    }
+    let mut out = String::with_capacity(text.len());
+    for (k, (piece, left, _)) in pieces.iter().enumerate() {
+        if k > 0 && !left && !pieces[k - 1].2 {
+            out.push(' ');
+        }
+        out.push_str(piece);
     }
     out
 }
@@ -219,6 +319,8 @@ pub fn clean(text: &str, dict: &Dictionary, snippets: &Snippets, cfg: &Config, p
     }
     // before the dictionary so phonetic matching cannot rewrite trigger words
     let (mut s, expansions) = snippets.mark(&s);
+    // before the dictionary too, so a sound-alike term cannot take "dot" or "dash"
+    s = apply_symbols(&s, &cfg.symbols, profile);
     s = dict.apply(&s);
     if cfg.spoken_commands {
         s = apply_commands(&s);
@@ -408,6 +510,59 @@ best,
         ] {
             assert_eq!(clean(keep, &d, &Snippets::default(), &c), keep);
         }
+    }
+
+    #[test]
+    fn spoken_symbols_become_symbols() {
+        let (d, c) = bare_env();
+        for (said, want) in [
+            ("Send it to jeff at sign showah dot co.", "Send it to jeff@showah.co."),
+            ("The path is slash users slash jeff slash code.", "The path is /users/jeff/code."),
+            ("Open paren that one close paren.", "(That one)."),
+            ("Name it my underscore file dash two.", "Name it my_file-two."),
+            ("Note colon ship it.", "Note: ship it."),
+            ("Port localhost colon 8080.", "Port localhost:8080."),
+            ("It grew 20 percent.", "It grew 20%."),
+            ("Type symbol dash v.", "Type -v."),
+            ("Say the literal dot com.", "Say the dot com."),
+        ] {
+            assert_eq!(clean(said, &d, &Snippets::default(), &c), want);
+        }
+    }
+
+    #[test]
+    fn symbol_words_kept_as_words() {
+        let (d, c) = bare_env();
+        for keep in [
+            "Use an underscore between the words, and a dash in the name.",
+            "Add a dash of salt.",
+            "He won the hundred yard dash.",
+            "A high percent of them.",
+            "Put a dot here.",
+        ] {
+            assert_eq!(clean(keep, &d, &Snippets::default(), &c), keep);
+        }
+    }
+
+    #[test]
+    fn a_blank_symbol_key_is_ignored() {
+        let (d, mut c) = bare_env();
+        c.symbols.insert(" ".into(), "x".into());
+        assert_eq!(clean("Go dot com.", &d, &Snippets::default(), &c), "Go.com.");
+    }
+
+    #[test]
+    fn email_takes_only_addresses() {
+        let (d, c) = bare_env();
+        let got = super::clean("Mail jeff at sign showah dot co slash later.", &d, &Snippets::default(), &c, Profile::Email);
+        assert_eq!(got, "Mail jeff@showah.co slash later.");
+    }
+
+    #[test]
+    fn dots_inside_words_and_currency() {
+        let (d, c) = bare_env();
+        assert_eq!(clean("Open showah.co now.", &d, &Snippets::default(), &c), "Open showah.co now.");
+        assert_eq!(clean("It costs$125.", &d, &Snippets::default(), &c), "It costs $125.");
     }
 
     #[test]
