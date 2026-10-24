@@ -427,6 +427,30 @@ fn apply_symbols(text: &str, symbols: &std::collections::BTreeMap<String, String
     out
 }
 
+/// The model writes numbers as digits but a spoken decimal as a word: "5 point 2" → "5.2".
+/// Only between two numbers, so "the point 2 of us made" keeps its word.
+fn join_decimals(text: &str) -> String {
+    let number = |t: &str| t.starts_with(|c: char| c.is_ascii_digit()) && t.chars().all(|c| c.is_ascii_digit() || c == '.');
+    let tokens: Vec<&str> = text.split(' ').collect();
+    let mut out: Vec<String> = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        let joins = out.last().is_some_and(|p| number(p))
+            && tokens[i].eq_ignore_ascii_case("point")
+            && tokens.get(i + 1).is_some_and(|t| t.starts_with(|c: char| c.is_ascii_digit()));
+        if joins {
+            let last = out.last_mut().expect("checked above");
+            last.push('.');
+            last.push_str(tokens[i + 1]);
+            i += 2;
+        } else {
+            out.push(tokens[i].to_string());
+            i += 1;
+        }
+    }
+    out.join(" ")
+}
+
 pub fn clean(text: &str, dict: &Dictionary, snippets: &Snippets, cfg: &Config, profile: Profile) -> String {
     let mut s = strip_fillers(text, &cfg.fillers);
     if cfg.spoken_commands {
@@ -442,7 +466,7 @@ pub fn clean(text: &str, dict: &Dictionary, snippets: &Snippets, cfg: &Config, p
     // before the dictionary so phonetic matching cannot rewrite trigger words
     let (mut s, expansions) = snippets.mark(&s);
     // before the dictionary too, so a sound-alike term cannot take "dot" or "dash"
-    s = apply_symbols(&s, &cfg.symbols, profile);
+    s = apply_symbols(&join_decimals(&s), &cfg.symbols, profile);
     s = dict.apply(&s);
     if cfg.spoken_commands {
         s = apply_commands(&s);
@@ -735,6 +759,20 @@ best,
         let (d, c) = bare_env();
         let got = super::clean("Mail jeff at sign showah dot co slash later.", &d, &Snippets::default(), &c, Profile::Email);
         assert_eq!(got, "Mail jeff@showah.co slash later.");
+    }
+
+    #[test]
+    fn spoken_decimal_points_become_dots() {
+        let (d, c) = bare_env();
+        for (said, want) in [
+            ("Update the 5 Point 2 release.", "Update the 5.2 release."),
+            ("Ship 0 point 5 point 3 today.", "Ship 0.5.3 today."),
+            ("It weighs 2 point 75kg.", "It weighs 2.75kg."),
+            ("That's 3 point.", "That's 3 point."),
+            ("Make a point 2 times.", "Make a point 2 times."),
+        ] {
+            assert_eq!(clean(said, &d, &Snippets::default(), &c), want, "{said}");
+        }
     }
 
     #[test]
