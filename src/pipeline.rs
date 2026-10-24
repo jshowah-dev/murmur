@@ -15,7 +15,8 @@ use std::time::{Duration, Instant};
 
 pub enum PipelineCmd {
     Start,
-    Stop,
+    /// Carries the moment the hotkey was released, for the release-to-text timing.
+    Stop(Instant),
     Abort,
     Audio(Vec<f32>),
     Shutdown,
@@ -129,19 +130,21 @@ impl State {
         }
     }
 
-    fn stop(&mut self) {
+    fn stop(&mut self, released: Instant) {
         if !self.recording {
             return;
         }
-        let stop_start = Instant::now();
+        let picked_up = Instant::now();
         self.recording = false;
         let _ = self.tx.send(PipelineMsg::Processing);
         let segs = self.vad.as_mut().map(|v| v.flush()).unwrap_or_default();
         self.collect_segments(segs);
         self.last_used = Instant::now();
+        let tail_secs = self.speech.len() as f32 / 16_000.0;
         if self.speech_samples >= MIN_SPEECH_SAMPLES && !self.speech.is_empty() {
             self.decode_chunk();
         }
+        let decoded = Instant::now();
         let raw = std::mem::take(&mut self.texts).join(" ");
         self.speech.clear();
         if raw.is_empty() {
@@ -162,10 +165,20 @@ impl State {
             let d = self.dict.lock().unwrap_or_else(|e| e.into_inner());
             cleanup::clean(&raw, &d, &self.snippets.current, &self.cfg, profile)
         };
+        let cleaned_at = Instant::now();
         // paste falls back to typing the text in, so an error here is only logged
         let pasted = cleanup::spaced_after(crate::caret::char_before(), &cleaned);
         let inject = inject::paste(&pasted).map_err(|e| log::error!("paste: {e:#}")).ok();
-        log::info!("dictated {} chars, release_to_text_ms={}", cleaned.chars().count(), stop_start.elapsed().as_millis());
+        let ms = |a: Instant, b: Instant| b.duration_since(a).as_millis();
+        log::info!(
+            "dictated {} chars, release_to_text_ms={} (queue {}, decode {} on {tail_secs:.1}s tail, clean {}, paste {})",
+            cleaned.chars().count(),
+            released.elapsed().as_millis(),
+            ms(released, picked_up),
+            ms(picked_up, decoded),
+            ms(decoded, cleaned_at),
+            cleaned_at.elapsed().as_millis()
+        );
         let _ = self.tx.send(PipelineMsg::Done(Entry { raw, cleaned, inject, at: Instant::now() }));
     }
 
@@ -218,7 +231,7 @@ fn run(st: &mut State, rx: &Receiver<PipelineCmd>) {
         match rx.recv_timeout(Duration::from_secs(30)) {
             Ok(PipelineCmd::Start) => st.start(),
             Ok(PipelineCmd::Audio(c)) => st.audio(c),
-            Ok(PipelineCmd::Stop) => st.stop(),
+            Ok(PipelineCmd::Stop(at)) => st.stop(at),
             Ok(PipelineCmd::Abort) => st.abort(),
             Ok(PipelineCmd::Shutdown) | Err(RecvTimeoutError::Disconnected) => return,
             Err(RecvTimeoutError::Timeout) => st.maybe_unload(),

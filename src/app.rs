@@ -526,6 +526,7 @@ pub fn main() -> Result<()> {
                     }
                 }
                 HotkeyEvent::Release => {
+                    let released = Instant::now();
                     log::info!("loudest voice rms {loudest:.3}");
                     loudest = 0.0;
                     let dictating = forwarding;
@@ -536,7 +537,7 @@ pub fn main() -> Result<()> {
                     forwarding = false;
                     listening = false;
                     locked = false;
-                    let _ = cmd_tx.send(PipelineCmd::Stop);
+                    let _ = cmd_tx.send(PipelineCmd::Stop(released));
                     if !cfg.mic_always_on {
                         capture.take();
                     }
