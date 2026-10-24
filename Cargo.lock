@@ -2082,7 +2082,7 @@ dependencies = [
 
 [[package]]
 name = "murmur"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
