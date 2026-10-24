@@ -32,7 +32,14 @@ impl Capture {
             .default_input_device()
             .ok_or_else(|| anyhow!("no default input device"))?;
         let supported = device.default_input_config().context("default input config")?;
-        let config = supported.config();
+        #[allow(unused_mut)]
+        let mut config = supported.config();
+        // WASAPI's default is its smallest shared buffer (10-20 ms), so a short stall of cpal's
+        // thread drops samples even while idle. 200 ms of slack; the callback period is unchanged.
+        #[cfg(windows)]
+        {
+            config.buffer_size = cpal::BufferSize::Fixed(config.sample_rate / 5);
+        }
         let channels = config.channels as usize;
         let rate = config.sample_rate;
         let name = device.description().map(|d| d.name().to_string()).unwrap_or_else(|e| format!("? ({e})"));

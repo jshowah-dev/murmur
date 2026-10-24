@@ -450,10 +450,11 @@ impl Config {
 /// The `threads` default every config.toml got before it followed the core count.
 const OLD_DEFAULT_THREADS: i32 = 8;
 
-/// One thread per core, up to 8; 4 if the count is unknown. The count includes a Mac's
-/// efficiency cores: on an M5 (4 + 6) 4, 6 and 8 threads tie, and all 10 are about 20% slower.
+/// One thread per core but one, so the audio thread isn't starved, up to 8; 4 if the count is
+/// unknown. The count includes a Mac's efficiency cores: on an M5 (4 + 6) 4, 6 and 8 threads
+/// tie, and all 10 are about 20% slower.
 fn threads_for(cores: Option<usize>) -> i32 {
-    cores.map_or(4, |n| n.min(8) as i32)
+    cores.map_or(4, |n| n.saturating_sub(1).clamp(1, 8) as i32)
 }
 
 #[cfg(test)]
@@ -683,8 +684,10 @@ mod tests {
     #[test]
     fn threads_follow_the_core_count_up_to_8() {
         assert_eq!(threads_for(Some(1)), 1);
-        assert_eq!(threads_for(Some(4)), 4);
-        assert_eq!(threads_for(Some(8)), 8);
+        assert_eq!(threads_for(Some(2)), 1);
+        assert_eq!(threads_for(Some(4)), 3);
+        assert_eq!(threads_for(Some(8)), 7);
+        assert_eq!(threads_for(Some(9)), 8);
         assert_eq!(threads_for(Some(16)), 8);
         assert_eq!(threads_for(None), 4);
     }

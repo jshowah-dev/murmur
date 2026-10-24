@@ -28,7 +28,7 @@ Offline push-to-talk dictation for Windows and macOS. Hold a key, speak, let go 
 | Memory | About 1.2 GB for the speech model while it's loaded | About 1.2 GB for the speech model while it's loaded |
 | Disk | About 700 MB: the app (36 MB) and the speech model (661 MB). 1.2 GB free for the one-time model download | About 700 MB, mostly the speech model. 1.2 GB free for the one-time model download |
 
-Recognition runs on your processor, so speed depends on it. On a 4-core 2.8 GHz Intel Xeon, 10 seconds of speech took 1.7 s to transcribe with 4 threads. Murmur transcribes long dictations in chunks while you're still talking, so the wait after you let go stays short. It uses one thread per core, up to 8 (see [`threads`](#configuration)): on that 4-core machine, 8 threads took twice as long. Murmur frees the model's memory after 15 idle minutes (`idle_unload_minutes`).
+Recognition runs on your processor, so speed depends on it. On a 4-core 2.8 GHz Intel Xeon, 10 seconds of speech took 1.7 s to transcribe with 4 threads. Murmur transcribes long dictations in chunks while you're still talking, so the wait after you let go stays short. It uses one thread per core but one, up to 8, leaving a core for the microphone (see [`threads`](#configuration)): on that 4-core machine, 8 threads took twice as long. Murmur frees the model's memory after 15 idle minutes (`idle_unload_minutes`).
 
 ### Windows
 
@@ -102,7 +102,7 @@ Settings live in `config.toml` in the config folder (`%APPDATA%\Murmur` on Windo
 |---|---|---|
 | `ptt_key` | `"RControl"` (Windows), `"RAlt"` (Mac) | Push-to-talk key: `RControl`, `LControl`, `RAlt`, `LAlt`, `RShift`, `CapsLock`, `ScrollLock`, `Pause`, or `F1`–`F24`. On a Mac, Alt is Option, and `ROption`, `LOption`, `RCommand` and `LCommand` work too. Easier: **Push-to-talk key** in the menu |
 | `model_dir` | `%LOCALAPPDATA%\Murmur\models\…` (Windows), `%HOME%/Library/Application Support/Murmur/models/…` (Mac) | Speech model folder. Only the default location is downloaded automatically |
-| `threads` | One per core, up to 8 | CPU threads for recognition. Leave it out to follow your processor; more threads than cores is slower. `threads = 8`, which versions up to 0.5.0 wrote into every `config.toml`, counts as left out |
+| `threads` | One per core but one, up to 8 | CPU threads for recognition. Leave it out to follow your processor; more threads than cores is slower. `threads = 8`, which versions up to 0.5.0 wrote into every `config.toml`, counts as left out |
 | `min_silence_ms` | `500` | Silence that ends a speech segment |
 | `fillers` | `["um", "uh", "er", "hmm", "mm"]` | Words removed from the output |
 | `spoken_commands` | `true` | Turn "new line" / "new paragraph" into line breaks |
@@ -179,7 +179,7 @@ Your Name"""
 
 **Background noise gets typed.** Murmur transcribes whatever the microphone picks up, including a TV or other people talking. A headset or a microphone close to your mouth helps most.
 
-**Dictation is slow.** Recognition runs on your CPU, one thread per core up to 8. If you set `threads` in `config.toml`, keep it at or below your processor's core count, or remove it, and restart Murmur. The first dictation after a long break also takes a moment longer while the model reloads (see `idle_unload_minutes`).
+**Dictation is slow.** Recognition runs on your CPU, one thread per core but one, up to 8. If you set `threads` in `config.toml`, keep it at or below your processor's core count, or remove it, and restart Murmur. The first dictation after a long break also takes a moment longer while the model reloads (see `idle_unload_minutes`).
 
 **The speech model won't download.** Murmur needs about 1.2 GB free on the drive with your user folder while it downloads and unpacks the model. Choose **Retry** on the setup screen: an interrupted download picks up where it left off.
 
