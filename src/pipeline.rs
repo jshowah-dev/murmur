@@ -41,9 +41,21 @@ const CHUNK_MIN: usize = 16_000 * 20;
 /// mid-word, so a chunk only ends on a segment shorter than this.
 const NATURAL_MAX: usize = 16_000 * 14;
 
+/// A pause this long usually ends a sentence, so decoding there doesn't put a period mid-sentence
+/// the way decoding at every 500 ms VAD pause did.
+const LONG_PAUSE: usize = 16_000;
+/// Less speech than this waits for the next pause: a short fragment decodes poorly on its own.
+const PAUSE_MIN: usize = 16_000 * 3;
+
 /// True when the buffered speech is long enough to decode now and the last segment ended at a pause.
 fn chunk_ready(buffered: usize, last_segment: usize) -> bool {
     buffered >= CHUNK_MIN && last_segment < NATURAL_MAX
+}
+
+/// True when the speaker has paused long enough to decode what's buffered while they're quiet,
+/// so a release only waits for the speech after the last long pause.
+fn pause_ready(buffered: usize, quiet: usize) -> bool {
+    buffered >= PAUSE_MIN && quiet >= LONG_PAUSE
 }
 
 struct State {
@@ -120,12 +132,12 @@ impl State {
         if !self.recording {
             return;
         }
-        let segs = self.vad.as_mut().map(|v| v.push(&chunk)).unwrap_or_default();
-        if segs.is_empty() {
-            return;
-        }
+        let Some(vad) = self.vad.as_mut() else { return };
+        let segs = vad.push(&chunk);
+        let quiet = vad.quiet_samples();
         let last = self.collect_segments(segs);
-        if chunk_ready(self.speech.len(), last) {
+        // chunk_ready judges the segment that just ended, so it waits for one to arrive
+        if pause_ready(self.speech.len(), quiet) || (last > 0 && chunk_ready(self.speech.len(), last)) {
             self.decode_chunk();
         }
     }
@@ -256,5 +268,20 @@ mod tests {
     #[test]
     fn force_split_segment_does_not_end_a_chunk() {
         assert!(!chunk_ready(16_000 * 25, 16_000 * 15));
+    }
+
+    #[test]
+    fn long_pause_decodes_what_is_buffered() {
+        assert!(pause_ready(16_000 * 5, 16_000));
+    }
+
+    #[test]
+    fn short_pause_keeps_buffering() {
+        assert!(!pause_ready(16_000 * 5, 16_000 * 6 / 10));
+    }
+
+    #[test]
+    fn short_fragment_waits_for_more_speech() {
+        assert!(!pause_ready(16_000 * 2, 16_000 * 2));
     }
 }
