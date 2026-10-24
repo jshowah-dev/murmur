@@ -30,6 +30,53 @@ fn strip_fillers(text: &str, fillers: &[String]) -> String {
     out.join(" ")
 }
 
+/// Words that are said twice on purpose: "I know that that works", "what it is is", "no no".
+const DOUBLED_ON_PURPOSE: &[&str] = &["that", "had", "is", "no", "bye", "very", "really"];
+const DIGIT_WORDS: &[&str] = &["zero", "oh", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
+/// Short words missing from the common-word list that still start real words: "the app approval".
+const JARGON: &[&str] = &["app", "repo", "prod", "auth", "env", "spec", "docs", "stat", "temp", "sync", "init", "ops"];
+
+/// True when `prev` is a stutter of `next`: the same word again, or the start of `next` cut off.
+/// A sentence end between them is a real repeat ("Done. Done."), and a cut-off that is itself a
+/// real word is more likely meant ("pro professional", "app approval").
+fn stutters(prev: &str, next: &str, dict: &Dictionary) -> bool {
+    if prev.ends_with(['.', '!', '?']) {
+        return false;
+    }
+    let (p, n) = (bare(prev), bare(next));
+    if p.is_empty() || p.chars().any(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    if p == n {
+        return !DOUBLED_ON_PURPOSE.contains(&p.as_str()) && !DIGIT_WORDS.contains(&p.as_str());
+    }
+    p.len() >= 2
+        && n.len() > p.len() + 1
+        && n.starts_with(&p)
+        && !crate::phonetic::is_common(&p)
+        && !JARGON.contains(&p.as_str())
+        && !in_dictionary(&p, dict)
+}
+
+/// The word is a term's written form or one of its single-word spoken forms.
+fn in_dictionary(word: &str, dict: &Dictionary) -> bool {
+    dict.terms
+        .iter()
+        .any(|t| t.written.eq_ignore_ascii_case(word) || t.spoken.iter().any(|s| s.eq_ignore_ascii_case(word)))
+}
+
+/// Each stutter goes and the word after it stays, keeping that word's punctuation.
+fn drop_stutters(text: &str, dict: &Dictionary) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for tok in text.split(' ') {
+        if out.last().is_some_and(|prev| stutters(prev, tok, dict)) {
+            out.pop();
+        }
+        out.push(tok);
+    }
+    out.join(" ")
+}
+
 /// Lowercased token with STT punctuation stripped, so "New" / "line." match command words.
 fn bare(tok: &str) -> String {
     tok.trim_matches(|c: char| !c.is_alphanumeric()).to_ascii_lowercase()
@@ -102,7 +149,11 @@ fn tidy(text: &str) -> String {
 }
 
 pub fn clean(text: &str, dict: &Dictionary, snippets: &Snippets, cfg: &Config, profile: Profile) -> String {
-    let s = strip_fillers(text, &cfg.fillers);
+    let mut s = strip_fillers(text, &cfg.fillers);
+    // after the fillers, so "the, um, the" is seen as a repeat
+    if cfg.drop_stutters {
+        s = drop_stutters(&s, dict);
+    }
     // before the dictionary so phonetic matching cannot rewrite trigger words
     let (mut s, expansions) = snippets.mark(&s);
     s = dict.apply(&s);
@@ -219,6 +270,56 @@ best,
         let (d, mut c) = env();
         c.spoken_commands = false;
         assert_eq!(clean("a new line b", &d, &Snippets::default(), &c), "A new line b");
+    }
+
+    #[test]
+    fn repeated_word_is_dropped() {
+        let (d, c) = bare_env();
+        assert_eq!(clean("I think the the build passed.", &d, &Snippets::default(), &c), "I think the build passed.");
+        assert_eq!(clean("I, I think so.", &d, &Snippets::default(), &c), "I think so.");
+        assert_eq!(clean("The the the build passed.", &d, &Snippets::default(), &c), "The build passed.");
+        assert_eq!(clean("Send the, um, the file.", &d, &Snippets::default(), &c), "Send the file.");
+    }
+
+    #[test]
+    fn cut_off_word_is_dropped() {
+        let (d, c) = bare_env();
+        assert_eq!(clean("That's not rel relevant here.", &d, &Snippets::default(), &c), "That's not relevant here.");
+        assert_eq!(clean("Rel- relevant.", &d, &Snippets::default(), &c), "Relevant.");
+    }
+
+    #[test]
+    fn real_word_pairs_are_kept() {
+        let (d, c) = bare_env();
+        for keep in [
+            "I know that that works.",
+            "What it is is broken.",
+            "No no, keep it.",
+            "Call five five five one two.",
+            "She's a pro professional.",
+            "It's done. Done.",
+            "Put it in inside.",
+            "The app approval flow.",
+            "Check the repo report.",
+            // a mis-start that is not a prefix stays as dictated
+            "That's not rev relevant.",
+        ] {
+            assert_eq!(clean(keep, &d, &Snippets::default(), &c), keep);
+        }
+    }
+
+    #[test]
+    fn dictionary_words_are_not_cut_offs() {
+        let d = Dictionary::from_terms(vec![Term { written: "Kube".into(), spoken: vec!["koob".into()], phonetic: false }]);
+        let c = Config::default();
+        assert_eq!(clean("Ask kube kubernetes.", &d, &Snippets::default(), &c), "Ask Kube kubernetes.");
+    }
+
+    #[test]
+    fn stutters_kept_when_turned_off() {
+        let (d, mut c) = bare_env();
+        c.drop_stutters = false;
+        assert_eq!(clean("the the rev relevant", &d, &Snippets::default(), &c), "The the rev relevant");
     }
 
     #[test]

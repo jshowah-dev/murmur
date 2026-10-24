@@ -16,6 +16,8 @@ pub struct Config {
     pub min_silence_ms: u32,
     pub fillers: Vec<String>,
     pub spoken_commands: bool,
+    /// Drop stutters: a word said twice ("the the") and a word cut off and restarted ("rel relevant").
+    pub drop_stutters: bool,
     /// Keep the mic open between dictations so the first consonant is not lost to device
     /// start-up. It closes after `idle_unload_minutes` without a dictation. false = open on press.
     pub mic_always_on: bool,
@@ -45,6 +47,7 @@ impl Default for Config {
             min_silence_ms: 500,
             fillers: ["um", "uh", "er", "hmm", "mm"].iter().map(|s| s.to_string()).collect(),
             spoken_commands: true,
+            drop_stutters: true,
             mic_always_on: true,
             mute_output: true,
             hands_free_max_minutes: 5,
@@ -512,6 +515,7 @@ mod tests {
         assert!((1..=8).contains(&c.recognition_threads()));
         assert_eq!(c.min_silence_ms, 500);
         assert!(c.spoken_commands);
+        assert!(c.drop_stutters);
         assert_eq!(c.fillers, vec!["um", "uh", "er", "hmm", "mm"]);
         assert_eq!(c.hands_free_max_minutes, 5);
         assert!(!c.debug_log);
