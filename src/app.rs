@@ -542,6 +542,8 @@ pub fn main() -> Result<()> {
                         capture.take();
                     }
                     if dictating {
+                        // now, not on the pipeline's Processing: that waits for any decode still running
+                        overlay.set(OverlayState::Processing);
                         let target = inject::foreground_hwnd();
                         awaiting = Some(target);
                         expect_words = true;
