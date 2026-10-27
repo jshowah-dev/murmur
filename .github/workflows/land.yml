@@ -1,0 +1,125 @@
+# Lands every pushed branch on the default branch, so no session needs a pull request.
+# Pushes to the default branch get the same check, after the fact. Branches under hold/ are left alone.
+# Why: personal-vault, 03-Decisions/No PRs in jshowah-dev - Branches Land on Push.md
+name: Land
+
+on:
+  push:
+    branches-ignore: ['hold/**']
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+
+concurrency:
+  group: land-${{ github.ref }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  land:
+    if: ${{ !github.event.deleted }}
+    runs-on: ubuntu-latest
+    env:
+      BRANCH: ${{ github.ref_name }}
+      BASE: ${{ github.event.repository.default_branch }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Check for secrets and work terms
+        id: check
+        env:
+          DENYLIST: ${{ secrets.VAULT_DENYLIST }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$BRANCH" = "$BASE" ]; then
+            base=$BEFORE
+            git cat-file -e "$base^{commit}" 2>/dev/null || base=$(git hash-object -t tree /dev/null)
+          else
+            base=$(git merge-base "origin/$BASE" HEAD)
+          fi
+          bash .github/scripts/land-check.sh "$base" HEAD > check.txt || { cat check.txt; exit 1; }
+
+      - name: Merge into the default branch
+        id: merge
+        if: env.BRANCH != env.BASE
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          # Retry when another branch lands between the fetch and the push.
+          for attempt in 1 2 3; do
+            git fetch --quiet origin "$BASE"
+            git checkout --quiet -B "$BASE" "origin/$BASE"
+            if ! git merge --no-edit -m "Land $BRANCH" "$GITHUB_SHA"; then
+              git diff --name-only --diff-filter=U > conflicts.txt
+              git merge --abort
+              exit 1
+            fi
+            git push origin "$BASE" && exit 0
+          done
+          exit 1
+
+      # A push made with this token doesn't start other workflows, so start the default branch's
+      # push workflows (a Pages deploy, say) by hand. Their paths filters aren't applied.
+      - name: Run the default branch's push workflows
+        if: success() && env.BRANCH != env.BASE
+        run: |
+          for f in .github/workflows/*.yml; do
+            name=$(basename "$f")
+            [ "$name" = land.yml ] && continue
+            grep -q 'workflow_dispatch' "$f" && grep -qE "branches: \[.*\b$BASE\b.*\]" "$f" || continue
+            gh workflow run "$name" --ref "$BASE"
+          done
+
+      - name: Close the issue for this branch
+        if: success() && env.BRANCH != env.BASE
+        run: |
+          gh issue list --state open --search "in:title Land: $BRANCH" --json number,title \
+            --jq '.[] | "\(.number)\t\(.title)"' |
+            awk -F'\t' -v t="Land: $BRANCH" '$2 == t { print $1 }' |
+            while read -r n; do gh issue close "$n" --comment "Landed in $(git rev-parse --short HEAD)."; done
+
+      - name: Open an issue when it can't land
+        if: failure()
+        env:
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMPARE: ${{ github.server_url }}/${{ github.repository }}/compare/${{ github.event.repository.default_branch }}...${{ github.ref_name }}
+        run: |
+          {
+            if [ "${{ steps.check.outcome }}" = failure ] && [ -s check.txt ]; then
+              echo "The check flagged these files (the matches aren't shown):"
+              echo
+              sed 's/^/- /' check.txt
+              echo
+              if [ "$BRANCH" = "$BASE" ]; then
+                echo "This is already on $BASE. Remove it, and rotate any key that was pushed."
+              else
+                echo "Nothing landed. Remove it from the branch and push again."
+              fi
+            elif [ -s conflicts.txt ]; then
+              echo "Merging into $BASE conflicts in:"
+              echo
+              sed 's/^/- /' conflicts.txt
+              echo
+              echo "Merge origin/$BASE into the branch, fix the conflicts and push again: $COMPARE"
+            else
+              echo "Landing failed; see the run."
+            fi
+            echo
+            echo "Run: $RUN"
+          } > issue.md
+          title="Land: $BRANCH"
+          n=$(gh issue list --state open --search "in:title $title" --json number,title \
+            --jq '.[] | "\(.number)\t\(.title)"' | awk -F'\t' -v t="$title" '$2 == t { print $1; exit }')
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --body-file issue.md
+          else
+            gh issue create --title "$title" --body-file issue.md
+          fi
