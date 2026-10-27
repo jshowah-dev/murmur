@@ -451,6 +451,56 @@ fn join_decimals(text: &str) -> String {
     out.join(" ")
 }
 
+/// Spoken punctuation. No "period": it is too common a word ("the trial period ends").
+const PUNCTUATION: &[(&[&str], &str)] = &[
+    (&["comma"], ","),
+    (&["semicolon"], ";"),
+    (&["full", "stop"], "."),
+    (&["question", "mark"], "?"),
+    (&["exclamation", "point"], "!"),
+    (&["exclamation", "mark"], "!"),
+];
+
+/// "Hi comma Sarah" → "Hi, Sarah". The model often punctuates the word as well ("Hi, comma,
+/// Sarah"), so the mark replaces whatever ends the word before and drops what ends its own.
+/// After "a", "an" or "the" it stays a word ("add a comma"), as it does after "literal".
+fn apply_punctuation(text: &str) -> String {
+    let tokens: Vec<&str> = text.split(' ').collect();
+    // the phrase at `i`, with its length; only its last word may carry punctuation
+    let phrase_at = |i: usize| {
+        PUNCTUATION.iter().find_map(|(words, mark)| {
+            let toks = tokens.get(i..i + words.len())?;
+            let fits = words
+                .iter()
+                .zip(toks)
+                .enumerate()
+                .all(|(k, (w, t))| bare(t) == *w && (k + 1 == words.len() || t.chars().all(char::is_alphanumeric)));
+            fits.then_some((words.len(), *mark))
+        })
+    };
+    let mut out: Vec<String> = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        if bare(tokens[i]) == "literal" {
+            if let Some((n, _)) = phrase_at(i + 1) {
+                out.extend(tokens[i + 1..=i + n].iter().map(|t| t.to_string()));
+                i += 1 + n;
+                continue;
+            }
+        }
+        let prev = out.last_mut().filter(|p| !matches!(bare(p).as_str(), "" | "a" | "an" | "the"));
+        if let (Some(prev), Some((n, mark))) = (prev, phrase_at(i)) {
+            prev.truncate(prev.trim_end_matches([',', '.', ';', ':', '!', '?']).len());
+            prev.push_str(mark);
+            i += n;
+            continue;
+        }
+        out.push(tokens[i].to_string());
+        i += 1;
+    }
+    out.join(" ")
+}
+
 pub fn clean(text: &str, dict: &Dictionary, snippets: &Snippets, cfg: &Config, profile: Profile) -> String {
     let mut s = strip_fillers(text, &cfg.fillers);
     if cfg.spoken_commands {
@@ -465,6 +515,9 @@ pub fn clean(text: &str, dict: &Dictionary, snippets: &Snippets, cfg: &Config, p
     }
     // before the dictionary so phonetic matching cannot rewrite trigger words
     let (mut s, expansions) = snippets.mark(&s);
+    if cfg.spoken_commands {
+        s = apply_punctuation(&s);
+    }
     // before the dictionary too, so a sound-alike term cannot take "dot" or "dash"
     s = apply_symbols(&join_decimals(&s), &cfg.symbols, profile);
     s = dict.apply(&s);
@@ -773,6 +826,32 @@ best,
         ] {
             assert_eq!(clean(said, &d, &Snippets::default(), &c), want, "{said}");
         }
+    }
+
+    #[test]
+    fn spoken_punctuation_becomes_marks() {
+        let (d, c) = bare_env();
+        for (said, want) in [
+            ("Hi comma Sarah.", "Hi, Sarah."),
+            ("Hi, comma, Sarah.", "Hi, Sarah."),
+            ("Done full stop next one.", "Done. Next one."),
+            ("Is it ready question mark", "Is it ready?"),
+            ("We shipped exclamation point.", "We shipped!"),
+            ("First semicolon second.", "First; second."),
+            ("Add a comma here.", "Add a comma here."),
+            ("Type literal comma here.", "Type comma here."),
+            ("The trial period ends.", "The trial period ends."),
+            ("Comma is a word.", "Comma is a word."),
+        ] {
+            assert_eq!(clean(said, &d, &Snippets::default(), &c), want, "{said}");
+        }
+    }
+
+    #[test]
+    fn spoken_punctuation_off() {
+        let (d, mut c) = bare_env();
+        c.spoken_commands = false;
+        assert_eq!(clean("Hi comma Sarah.", &d, &Snippets::default(), &c), "Hi comma Sarah.");
     }
 
     #[test]

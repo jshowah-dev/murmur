@@ -8,7 +8,7 @@ Offline push-to-talk dictation for Windows and macOS. Hold a key, speak, let go 
 
 - **Push-to-talk** — hold Right Ctrl (Right Option on a Mac; configurable), speak, release. Works in any app that accepts typing.
 - **Hands-free** — double-tap the key to keep recording without holding it. Tap again to finish, Esc to cancel. Stops on its own after 5 minutes.
-- **Spoken commands** — say "new line" or "new paragraph".
+- **Spoken commands** — say "new line" or "new paragraph", or punctuation: "comma", "semicolon", "full stop", "question mark", "exclamation point". Punctuation is automatic too; say it only to force a mark. "Add a comma" and "literal comma" keep the word.
 - **Filler removal** — drops "um", "uh", "er" and friends.
 - **Custom dictionary** — teach it names and jargon, with phonetic matching for near-misses.
 - **Fix last** — hold Shift with the key to edit the last dictation; Murmur learns your corrections into the dictionary.
@@ -105,7 +105,7 @@ Settings live in `config.toml` in the config folder (`%APPDATA%\Murmur` on Windo
 | `threads` | One per core, up to 8 | CPU threads for recognition. Leave it out to follow your processor; more threads than cores is slower. `threads = 8`, which versions up to 0.5.0 wrote into every `config.toml`, counts as left out |
 | `min_silence_ms` | `500` | Silence that ends a speech segment |
 | `fillers` | `["um", "uh", "er", "hmm", "mm"]` | Words removed from the output |
-| `spoken_commands` | `true` | Turn "new line" / "new paragraph" into line breaks |
+| `spoken_commands` | `true` | Turn "new line" / "new paragraph" into line breaks and spoken punctuation ("comma", "full stop", …) into marks |
 | `drop_stutters` | `true` | Drop a word said twice ("the the") or cut off and restarted ("pro professional"). Words doubled on purpose ("had had", "very very") stay |
 | `self_corrections` | `true` | Keep the second item when you correct yourself: "Tuesday, no, Wednesday" becomes "Wednesday", "at 3, I mean 4" becomes "at 4" |
 | `[symbols]` | slash, backslash, dot, dash, hyphen, underscore, colon, at sign, open paren, close paren, percent | Spoken words that become symbols: "jeff at sign showah dot co" becomes "jeff@showah.co". Say "literal dot" to keep the word. A `[symbols]` table you write replaces the whole list; an empty one keeps every symbol a word |
