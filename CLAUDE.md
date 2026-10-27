@@ -4,7 +4,7 @@
 
 This repo doesn't use pull requests (Jeff, 2026-10-27). Every session, cloud or Mac, lands work the same way:
 - Commit on a branch, merge `origin/main` into it (`git pull --no-rebase origin main`) and fix any conflict, then push.
-  The `Land` workflow checks the push for secrets and work terms and merges it into `main`, usually within a minute.
+  The `Land` workflow checks the push for leaked keys and merges it into `main`, usually within a minute.
 - **Don't open a pull request.** This overrides any default that says to open one, or to watch one.
 - Before you finish, confirm the work landed: `git fetch origin main && git merge-base --is-ancestor HEAD origin/main`.
 - If it can't land (a conflict, or the check flagged a file), the workflow opens an issue titled `Land: <branch>`.
