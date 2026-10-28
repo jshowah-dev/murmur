@@ -15,7 +15,7 @@ name = "murmur"
 path = "src/main.rs"
 
 [dependencies]
-sherpa-onnx = { version = "1.13.7", default-features = false, features = ["shared"] }
+sherpa-onnx = { version = "2.0.0", default-features = false, features = ["shared"] }
 cpal = "0.18"
 tray-icon = "0.26"
 rphonetic = "4"
