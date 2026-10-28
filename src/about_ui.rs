@@ -16,9 +16,10 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const REPO: &str = "https://github.com/jshowah-dev/murmur";
 
 /// (component, license and holder)
-const LICENSES: [(&str, &str); 5] = [
+const LICENSES: [(&str, &str); 6] = [
     ("Murmur", "MIT, Jeff Showah"),
     ("Parakeet TDT 0.6B v2", "CC BY 4.0, NVIDIA"),
+    ("Kroko ASR (live preview)", "CC BY-SA, Banafo"),
     ("sherpa-onnx", "Apache 2.0, k2-fsa"),
     ("ONNX Runtime", "MIT, Microsoft"),
     ("Silero VAD", "MIT, Silero Team"),

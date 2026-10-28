@@ -5,6 +5,7 @@ use crate::dictionary::{self, Dictionary, DictionaryFile};
 use crate::history::Entry;
 use crate::inject;
 use crate::notice::{self, FileProblem};
+use crate::preview::PreviewCmd;
 use crate::snippets::SnippetFile;
 use crate::stt::Recognizer;
 use crate::vad::Vad;
@@ -78,6 +79,8 @@ struct State {
     texts: Vec<String>,
     recording: bool,
     last_used: Instant,
+    /// The live preview's thread, when it's on: it hears the same audio and each chunk's text.
+    preview: Option<Sender<PreviewCmd>>,
 }
 
 impl State {
@@ -108,12 +111,22 @@ impl State {
         last
     }
 
+    fn tell_preview(&self, cmd: PreviewCmd) {
+        if let Some(p) = &self.preview {
+            let _ = p.send(cmd);
+        }
+    }
+
     /// Decode the buffered speech and keep its text for the final paste.
     fn decode_chunk(&mut self) {
         if let Some(rec) = self.rec.as_ref() {
             let t0 = Instant::now();
             let text = rec.transcribe(&self.speech);
             log::info!("chunk: {:.1}s audio decoded in {}ms", self.speech.len() as f32 / 16_000.0, t0.elapsed().as_millis());
+            // mid-recording, at a pause: this text replaces the preview's words for the stretch
+            if self.recording {
+                self.tell_preview(PreviewCmd::Commit(text.clone()));
+            }
             if !text.is_empty() {
                 self.texts.push(text);
             }
@@ -132,11 +145,15 @@ impl State {
         self.speech_samples = 0;
         self.texts.clear();
         self.recording = true;
+        self.tell_preview(PreviewCmd::Start);
     }
 
     fn audio(&mut self, chunk: Vec<f32>) {
         if !self.recording {
             return;
+        }
+        if self.preview.is_some() {
+            self.tell_preview(PreviewCmd::Audio(chunk.clone()));
         }
         let Some(vad) = self.vad.as_mut() else { return };
         let segs = vad.push(&chunk);
@@ -154,6 +171,7 @@ impl State {
         }
         let picked_up = Instant::now();
         self.recording = false;
+        self.tell_preview(PreviewCmd::Stop);
         let _ = self.tx.send(PipelineMsg::Processing);
         let segs = self.vad.as_mut().map(|v| v.flush()).unwrap_or_default();
         self.collect_segments(segs);
@@ -213,6 +231,7 @@ impl State {
 
     fn abort(&mut self) {
         self.recording = false;
+        self.tell_preview(PreviewCmd::Stop);
         self.speech.clear();
         self.speech_samples = 0;
         self.texts.clear();
@@ -231,11 +250,18 @@ impl State {
     }
 }
 
-pub fn spawn(cfg: Config, dict: Arc<Mutex<Dictionary>>, snippets: SnippetFile, rx: Receiver<PipelineCmd>, tx: Sender<PipelineMsg>) -> JoinHandle<()> {
+pub fn spawn(
+    cfg: Config,
+    dict: Arc<Mutex<Dictionary>>,
+    snippets: SnippetFile,
+    rx: Receiver<PipelineCmd>,
+    tx: Sender<PipelineMsg>,
+    preview: Option<Sender<PreviewCmd>>,
+) -> JoinHandle<()> {
     thread::Builder::new()
         .name("pipeline".into())
         .spawn(move || {
-            let mut st = State { cfg, dict, snippets, dict_file: DictionaryFile::new(dictionary::path()), tx, vad: None, rec: None, speech: vec![], speech_samples: 0, texts: vec![], recording: false, last_used: Instant::now() };
+            let mut st = State { cfg, dict, snippets, dict_file: DictionaryFile::new(dictionary::path()), tx, vad: None, rec: None, speech: vec![], speech_samples: 0, texts: vec![], recording: false, last_used: Instant::now(), preview };
             // Spec § Error handling: a panic is logged and the loop restarts; the tray survives.
             loop {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut st, &rx)));

@@ -42,6 +42,9 @@ pub struct Config {
     /// Spoken words that become symbols ("dot" → "."). A `[symbols]` table in config.toml
     /// replaces the whole list. Empty = symbols stay as words.
     pub symbols: BTreeMap<String, String>,
+    /// Show the words at the caret while you speak, from a small streaming model downloaded on
+    /// first use. What is pasted is unchanged. false = no preview and no download.
+    pub live_preview: bool,
 }
 
 impl Default for Config {
@@ -64,6 +67,7 @@ impl Default for Config {
             email_apps: EMAIL_APPS.iter().map(|s| s.to_string()).collect(),
             email_titles: ["Gmail", "Outlook", "Proton Mail", "Yahoo Mail"].iter().map(|s| s.to_string()).collect(),
             symbols: SYMBOLS.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            live_preview: true,
         }
     }
 }
@@ -415,6 +419,13 @@ impl Config {
         PathBuf::from(expand_env(&self.model_dir))
     }
 
+    /// The live preview's streaming model, in a folder of its own beside the speech model so its
+    /// download never shares an unpacking folder with a speech model's.
+    pub fn preview_model_dir(&self) -> PathBuf {
+        let models = self.model_dir_path().parent().map(Path::to_path_buf).unwrap_or_default();
+        models.join("preview").join(crate::model_fetch::KROKO_DIR)
+    }
+
     pub fn vad_model_path(&self) -> PathBuf {
         self.model_dir_path()
             .parent()
@@ -433,6 +444,11 @@ impl Config {
     }
 
     /// Length cap for a hands-free recording; at least one minute.
+    /// How long the models may sit idle before they're unloaded; zero = never.
+    pub fn idle_unload(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.idle_unload_minutes * 60)
+    }
+
     pub fn hands_free_max(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.hands_free_max_minutes.max(1) * 60)
     }
@@ -505,6 +521,20 @@ mod tests {
         assert!(c.format_by_context);
         assert_eq!(c.email_apps, Config::default().email_apps);
         assert_eq!(c.email_titles, Config::default().email_titles);
+    }
+
+    #[test]
+    fn live_preview_is_on_for_a_config_written_before_it() {
+        let c: Config = toml::from_str("ptt_key = \"F13\"\n").unwrap();
+        assert!(c.live_preview);
+        let off: Config = toml::from_str("live_preview = false\n").unwrap();
+        assert!(!off.live_preview);
+    }
+
+    #[test]
+    fn preview_model_sits_in_its_own_folder_beside_the_speech_model() {
+        let c = Config { model_dir: "/m/models/parakeet".into(), ..Config::default() };
+        assert_eq!(c.preview_model_dir(), Path::new("/m/models/preview").join(crate::model_fetch::KROKO_DIR));
     }
 
     #[test]

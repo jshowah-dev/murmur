@@ -429,13 +429,13 @@ fn changed(last: &mut Option<(Sprite, i32, i32, i32, i32)>, s: &Sprite, x: i32, 
 /// The mote's own click-through window. It's created and moved in physical pixels, the space
 /// `caret::find` reports in, while the rest of Murmur is DPI-unaware.
 #[cfg(windows)]
-struct Surface {
+pub(crate) struct Surface {
     hwnd: HWND,
 }
 
 #[cfg(windows)]
 impl Surface {
-    fn create() -> Result<Surface> {
+    pub(crate) fn create() -> Result<Surface> {
         let hwnd = crate::caret::physical(|| unsafe {
             let hinst = GetModuleHandleW(None)?;
             let class: Vec<u16> = "MurmurMote\0".encode_utf16().collect();
@@ -457,22 +457,22 @@ impl Surface {
 
     /// (physical pixels per 96-dpi pixel, for the message's size; units per unit of what the app
     /// hands the mote, which is already physical pixels; pixels drawn per unit; dot size)
-    fn scales(&self) -> (f32, f32, f32, f32) {
+    pub(crate) fn scales(&self) -> (f32, f32, f32, f32) {
         (crate::caret::physical(|| unsafe { GetDpiForSystem() }) as f32 / 96.0, 1.0, 1.0, 1.0)
     }
 
-    fn push(&self, x: i32, y: i32, w: i32, h: i32, px: &[u32]) {
+    pub(crate) fn push(&self, x: i32, y: i32, w: i32, h: i32, px: &[u32]) {
         crate::caret::physical(|| canvas::push(self.hwnd, x, y, w, h, px));
     }
 
-    fn show(&self) {
+    pub(crate) fn show(&self) {
         unsafe {
             let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
             let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
         }
     }
 
-    fn hide(&self) {
+    pub(crate) fn hide(&self) {
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_HIDE);
         }
@@ -483,7 +483,7 @@ impl Surface {
 /// across. The mote works in points, as the app does there (and `caret::find`), drawn at the
 /// screen's pixels per point.
 #[cfg(target_os = "macos")]
-struct Surface {
+pub(crate) struct Surface {
     panel: crate::platform::Stage,
     /// pixels per point
     scale: f32,
@@ -491,25 +491,25 @@ struct Surface {
 
 #[cfg(target_os = "macos")]
 impl Surface {
-    fn create() -> Result<Surface> {
+    pub(crate) fn create() -> Result<Surface> {
         Ok(Surface { panel: crate::platform::Stage::new()?, scale: crate::platform::work_area().1 })
     }
 
     /// (message scale, points per unit, pixels drawn per unit, dot size). A point-sized dot comes
     /// out about a third bigger than Windows' pixel-sized one on a typical laptop; 0.8 evens it.
-    fn scales(&self) -> (f32, f32, f32, f32) {
+    pub(crate) fn scales(&self) -> (f32, f32, f32, f32) {
         (1.0, 1.0, self.scale, 0.8)
     }
 
-    fn push(&self, x: i32, y: i32, w: i32, h: i32, px: &[u32]) {
+    pub(crate) fn push(&self, x: i32, y: i32, w: i32, h: i32, px: &[u32]) {
         let size = (canvas::pixels(w, self.scale) as usize, canvas::pixels(h, self.scale) as usize);
         self.panel.show((x as f32, y as f32, w as f32, h as f32), px, size, self.scale);
     }
 
     /// `push` orders the panel front the first time.
-    fn show(&self) {}
+    pub(crate) fn show(&self) {}
 
-    fn hide(&self) {
+    pub(crate) fn hide(&self) {
         self.panel.hide();
     }
 }

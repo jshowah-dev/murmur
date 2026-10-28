@@ -1,7 +1,7 @@
 //! The tray app: hotkey, pill, mote and tray around the dictation pipeline. Windows-only for now.
 
 use crate::{
-    about_ui, audio, audio_out, autostart, caret, config, correction, correction_ui, dictionary, editor, history, history_ui, hotkey, hotkey_ui,
+    about_ui, audio, audio_out, autostart, caption, caret, cleanup, context, config, correction, correction_ui, dictionary, editor, history, history_ui, hotkey, hotkey_ui,
     inject, model_fetch, motion, mote, notice, overlay, pipeline, platform, setup_ui, snippets, tray, update,
 };
 use anyhow::Result;
@@ -140,6 +140,43 @@ fn download_model(models: PathBuf, tx: crossbeam_channel::Sender<UpdateMsg>) {
     });
 }
 
+/// Starts the live preview's thread, and fetches its model in the background if it's missing:
+/// the preview starts working with the first dictation after the download.
+fn start_preview(cfg: &Config, dict: &Arc<Mutex<Dictionary>>, captions: crossbeam_channel::Sender<String>) -> crossbeam_channel::Sender<murmur_lib::preview::PreviewCmd> {
+    let dir = cfg.preview_model_dir();
+    if !murmur_lib::preview::is_installed(&dir) {
+        if let Some(into) = dir.parent().map(PathBuf::from) {
+            std::thread::spawn(move || download_preview(into));
+        }
+    }
+    // shaped as the paste will be, minus snippets: a trigger stays as words until you let go
+    let (dict, clean_cfg) = (dict.clone(), cfg.clone());
+    let clean = move |raw: &str| {
+        let d = dict.lock().unwrap_or_else(|e| e.into_inner());
+        cleanup::clean(raw, &d, &snippets::Snippets::default(), &clean_cfg, context::Profile::Plain)
+    };
+    let (tx, rx) = unbounded();
+    murmur_lib::preview::spawn(dir, cfg.idle_unload(), clean, rx, move |t| {
+        let _ = captions.send(t);
+    });
+    tx
+}
+
+/// Downloads and unpacks the preview model into `into`. A failure is only logged: dictation
+/// works without it, and the next launch tries again (resuming the `.part`).
+fn download_preview(into: PathBuf) {
+    let asset = model_fetch::kroko();
+    let t0 = Instant::now();
+    let result = std::fs::create_dir_all(&into)
+        .map_err(model_fetch::FetchError::from)
+        .and_then(|()| model_fetch::Fetcher::standard().download(&asset, &into, &mut |_| {}, &std::sync::atomic::AtomicBool::new(false)))
+        .and_then(|archive| model_fetch::extract(&archive, &into, &mut |_| {}));
+    match result {
+        Ok(dir) => log::info!("preview model installed at {} in {}s", dir.display(), t0.elapsed().as_secs()),
+        Err(e) => log::warn!("preview model download: {e}"),
+    }
+}
+
 pub fn main() -> Result<()> {
     #[cfg(target_os = "macos")]
     {
@@ -256,10 +293,18 @@ pub fn main() -> Result<()> {
     // shared with the hotkey thread, so the picker can change the key while Murmur runs
     let ptt_vks = Arc::new(Mutex::new(cfg.ptt_vks()));
     hotkey::spawn(ptt_vks.clone(), cfg.hands_free_max(), hk_tx);
-    pipeline::spawn(cfg.clone(), dict.clone(), snippet_file, cmd_rx, msg_tx);
+    // the live preview's captions, from its own thread
+    let (caption_tx, caption_rx) = unbounded::<String>();
+    let preview_tx = cfg.live_preview.then(|| start_preview(&cfg, &dict, caption_tx));
+    pipeline::spawn(cfg.clone(), dict.clone(), snippet_file, cmd_rx, msg_tx, preview_tx);
 
     let mut overlay = Overlay::create()?;
     let mut mote = Mote::create()?;
+    let mut caption = caption::Caption::create()?;
+    // a dictation is under way, so its captions are wanted
+    let mut captioning = false;
+    // (window, caret) from the lookup that runs when you press the key, for the caption
+    let (live_caret_tx, live_caret_rx) = unbounded::<(isize, Option<RECT>)>();
     // (window, caret) from the lookup that runs when you let go of the key
     let (caret_tx, caret_rx) = unbounded::<(isize, Option<RECT>)>();
     // the window a finished dictation's words will land in, until they do
@@ -506,6 +551,20 @@ pub fn main() -> Result<()> {
                         let _ = cmd_tx.send(PipelineCmd::Audio(pre_roll));
                     }
                     forwarding = true;
+                    if cfg.live_preview {
+                        caption.begin(overlay.above_physical());
+                        captioning = true;
+                        let target = inject::foreground_hwnd();
+                        let tx = live_caret_tx.clone();
+                        // UIA can take tens of ms; the loop mustn't wait for it
+                        std::thread::spawn(move || {
+                            let caret = match caret::find(target) {
+                                Some(caret::Anchor::Caret(r)) => Some(r),
+                                _ => None,
+                            };
+                            let _ = tx.send((target, caret));
+                        });
+                    }
                 }
                 HotkeyEvent::Press if listens_on_press(paused, forwarding) => {
                     listening = true;
@@ -517,6 +576,8 @@ pub fn main() -> Result<()> {
                     overlay.set(OverlayState::Locked(0.0));
                 }
                 HotkeyEvent::Cancel => {
+                    captioning = false;
+                    caption.hide();
                     awaiting = None;
                     expect_words = false;
                     unheard_pending = false;
@@ -577,6 +638,17 @@ pub fn main() -> Result<()> {
                 _ => {}
             }
         }
+        while let Ok((target, caret)) = live_caret_rx.try_recv() {
+            // a lookup from an earlier press, or you've moved on: keep the caption where it is
+            if captioning && target == inject::foreground_hwnd() {
+                caption.set_caret(caret);
+            }
+        }
+        while let Ok(text) = caption_rx.try_recv() {
+            if captioning {
+                caption.show(text);
+            }
+        }
         while let Ok((target, caret)) = caret_rx.try_recv() {
             caret_pending = false;
             let to = landing_point(awaiting, target, inject::foreground_hwnd(), caret);
@@ -596,6 +668,8 @@ pub fn main() -> Result<()> {
             match m {
                 PipelineMsg::Processing => overlay.set(OverlayState::Processing),
                 PipelineMsg::Done(e) => {
+                    captioning = false;
+                    caption.hide();
                     overlay.set(resting(paused));
                     overlay.set_quiet(false);
                     let heard = !e.cleaned.is_empty();
@@ -630,6 +704,8 @@ pub fn main() -> Result<()> {
                     }
                 }
                 PipelineMsg::Scratch { undo } => {
+                    captioning = false;
+                    caption.hide();
                     overlay.set(resting(paused));
                     overlay.set_quiet(false);
                     awaiting = None;
@@ -643,6 +719,8 @@ pub fn main() -> Result<()> {
                     said_in = say(&mut mote, &overlay, Message::plain(said), overlay.centre_physical(), None);
                 }
                 PipelineMsg::Error(s) => {
+                    captioning = false;
+                    caption.hide();
                     overlay.set(resting(paused));
                     awaiting = None;
                     expect_words = false;

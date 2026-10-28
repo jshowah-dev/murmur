@@ -40,6 +40,20 @@ pub fn parakeet() -> Asset {
     }
 }
 
+/// The folder the live preview's archive unpacks to.
+pub const KROKO_DIR: &str = "sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06";
+
+/// Kroko, a small English streaming model (CC-BY-SA, Banafo) for the live preview.
+pub fn kroko() -> Asset {
+    let file = format!("{KROKO_DIR}.tar.bz2");
+    Asset {
+        url: format!("{BASE}{file}"),
+        file,
+        sha256: "c8676e5ff9ac2a85296e53ee0fd4d5fb1db6770e7a7647166eeafe349ade6834".into(),
+        size: 57_267_600,
+    }
+}
+
 #[derive(Debug)]
 pub enum FetchError {
     Interrupted(String),
@@ -388,6 +402,10 @@ mod tests {
         assert_eq!(p.file, "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2");
         assert_eq!(p.size, 482_468_385);
         assert_eq!(p.sha256, "157c157bc51155e03e37d2466522a3a737dd9c72bb25f36eb18912964161e1ad");
+        let k = kroko();
+        assert_eq!(k.url, "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2");
+        assert_eq!(k.size, 57_267_600);
+        assert_eq!(k.sha256, "c8676e5ff9ac2a85296e53ee0fd4d5fb1db6770e7a7647166eeafe349ade6834");
     }
 
     #[test]

@@ -1,10 +1,11 @@
 #![windows_subsystem = "windows"]
 
-use murmur_lib::{audio, cleanup, config, context, dictionary, history, model_fetch, notice, snippets, stt, update, vad};
+use murmur_lib::{audio, cleanup, config, context, dictionary, history, model_fetch, notice, preview, snippets, stt, update, vad};
 mod about_ui;
 mod app;
 mod audio_out;
 mod autostart;
+mod caption;
 mod caret;
 #[cfg(target_os = "macos")]
 mod child;

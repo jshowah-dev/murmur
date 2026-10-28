@@ -1,6 +1,6 @@
 # Murmur vs FluidVoice: closing the gaps
 
-Date: 2026-10-28. Status: proposal. Nothing is built yet; the open questions at the end are Jeff's to decide.
+Date: 2026-10-28. Status: item 1 (live preview) built 2026-10-28 on Jeff's picks: Kroko, at the caret, on by default. See "Built" under item 1. The rest is a proposal.
 
 ## Why this exists
 
@@ -106,6 +106,26 @@ A local LLM was not benchmarked: the session's network blocks Hugging Face, wher
   - CPU contention with the pause decodes. Overruns are already watched in `murmur.log`, and the preview runs on one thread.
   - A preview word that differs from the pasted word may look like a bug. Mitigation: the final text replaces the caption visibly before the paste.
 - **Scope.** About 3 days. One day for the engine and messages with tests, two for the caption on both platforms.
+
+**Built (2026-10-28).** It differs from the design above in these ways:
+- **Thread.** `src/preview.rs` (lib) runs Kroko on its own thread, one CPU thread, so a Parakeet chunk decode never stalls it.
+- **Commands.** The pipeline sends it `Start`, every `Audio` chunk, `Commit(text)` after each mid-recording chunk decode, and `Stop` on release or cancel.
+- **Commit.** A commit starts a fresh stream. Commits happen during a pause, so the stream boundary falls in silence.
+- **Cleanup.** The caption text is the last two Parakeet chunks plus the live words, run through `cleanup::clean` with no snippets.
+  - Fillers, self-corrections and the dictionary show as they will paste.
+  - Snippet triggers stay as words until release.
+- **Caption window.** `src/caption.rs` (bin) is its own click-through window, reusing the mote's `Surface`.
+  - It sits just below the caret line, found by a caret lookup on key-down (`caret::place`).
+  - It sits above the pill when the app reports no caret.
+  - It shows the last 64 characters, or fewer if they don't fit 560 px.
+  - It hides on Done, Scratch, Error and Cancel.
+- **Model download.** The model downloads in the background on the first launch with `live_preview = true`, into `models/preview/`. That is its own folder, so its unpacking never collides with a speech-model download. It is checksum-pinned in `model_fetch::kroko()`.
+- **Load.** The model loads on the first dictation after the download, and unloads after `idle_unload_minutes`.
+- **Setting.** `live_preview` defaults to true, including for existing config.toml files.
+- **Verified.**
+  - Lib unit tests on Linux, including the preview thread on Kroko's own WAV with a mid-stream commit.
+  - `cargo check` and clippy cross-targeted to Windows (x86_64-pc-windows-msvc) and macOS (aarch64-apple-darwin).
+- **Not yet verified:** running the app on a real Windows PC or Mac. The caption's look, its place at the caret in real apps, and CPU load on the Windows laptop need a live test.
 
 ### 2. Speed
 
