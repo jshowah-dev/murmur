@@ -153,6 +153,7 @@ where
             let mut sent = String::new();
             let mut last_used = Instant::now();
             let mut next: Option<PreviewCmd> = None;
+            let mut stats = Stats::default();
             loop {
                 let cmd = match next.take() {
                     Some(c) => c,
@@ -171,6 +172,7 @@ where
                 match cmd {
                     PreviewCmd::Start => {
                         last_used = Instant::now();
+                        stats = Stats { pressed: Some(last_used), ..Stats::default() };
                         text.reset();
                         sent.clear();
                         if engine.is_none() && !broken && is_installed(&dir) {
@@ -200,7 +202,9 @@ where
                             }
                         }
                         if let (true, Some(e)) = (active, engine.as_mut()) {
+                            let t0 = Instant::now();
                             if let Some(heard) = e.accept(&samples) {
+                                stats.decoded(t0.elapsed(), !heard.is_empty());
                                 text.tail(heard);
                                 emit(&text, &clean, &mut sent, &out);
                             }
@@ -214,6 +218,9 @@ where
                         }
                     }
                     PreviewCmd::Stop => {
+                        if active {
+                            stats.log();
+                        }
                         active = false;
                         last_used = Instant::now();
                     }
@@ -221,6 +228,32 @@ where
             }
         })
         .expect("spawn preview")
+}
+
+/// One dictation's preview timing, logged on Stop: a slow machine shows here as late first words
+/// or decodes slower than the 0.4 s between them.
+#[derive(Default)]
+struct Stats {
+    pressed: Option<Instant>,
+    updates: u32,
+    slowest: Duration,
+    /// time from the key press to the first words
+    first_words: Option<Duration>,
+}
+
+impl Stats {
+    fn decoded(&mut self, took: Duration, words: bool) {
+        self.updates += 1;
+        self.slowest = self.slowest.max(took);
+        if words && self.first_words.is_none() {
+            self.first_words = self.pressed.map(|p| p.elapsed());
+        }
+    }
+
+    fn log(&self) {
+        let first = self.first_words.map_or("none".to_string(), |d| format!("{:.2}s", d.as_secs_f32()));
+        log::info!("preview: {} updates, first words after {first}, slowest {}ms", self.updates, self.slowest.as_millis());
+    }
 }
 
 /// Sends the caption if it changed.

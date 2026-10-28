@@ -49,8 +49,9 @@ const CHUNK_MIN: usize = 16_000 * 20;
 const NATURAL_MAX: usize = 16_000 * 14;
 
 /// A pause this long usually ends a sentence, so decoding there doesn't put a period mid-sentence
-/// the way decoding at every 500 ms VAD pause did.
-const LONG_PAUSE: usize = 16_000;
+/// the way decoding at every 500 ms VAD pause did. 1 s still split a sentence at a short
+/// hesitation (Mac, 2026-10-28).
+const LONG_PAUSE: usize = 16_000 * 16 / 10;
 /// Less speech than this waits for the next pause: a short fragment decodes poorly on its own.
 const PAUSE_MIN: usize = 16_000 * 3;
 
@@ -135,8 +136,11 @@ impl State {
     }
 
     fn start(&mut self) {
+        // first, so the preview model loads while the speech model does, not after it
+        self.tell_preview(PreviewCmd::Start);
         if let Err(e) = self.ensure_loaded() {
             log::error!("load model: {e:#}");
+            self.tell_preview(PreviewCmd::Stop);
             let _ = self.tx.send(PipelineMsg::Error(notice::MODEL_LOAD.into()));
             return;
         }
@@ -145,7 +149,6 @@ impl State {
         self.speech_samples = 0;
         self.texts.clear();
         self.recording = true;
-        self.tell_preview(PreviewCmd::Start);
     }
 
     fn audio(&mut self, chunk: Vec<f32>) {
@@ -315,12 +318,14 @@ mod tests {
 
     #[test]
     fn long_pause_decodes_what_is_buffered() {
-        assert!(pause_ready(16_000 * 5, 16_000));
+        assert!(pause_ready(16_000 * 5, LONG_PAUSE));
     }
 
     #[test]
     fn short_pause_keeps_buffering() {
         assert!(!pause_ready(16_000 * 5, 16_000 * 6 / 10));
+        // a hesitation mid-sentence: decoding here would end the sentence with a period
+        assert!(!pause_ready(16_000 * 5, 16_000 * 12 / 10));
     }
 
     #[test]
