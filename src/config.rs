@@ -42,8 +42,7 @@ pub struct Config {
     /// Spoken words that become symbols ("dot" → "."). A `[symbols]` table in config.toml
     /// replaces the whole list. Empty = symbols stay as words.
     pub symbols: BTreeMap<String, String>,
-    /// Show the words at the caret while you speak, from a small streaming model downloaded on
-    /// first use. What is pasted is unchanged. false = no preview and no download.
+    /// Show the words at the caret while you speak, from a small model downloaded on first use. What is pasted is unchanged. false = no preview and no download.
     pub live_preview: bool,
 }
 
@@ -423,7 +422,7 @@ impl Config {
     /// download never shares an unpacking folder with a speech model's.
     pub fn preview_model_dir(&self) -> PathBuf {
         let models = self.model_dir_path().parent().map(Path::to_path_buf).unwrap_or_default();
-        models.join("preview").join(crate::model_fetch::KROKO_DIR)
+        models.join("preview").join(crate::model_fetch::PREVIEW_DIR)
     }
 
     pub fn vad_model_path(&self) -> PathBuf {
@@ -534,7 +533,7 @@ mod tests {
     #[test]
     fn preview_model_sits_in_its_own_folder_beside_the_speech_model() {
         let c = Config { model_dir: "/m/models/parakeet".into(), ..Config::default() };
-        assert_eq!(c.preview_model_dir(), Path::new("/m/models/preview").join(crate::model_fetch::KROKO_DIR));
+        assert_eq!(c.preview_model_dir(), Path::new("/m/models/preview").join(crate::model_fetch::PREVIEW_DIR));
     }
 
     #[test]

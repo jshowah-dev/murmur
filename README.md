@@ -26,8 +26,8 @@ Offline push-to-talk dictation for Windows and macOS. Hold a key, speak, let go 
 |---|---|---|
 | System | Windows 10 or 11, 64-bit (x64) | macOS 13 or later |
 | Processor | 64-bit (x64). No GPU needed | Apple Silicon (M1 or newer) |
-| Memory | About 1.2 GB for the speech model while it's loaded, and about 150 MB more for the live preview | About 1.2 GB for the speech model while it's loaded, and about 150 MB more for the live preview |
-| Disk | About 770 MB: the app (36 MB), the speech model (661 MB) and the live preview's model (71 MB). 1.2 GB free for the one-time model download | About 770 MB, mostly the speech models. 1.2 GB free for the one-time model download |
+| Memory | About 1.2 GB for the speech model while it's loaded, and about 300 MB more for the live preview | About 1.2 GB for the speech model while it's loaded, and about 300 MB more for the live preview |
+| Disk | About 840 MB: the app (36 MB), the speech model (661 MB) and the live preview's model (137 MB). 1.2 GB free for the one-time model download | About 840 MB, mostly the speech models. 1.2 GB free for the one-time model download |
 
 Recognition runs on your processor, so speed depends on it. On a 4-core 2.8 GHz Intel Xeon, 10 seconds of speech took 1.7 s to transcribe with 4 threads. Murmur transcribes long dictations in chunks while you're still talking, so the wait after you let go stays short. It uses one thread per core, up to 8 (see [`threads`](#configuration)): on that 4-core machine, 8 threads took twice as long. Murmur frees the model's memory after 15 idle minutes (`idle_unload_minutes`).
 
@@ -117,7 +117,7 @@ Settings live in `config.toml` in the config folder (`%APPDATA%\Murmur` on Windo
 | `mute_output` | `true` | Mute the speakers while the key is held |
 | `hands_free_max_minutes` | `5` | Hands-free recordings stop and paste after this long |
 | `idle_unload_minutes` | `15` | Idle minutes before the model is unloaded and the mic closes, to free memory. `0` = never |
-| `live_preview` | `true` | Show your words below the cursor while you speak, from a small streaming model (about 70 MB, downloaded in the background the first time). Above the pill when the app doesn't report a cursor. What's pasted is unchanged. `false` = no preview and no download |
+| `live_preview` | `true` | Show your words below the cursor while you speak, from a small speech model (about 140 MB, downloaded in the background the first time). Above the pill when the app doesn't report a cursor. What's pasted is unchanged. `false` = no preview and no download |
 | `debug_log` | `false` | Also log dictated text. Leave off for privacy |
 
 ### Email formatting
@@ -244,6 +244,6 @@ It builds on:
 - **[Parakeet TDT 0.6B v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2)** by NVIDIA, licensed under [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/). Murmur uses the int8 ONNX conversion published by the sherpa-onnx project. The model is downloaded on first run and is not distributed with Murmur.
 - **[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)** by k2-fsa (Apache-2.0), which bundles [ONNX Runtime](https://github.com/microsoft/onnxruntime) (MIT).
 - **[Silero VAD](https://github.com/snakers4/silero-vad)** (MIT), for voice activity detection.
-- **[Kroko ASR](https://huggingface.co/Banafo/Kroko-ASR)** by Banafo, licensed under [CC-BY-SA](https://creativecommons.org/licenses/by-sa/4.0/), for the live preview. Murmur uses the English streaming model published by the sherpa-onnx project, downloaded on first run and not distributed with Murmur.
+- **[Parakeet TDT-CTC 110M](https://huggingface.co/nvidia/parakeet-tdt_ctc-110m)** by NVIDIA, licensed under [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/), for the live preview. Murmur uses the int8 ONNX conversion published by the sherpa-onnx project, downloaded on first run and not distributed with Murmur.
 
 The [website](https://jshowah-dev.github.io/murmur/) uses the Bricolage Grotesque, Figtree and JetBrains Mono typefaces, licensed under the [SIL Open Font License 1.1](site/fonts/); they are served from this repository.

@@ -144,6 +144,14 @@ fn download_model(models: PathBuf, tx: crossbeam_channel::Sender<UpdateMsg>) {
 /// the preview starts working with the first dictation after the download.
 fn start_preview(cfg: &Config, dict: &Arc<Mutex<Dictionary>>, captions: crossbeam_channel::Sender<String>) -> crossbeam_channel::Sender<murmur_lib::preview::PreviewCmd> {
     let dir = cfg.preview_model_dir();
+    if let Some(folder) = dir.parent() {
+        for old in model_fetch::OLD_PREVIEW_DIRS.iter().map(|d| folder.join(d)).filter(|d| d.exists()) {
+            match std::fs::remove_dir_all(&old) {
+                Ok(()) => log::info!("removed old preview model {}", old.display()),
+                Err(e) => log::warn!("remove old preview model: {e}"),
+            }
+        }
+    }
     if !murmur_lib::preview::is_installed(&dir) {
         if let Some(into) = dir.parent().map(PathBuf::from) {
             std::thread::spawn(move || download_preview(into));
@@ -165,7 +173,7 @@ fn start_preview(cfg: &Config, dict: &Arc<Mutex<Dictionary>>, captions: crossbea
 /// Downloads and unpacks the preview model into `into`. A failure is only logged: dictation
 /// works without it, and the next launch tries again (resuming the `.part`).
 fn download_preview(into: PathBuf) {
-    let asset = model_fetch::kroko();
+    let asset = model_fetch::preview();
     let t0 = Instant::now();
     let result = std::fs::create_dir_all(&into)
         .map_err(model_fetch::FetchError::from)

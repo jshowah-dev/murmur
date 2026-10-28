@@ -19,7 +19,7 @@ const REPO: &str = "https://github.com/jshowah-dev/murmur";
 const LICENSES: [(&str, &str); 6] = [
     ("Murmur", "MIT, Jeff Showah"),
     ("Parakeet TDT 0.6B v2", "CC BY 4.0, NVIDIA"),
-    ("Kroko ASR (live preview)", "CC BY-SA, Banafo"),
+    ("Parakeet TDT-CTC 110M (live preview)", "CC BY 4.0, NVIDIA"),
     ("sherpa-onnx", "Apache 2.0, k2-fsa"),
     ("ONNX Runtime", "MIT, Microsoft"),
     ("Silero VAD", "MIT, Silero Team"),

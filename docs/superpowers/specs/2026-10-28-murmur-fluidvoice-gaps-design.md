@@ -1,6 +1,6 @@
 # Murmur vs FluidVoice: closing the gaps
 
-Date: 2026-10-28. Status: item 1 (live preview) built 2026-10-28 on Jeff's picks: Kroko, at the caret, on by default. See "Built" under item 1. The rest is a proposal.
+Date: 2026-10-28. Status: item 1 (live preview) built 2026-10-28 on Jeff's picks: at the caret, on by default. The model is Parakeet TDT-CTC 110M, re-decoded every 0.4 s; Kroko, the first pick, was replaced the same day (see "Correction" under Benchmarks). See "Built" under item 1. The rest is a proposal.
 
 ## Why this exists
 
@@ -81,6 +81,8 @@ It also runs on Windows, where FluidVoice is a closed beta. Rules are instant an
 4. Nemotron streaming as Murmur's only model would remove the decode wait on release. But its punctuation is weak, and on CPU it costs 4–10× the preview model. Not worth it on Windows.
 5. Parakeet's built-in hotword boosting had no effect in one test: "Showah" was still heard as "Shoal". It needs hotwords written as model tokens. Murmur's phonetic dictionary already covers this, so it is not pursued.
 
+**Correction (2026-10-28, after the Windows laptop test).** The table measured Kroko's total CPU but not how often it updates. Kroko emits text in 1.3 s steps, with its first words after about 1.5 s of speech, so a 1.8 s dictation showed nothing. That step is fixed when the model is exported. The preview now uses Parakeet TDT-CTC 110M instead. It re-decodes the speech since the last pause every 0.4 s of new audio, at most the last 8 s, on 2 threads. On the cloud VM its first words came after 0.9 s of audio, and each update took 60–320 ms. Its text is cased and punctuated, and it adds about 300 MB of memory.
+
 A local LLM was not benchmarked: the session's network blocks Hugging Face, where the models are hosted. Its latency below is an estimate, to be measured in phase 3.
 
 ## The gaps and how to close them
@@ -108,7 +110,7 @@ A local LLM was not benchmarked: the session's network blocks Hugging Face, wher
 - **Scope.** About 3 days. One day for the engine and messages with tests, two for the caption on both platforms.
 
 **Built (2026-10-28).** It differs from the design above in these ways:
-- **Thread.** `src/preview.rs` (lib) runs Kroko on its own thread, one CPU thread, so a Parakeet chunk decode never stalls it.
+- **Thread.** `src/preview.rs` (lib) runs the preview model (Parakeet TDT-CTC 110M since the correction above; Kroko at first) on its own thread, so a final-model chunk decode never stalls it.
 - **Commands.** The pipeline sends it `Start`, every `Audio` chunk, `Commit(text)` after each mid-recording chunk decode, and `Stop` on release or cancel.
 - **Commit.** A commit starts a fresh stream. Commits happen during a pause, so the stream boundary falls in silence.
 - **Cleanup.** The caption text is the last two Parakeet chunks plus the live words, run through `cleanup::clean` with no snippets.
@@ -119,11 +121,12 @@ A local LLM was not benchmarked: the session's network blocks Hugging Face, wher
   - It sits above the pill when the app reports no caret.
   - It shows the last 64 characters, or fewer if they don't fit 560 px.
   - It hides on Done, Scratch, Error and Cancel.
-- **Model download.** The model downloads in the background on the first launch with `live_preview = true`, into `models/preview/`. That is its own folder, so its unpacking never collides with a speech-model download. It is checksum-pinned in `model_fetch::kroko()`.
+- **Model download.** The model downloads in the background on the first launch with `live_preview = true`, into `models/preview/`. That is its own folder, so its unpacking never collides with a speech-model download. It is checksum-pinned in `model_fetch::preview()`. A Kroko folder left by the first build is deleted at startup.
 - **Load.** The model loads on the first dictation after the download, and unloads after `idle_unload_minutes`.
 - **Setting.** `live_preview` defaults to true, including for existing config.toml files.
 - **Verified.**
-  - Lib unit tests on Linux, including the preview thread on Kroko's own WAV with a mid-stream commit.
+  - Lib unit tests on Linux, including the preview thread on the preview model's own WAV with a mid-stream commit.
+  - The Windows laptop, Kroko build (2026-10-28): the model downloaded in 13 s, it loaded in 4.5 s, and the caret was found. No caption appeared, because of the 1.3 s cadence above.
   - `cargo check` and clippy cross-targeted to Windows (x86_64-pc-windows-msvc) and macOS (aarch64-apple-darwin).
 - **Not yet verified:** running the app on a real Windows PC or Mac. The caption's look, its place at the caret in real apps, and CPU load on the Windows laptop need a live test.
 

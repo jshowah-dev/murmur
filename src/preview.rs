@@ -1,11 +1,11 @@
-//! Live preview: a small streaming model transcribes while you speak, so the words can be shown
+//! Live preview: a small model transcribes while you speak, so the words can be shown
 //! at the caret before you let go. It never changes what is pasted: Parakeet still decodes the
 //! dictation, and each chunk Parakeet decodes at a pause replaces the preview's words for that
 //! stretch, so the caption firms up as you go.
 
 use anyhow::{anyhow, Result};
 use crossbeam_channel::{Receiver, RecvTimeoutError};
-use sherpa_onnx::{OnlineRecognizer, OnlineRecognizerConfig, OnlineStream};
+use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig};
 use std::path::{Path, PathBuf};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -21,18 +21,32 @@ pub enum PreviewCmd {
     Stop,
 }
 
-/// The files the streaming model needs. Kroko ships fp32 ONNX files without an `int8` suffix.
-const FILES: [&str; 4] = ["encoder.onnx", "decoder.onnx", "joiner.onnx", "tokens.txt"];
+const FILES: [&str; 4] = ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"];
+
+/// No words before this much audio: a fragment decodes to noise.
+const FIRST: usize = 16_000 / 2;
+/// Decode again after this much new audio. Streaming models were tried first: Kroko only
+/// updates every 1.3 s, so a short dictation showed nothing (Windows laptop, 2026-10-28).
+const EVERY: usize = 16_000 * 4 / 10;
+/// Decode at most the last this-much: the caption shows only the end, and the time a decode
+/// takes grows with its length (8 s took 0.35 s on 2 threads of a 4-core cloud VM).
+const WINDOW: usize = 16_000 * 8;
+/// Recognition threads: the final decode keeps the rest of the cores.
+const THREADS: i32 = 2;
 
 /// The encoder only appears after the final rename in `model_fetch::extract`.
 pub fn is_installed(dir: &Path) -> bool {
     dir.join(FILES[0]).is_file()
 }
 
-/// The streaming recognizer and the stream for the speech since the last commit.
+/// A small Parakeet (110M) that re-reads the speech since the last commit as it grows, the way
+/// FluidVoice previews with offline models. It never streams, so its text is cased and
+/// punctuated like the final.
 pub struct Engine {
-    rec: OnlineRecognizer,
-    stream: OnlineStream,
+    rec: OfflineRecognizer,
+    audio: Vec<f32>,
+    /// `audio.len()` at the last decode
+    decoded_at: usize,
 }
 
 impl Engine {
@@ -43,43 +57,51 @@ impl Engine {
             }
         }
         let p = |f: &str| Some(dir.join(f).to_string_lossy().into_owned());
-        let mut config = OnlineRecognizerConfig::default();
+        let mut config = OfflineRecognizerConfig::default();
         config.model_config.transducer.encoder = p(FILES[0]);
         config.model_config.transducer.decoder = p(FILES[1]);
         config.model_config.transducer.joiner = p(FILES[2]);
         config.model_config.tokens = p(FILES[3]);
-        // one thread: it keeps up at about a twentieth of real time, and leaves the cores to Parakeet
-        config.model_config.num_threads = 1;
+        config.model_config.model_type = Some("nemo_transducer".into());
+        config.model_config.num_threads = THREADS;
         config.model_config.provider = Some("cpu".into());
-        config.decoding_method = Some("greedy_search".into());
-        // the pipeline's VAD decides where speech ends; the preview only follows
-        config.enable_endpoint = false;
         let t0 = Instant::now();
-        let rec = OnlineRecognizer::create(&config).ok_or_else(|| anyhow!("create preview recognizer from {}", dir.display()))?;
+        let rec = OfflineRecognizer::create(&config).ok_or_else(|| anyhow!("create preview recognizer from {}", dir.display()))?;
         log::info!("preview model loaded in {:.2}s", t0.elapsed().as_secs_f32());
-        let stream = rec.create_stream();
-        Ok(Engine { rec, stream })
+        Ok(Engine { rec, audio: Vec::new(), decoded_at: 0 })
     }
 
     /// Starts over on fresh speech.
     fn restart(&mut self) {
-        self.stream = self.rec.create_stream();
+        self.audio.clear();
+        self.decoded_at = 0;
     }
 
-    /// Feeds `samples` and returns the text heard since the last restart.
-    fn accept(&mut self, samples: &[f32]) -> String {
-        self.stream.accept_waveform(16_000, samples);
-        while self.rec.is_ready(&self.stream) {
-            self.rec.decode(&self.stream);
+    /// Adds `samples`; when enough new audio has come in, decodes and returns the text heard
+    /// since the last restart (its last `WINDOW`, for long stretches).
+    fn accept(&mut self, samples: &[f32]) -> Option<String> {
+        self.audio.extend_from_slice(samples);
+        if !due(self.audio.len(), self.decoded_at) {
+            return None;
         }
-        self.rec.get_result(&self.stream).map(|r| r.text.trim().to_string()).unwrap_or_default()
+        self.decoded_at = self.audio.len();
+        let from = self.audio.len().saturating_sub(WINDOW);
+        let stream = self.rec.create_stream();
+        stream.accept_waveform(16_000, &self.audio[from..]);
+        self.rec.decode(&stream);
+        Some(stream.get_result().map(|r| r.text.trim().to_string()).unwrap_or_default())
     }
+}
+
+/// Whether `len` samples, `decoded_at` of them already decoded, call for a decode.
+fn due(len: usize, decoded_at: usize) -> bool {
+    len >= FIRST && len - decoded_at >= EVERY
 }
 
 /// Parakeet chunks kept in the caption's text; each is at least 3 s of speech.
 const RECENT_CHUNKS: usize = 2;
 
-/// The preview's raw text: Parakeet's chunks so far, then the streaming model's words since.
+/// The preview's raw text: Parakeet's chunks so far, then the preview model's words since.
 #[derive(Debug, Default)]
 pub struct Composer {
     committed: Vec<String>,
@@ -178,8 +200,10 @@ where
                             }
                         }
                         if let (true, Some(e)) = (active, engine.as_mut()) {
-                            text.tail(e.accept(&samples));
-                            emit(&text, &clean, &mut sent, &out);
+                            if let Some(heard) = e.accept(&samples) {
+                                text.tail(heard);
+                                emit(&text, &clean, &mut sent, &out);
+                            }
                         }
                     }
                     PreviewCmd::Commit(t) => {
@@ -301,7 +325,15 @@ mod tests {
         assert_eq!(*sent_log.borrow(), vec!["HI".to_string(), "HI THERE".to_string()]);
     }
 
-    /// The streaming model on the speech WAV it ships with: words arrive before the audio ends.
+    #[test]
+    fn the_first_decode_waits_for_half_a_second_then_every_400_ms() {
+        assert!(!due(FIRST - 1, 0));
+        assert!(due(FIRST, 0));
+        assert!(!due(FIRST + EVERY - 1, FIRST));
+        assert!(due(FIRST + EVERY, FIRST));
+    }
+
+    /// The preview model on the speech WAV it ships with: words arrive before the audio ends.
     #[test]
     fn engine_hears_words_while_audio_streams() {
         let dir = Config::default().preview_model_dir();
@@ -312,13 +344,18 @@ mod tests {
         }
         let wave = Wave::read(&wav.to_string_lossy()).expect("read wav");
         let mut e = Engine::load(&dir).unwrap();
-        let samples = wave.samples();
-        let half = samples.len() / 2;
-        let early = e.accept(&samples[..half]);
-        let all = e.accept(&samples[half..]);
-        eprintln!("early={early:?} all={all:?}");
-        assert!(!early.is_empty(), "words by halfway");
-        assert!(all.len() >= early.len());
+        let mut texts = Vec::new();
+        for c in wave.samples().chunks(1_600) {
+            let t0 = Instant::now();
+            if let Some(t) = e.accept(c) {
+                texts.push((e.audio.len() as f32 / 16_000.0, t0.elapsed().as_millis(), t));
+            }
+        }
+        for (at, ms, t) in &texts {
+            eprintln!("{at:.1}s [{ms}ms] {t}");
+        }
+        let (first_at, _, first) = texts.iter().find(|(_, _, t)| !t.is_empty()).expect("words while streaming");
+        assert!(*first_at <= 1.5, "first words by 1.5 s of audio, got {first_at} s: {first}");
     }
 
     /// The preview thread on the WAV its model ships with, fed in 100 ms chunks the way the mic

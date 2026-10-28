@@ -41,16 +41,18 @@ pub fn parakeet() -> Asset {
 }
 
 /// The folder the live preview's archive unpacks to.
-pub const KROKO_DIR: &str = "sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06";
+pub const PREVIEW_DIR: &str = "sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8";
+/// Preview models of earlier builds, removed from the preview folder when found.
+pub const OLD_PREVIEW_DIRS: &[&str] = &["sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06"];
 
-/// Kroko, a small English streaming model (CC-BY-SA, Banafo) for the live preview.
-pub fn kroko() -> Asset {
-    let file = format!("{KROKO_DIR}.tar.bz2");
+/// Parakeet TDT-CTC 110M (CC BY 4.0, NVIDIA), English, for the live preview.
+pub fn preview() -> Asset {
+    let file = format!("{PREVIEW_DIR}.tar.bz2");
     Asset {
         url: format!("{BASE}{file}"),
         file,
-        sha256: "c8676e5ff9ac2a85296e53ee0fd4d5fb1db6770e7a7647166eeafe349ade6834".into(),
-        size: 57_267_600,
+        sha256: "f628312e9fdf8686374cb01a69425c41732529d540860311f16f37cbc32cfe9b".into(),
+        size: 108_035_095,
     }
 }
 
@@ -402,10 +404,10 @@ mod tests {
         assert_eq!(p.file, "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2");
         assert_eq!(p.size, 482_468_385);
         assert_eq!(p.sha256, "157c157bc51155e03e37d2466522a3a737dd9c72bb25f36eb18912964161e1ad");
-        let k = kroko();
-        assert_eq!(k.url, "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2");
-        assert_eq!(k.size, 57_267_600);
-        assert_eq!(k.sha256, "c8676e5ff9ac2a85296e53ee0fd4d5fb1db6770e7a7647166eeafe349ade6834");
+        let k = preview();
+        assert_eq!(k.url, "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8.tar.bz2");
+        assert_eq!(k.size, 108_035_095);
+        assert_eq!(k.sha256, "f628312e9fdf8686374cb01a69425c41732529d540860311f16f37cbc32cfe9b");
     }
 
     #[test]
