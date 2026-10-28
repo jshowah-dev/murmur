@@ -20,7 +20,7 @@ cpal = "0.18"
 tray-icon = "0.26"
 rphonetic = "4"
 similar = "3"
-eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "persistence"] }
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "persistence"] }
 raw-window-handle = "0.6"
 toml = "1"
 serde = { version = "1", features = ["derive"] }
