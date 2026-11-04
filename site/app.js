@@ -69,14 +69,21 @@
   const dot = (x, y, r, a) => { if (a <= 0.01) return; ctx.globalAlpha = Math.min(1, a); ctx.drawImage(sprite, x - r * 4, y - r * 4, r * 8, r * 8); };
 
   function resize() {
-    const r = stage.getBoundingClientRect(), dpr = Math.min(2, devicePixelRatio || 1);
-    W = r.width; H = r.height;
+    const dpr = Math.min(2, devicePixelRatio || 1);
+    W = stage.offsetWidth; H = stage.offsetHeight;
     cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
+  // Where an element sits in the stage, in the stage's own units: offsets, not screen rects, so a
+  // stage turned in 3D still lines up.
+  function box(el) {
+    let x = 0, y = 0;
+    for (let e = el; e && e !== stage; e = e.offsetParent) { x += e.offsetLeft; y += e.offsetTop; }
+    return { x, y, w: el.offsetWidth, h: el.offsetHeight };
+  }
   function rel(el) {
-    const s = stage.getBoundingClientRect(), r = el.getBoundingClientRect();
-    return { x: r.left - s.left + r.width / 2, y: r.top - s.top + r.height / 2, h: r.height };
+    const b = box(el);
+    return { x: b.x + b.w / 2, y: b.y + b.h / 2, h: b.h };
   }
 
   function build(ph, seed) {
@@ -169,10 +176,10 @@
     const b = document.createElement("bdi");
     b.textContent = text;
     caption.appendChild(b);
-    const s = stage.getBoundingClientRect(), c = $("caret").getBoundingClientRect(), w = field.getBoundingClientRect();
-    const left = clamp(c.left - s.left - 12, w.left - s.left + 6, Math.max(0, W - caption.offsetWidth - 6));
+    const c = box($("caret")), w = box(field);
+    const left = clamp(c.x - 12, w.x + 6, Math.max(0, W - caption.offsetWidth - 6));
     caption.style.left = `${left.toFixed(1)}px`;
-    caption.style.top = `${(c.bottom - s.top + 8).toFixed(1)}px`;
+    caption.style.top = `${(c.y + c.h + 8).toFixed(1)}px`;
   }
 
   // ---- Murmur's pill, ported from src/overlay.rs: a plate of small dots lit by the voice, the newest
@@ -295,8 +302,8 @@
   }
   // where the flock pours in, and the edge a mote leaves from, in stage coordinates
   function port() {
-    const s = stage.getBoundingClientRect(), r = scope.getBoundingClientRect();
-    return { x: r.left - s.left + r.width / 2, y: r.top - s.top + look.cy, edge: r.top - s.top + look.edge, h: LIVE[1] };
+    const b = box(pill);
+    return { x: b.x + b.w / 2, y: b.y + look.cy, edge: b.y + look.edge, h: LIVE[1] };
   }
 
   const letterAt = (p, now) => ({ x: p.nx * W + Math.sin(now / 700 + p.ph) * 7, y: p.ny * H + Math.cos(now / 820 + p.ph) * 6 });
@@ -506,6 +513,16 @@
   pill.addEventListener("click", (e) => e.preventDefault());
 
   new IntersectionObserver(([e]) => { visible = e.isIntersecting; sync(); }).observe(stage);
+
+  // the section nav marks the section you're reading
+  const navLinks = [...document.querySelectorAll(".secnav a")];
+  const seen = new Map();
+  const navIO = new IntersectionObserver((entries) => {
+    for (const e of entries) seen.set(e.target.id, e.isIntersecting);
+    const on = navLinks.map((a) => a.hash.slice(1)).find((id) => seen.get(id));
+    navLinks.forEach((a) => a.classList.toggle("on", a.hash.slice(1) === on));
+  }, { rootMargin: "-35% 0px -55% 0px" });
+  navLinks.forEach((a) => { const t = document.getElementById(a.hash.slice(1)); if (t) navIO.observe(t); });
   document.addEventListener("visibilitychange", sync);
   reduce.addEventListener?.("change", () => { run = null; stillShown = false; sync(); });
   addEventListener("resize", resize);

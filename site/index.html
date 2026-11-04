@@ -66,51 +66,77 @@
   </div>
 </section>
 
-<section class="wrap said" id="said" aria-labelledby="said-h">
-  <h2 id="said-h">What you say, and what lands</h2>
+<div class="paper">
+<div class="wrap layout">
+  <nav class="secnav" aria-label="On this page">
+    <a href="#said">What lands</a>
+    <a href="#private">Privacy</a>
+    <a href="#more">The small things</a>
+    <a href="#film">Film</a>
+    <a href="#get">Download</a>
+  </nav>
+  <div class="flow">
+
+<section class="sec said" id="said" aria-labelledby="said-h">
+  <h2 class="statement" id="said-h">What you say, and <em>what lands</em></h2>
   <div class="pairs">
     <article class="pair">
-      <span class="lbl">You said</span>
-      <p class="raw"><s>um</s> pick up milk and <s>uh</s> coffee on the way home</p>
-      <span class="lbl">Murmur typed</span>
-      <p class="out">Pick up milk and coffee on the way home.</p>
-      <p class="why">Fillers go, punctuation and capitals come in.</p>
+      <div><span class="lbl">You said</span><p class="raw"><s>um</s> pick up milk and <s>uh</s> coffee on the way home</p></div>
+      <div><span class="lbl">Murmur typed</span><p class="out">Pick up milk and coffee on the way home.</p><p class="why">Fillers go, punctuation and capitals come in.</p></div>
     </article>
     <article class="pair">
-      <span class="lbl">You said</span>
-      <p class="raw">deploy to <em>cooper netties</em></p>
-      <span class="lbl">Murmur typed</span>
-      <p class="out">Deploy to Kubernetes.</p>
-      <p class="why">Teach it names and jargon once. It matches sound-alikes too, and learns from your fixes.</p>
+      <div><span class="lbl">You said</span><p class="raw">deploy to <em>cooper netties</em></p></div>
+      <div><span class="lbl">Murmur typed</span><p class="out">Deploy to Kubernetes.</p><p class="why">Teach it names and jargon once. It matches sound-alikes too, and learns from your fixes.</p></div>
     </article>
     <article class="pair">
-      <span class="lbl">You said, in Outlook</span>
-      <p class="raw">hi sarah thanks for the update i'll send notes by friday thanks jeff</p>
-      <span class="lbl">Murmur typed</span>
-      <p class="out">Hi Sarah,
+      <div><span class="lbl">You said, in Outlook</span><p class="raw">hi sarah thanks for the update i'll send notes by friday thanks jeff</p></div>
+      <div><span class="lbl">Murmur typed</span><p class="out">Hi Sarah,
 
 Thanks for the update. I'll send notes by Friday.
 
 Thanks,
-Jeff</p>
+Jeff</p></div>
     </article>
   </div>
 </section>
 
-<section class="wrap private" aria-label="Privacy">
-  <p><b>Speech recognition runs on your computer's processor</b>, using NVIDIA's Parakeet model. After the one-time download, Murmur works with Wi-Fi off. Your audio is processed in memory and never saved or sent anywhere.</p>
+<section class="sec private" id="private" aria-labelledby="private-h">
+  <h2 class="statement" id="private-h">Your voice <em>never leaves</em> your computer</h2>
+  <p class="prose"><b>Speech recognition runs on your computer's processor</b>, using NVIDIA's Parakeet model. After the one-time download, Murmur works with Wi-Fi off. Your audio is processed in memory and never saved or sent anywhere.</p>
+  <dl class="stats">
+    <div><dt>0</dt><dd>bytes of your audio sent anywhere</dd></div>
+    <div><dt>590&nbsp;MB</dt><dd>of speech models, downloaded once</dd></div>
+    <div><dt>$0</dt><dd>no account, no subscription, MIT licensed</dd></div>
+  </dl>
 </section>
 
-<section class="wrap film" id="film" aria-labelledby="film-h">
-  <h2 id="film-h">One minute, start to finish</h2>
+<section class="sec more" id="more" aria-labelledby="more-h">
+  <h2 class="statement" id="more-h">And <em>the small things</em></h2>
+  <ul class="feats">
+    <li><b>Hands-free</b><span>Double-tap the key to keep listening without holding it. Tap again to finish.</span></li>
+    <li><b>Fix the last one</b><span>Hold Shift with the key to edit what it just typed. It learns from the fix.</span></li>
+    <li><b>Spoken commands</b><span>Say “new line”, “new paragraph” or “question mark” when you want them.</span></li>
+    <li><b>Snippets</b><span>Say a trigger phrase and a saved block of text goes in instead.</span></li>
+    <li><b>History</b><span>Your last 25 dictations, a click away in the tray or menu bar.</span></li>
+    <li><b>Quiet while you talk</b><span>Your speakers mute while the key is held.</span></li>
+  </ul>
+</section>
+
+<section class="sec film" id="film" aria-labelledby="film-h">
+  <h2 class="statement" id="film-h">One minute, <em>start to finish</em></h2>
   <video controls preload="none" poster="poster.jpg" playsinline>
     <source src="murmur-film.mp4" type="video/mp4">
     <a href="https://github.com/jshowah-dev/murmur#readme">Read how it works on GitHub.</a>
   </video>
 </section>
 
-<section class="wrap get" id="get" aria-labelledby="get-h">
-  <h2 id="get-h">Download</h2>
+  </div>
+</div>
+</div>
+
+<section class="get" id="get" aria-labelledby="get-h">
+  <div class="wrap">
+  <h2 class="statement" id="get-h">Download</h2>
   <div class="plats">
     <article class="plat" id="plat-windows">
       <h3>Windows</h3>
@@ -124,6 +150,7 @@ Jeff</p>
       <a class="btn" href="https://github.com/jshowah-dev/murmur/releases/latest">Get the DMG</a>
       <p class="note">Signed and notarized by Apple. Lives in the menu bar, with its pill hanging from the notch, and updates itself from there.</p>
     </article>
+  </div>
   </div>
 </section>
 
