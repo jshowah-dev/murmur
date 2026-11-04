@@ -332,6 +332,17 @@ pub fn main() -> Result<()> {
         let _ = checker_tx.send(UpdateMsg::Available(r));
     });
     let installed_copy = update::installed_copy();
+    // opening the menu checks too, so a release is found within minutes, not the hour
+    let menu_check = {
+        let tx = up_tx.clone();
+        move || {
+            let tx = tx.clone();
+            update::check_from_menu(move |r| {
+                let _ = tx.send(UpdateMsg::Available(r));
+            });
+        }
+    };
+    tray.on_open(menu_check.clone());
     let mut offer = update::Offer::default();
     // The mic stays open while not paused: a rolling buffer of the last PRE_ROLL_SAMPLES is
     // fed to the pipeline ahead of the live audio on key-down, so the first consonant is not
@@ -356,11 +367,8 @@ pub fn main() -> Result<()> {
     // the pill starts Idle, so set() doesn't paint it: paint now, or a message said before the
     // first frame flies to where it isn't yet (the top-left corner on macOS)
     overlay.refresh_resting();
-    // where the invitation (or the update note) was said, to follow the pill when it moves
+    // where the invitation was said, to follow the pill when it moves
     let mut invite_at = overlay.above_physical();
-    // "an update is available", held above the pill until you dictate: macOS may hide the
-    // notification, leaving nothing on screen but the menu item
-    let mut note: Option<Message> = None;
     if invite_open {
         let from = card_at.unwrap_or_else(|| overlay.centre_physical());
         mote.say_until_dismissed(invite(&cfg.ptt_key_label()), from, Target::Pill(invite_at));
@@ -447,6 +455,7 @@ pub fn main() -> Result<()> {
             }
         }
         if overlay.take_right_click() {
+            menu_check();
             tray.show_menu(overlay.hwnd());
         }
         if let Some(ev) = tray.poll() {
@@ -772,12 +781,10 @@ pub fn main() -> Result<()> {
                     if offer.offers(&tag) && update::should_alert(&tag, update::read_alerted().as_deref()) {
                         tray.notify_update(&format!("Murmur v{tag} is available"), update_balloon_body(installed_copy));
                         update::write_alerted(&tag);
-                        // not over a dictation or another message
+                        // above the pill too, as macOS may hide the notification; not over a dictation
+                        // or another message
                         if !mote.is_active() {
-                            let m = Message::plain(&available(&tag, installed_copy));
-                            invite_at = overlay.above_physical();
-                            mote.say_until_dismissed(m.clone(), overlay.centre_physical(), Target::Pill(invite_at));
-                            note = Some(m);
+                            mote.say(Message::plain(&available(&tag, installed_copy)), overlay.centre_physical(), Target::Pill(overlay.above_physical()));
                         }
                     }
                 }
@@ -820,8 +827,8 @@ pub fn main() -> Result<()> {
         resting_tick = resting_tick.wrapping_add(1);
         if resting_tick % 64 == 0 {
             overlay.refresh_resting();
-            let held = std::iter::once(invite(&cfg.ptt_key_label())).chain(note.clone()).find(|m| mote.is_saying(m));
-            if let Some((m, (from, to))) = held.zip(follow_pill(invite_at, overlay.above_physical())) {
+            let m = invite(&cfg.ptt_key_label());
+            if let Some((from, to)) = follow_pill(invite_at, overlay.above_physical()).filter(|_| mote.is_saying(&m)) {
                 // closed here, then carried over: a fresh flight from where it was
                 mote.dismiss();
                 mote.say_until_dismissed(m, from, Target::Pill(to));

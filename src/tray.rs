@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::atomic::AtomicU32;
 use tray_icon::menu::ContextMenu;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
-use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+use tray_icon::{Icon, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 #[cfg(windows)]
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 #[cfg(windows)]
@@ -177,6 +177,16 @@ impl Tray {
         }
         let ev = MenuEvent::receiver().try_recv().ok()?;
         self.ids.iter().find(|(id, _)| *id == ev.id).map(|(_, e)| *e)
+    }
+
+    /// Runs `f` as a click on the icon opens the menu, before it shows: Murmur's loop waits while
+    /// the menu is open.
+    pub fn on_open(&self, f: impl Fn() + Send + Sync + 'static) {
+        TrayIconEvent::set_event_handler(Some(move |e| {
+            if matches!(e, TrayIconEvent::Click { button_state: MouseButtonState::Down, .. }) {
+                f();
+            }
+        }));
     }
 
     /// Shows the tray menu at the cursor, owned by `hwnd`. The pick arrives through `poll` like a

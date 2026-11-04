@@ -4,7 +4,8 @@ use crate::model_fetch::{Asset, FetchError, Fetcher};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
-use std::time::{Duration, SystemTime};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const RELEASES_PAGE: &str = "https://github.com/jshowah-dev/murmur/releases/latest";
@@ -13,6 +14,8 @@ const FIRST_CHECK: Duration = Duration::from_secs(60);
 // one request an hour is well inside GitHub's 60 an hour for unauthenticated callers
 const CHECK_EVERY: Duration = Duration::from_secs(60 * 60);
 const TICK: Duration = Duration::from_secs(15 * 60);
+// opening the menu checks too, at most this often: 12 an hour stays inside GitHub's limit
+const MENU_CHECK_EVERY: Duration = Duration::from_secs(5 * 60);
 
 /// Inno Setup switches for an unattended update. `/RELAUNCH` is ours: `murmur.iss` starts Murmur
 /// again after a successful install only when it's present.
@@ -270,6 +273,30 @@ pub fn spawn_checker(found: impl Fn(Release) + Send + 'static) {
     });
 }
 
+/// Whether opening the menu should check again, `last` being the last time it did.
+pub fn menu_check_due(last: Option<Instant>, now: Instant) -> bool {
+    last.is_none_or(|t| now.duration_since(t) >= MENU_CHECK_EVERY)
+}
+
+/// Checks in the background when the menu opens, unless it did in the last few minutes,
+/// calling `found` with a newer release.
+pub fn check_from_menu(found: impl FnOnce(Release) + Send + 'static) {
+    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+    {
+        let Ok(mut last) = LAST.lock() else { return };
+        let now = Instant::now();
+        if !menu_check_due(*last, now) {
+            return;
+        }
+        *last = Some(now);
+    }
+    std::thread::spawn(move || match check() {
+        Ok(Some(r)) => found(r),
+        Ok(None) => log::info!("update check (menu): up to date"),
+        Err(e) => log::info!("update check (menu): {e}"),
+    });
+}
+
 pub fn download_dir() -> PathBuf {
     std::env::temp_dir().join("Murmur")
 }
@@ -482,6 +509,15 @@ mod tests {
         assert_eq!(o.start(), None);
         o.failed();
         assert_eq!(o.start(), Some(release("0.4.5")));
+    }
+
+    #[test]
+    fn the_menu_checks_at_most_every_five_minutes() {
+        let t = Instant::now();
+        assert!(menu_check_due(None, t));
+        assert!(!menu_check_due(Some(t), t + Duration::from_secs(60)));
+        assert!(!menu_check_due(Some(t), t + Duration::from_secs(299)));
+        assert!(menu_check_due(Some(t), t + Duration::from_secs(300)));
     }
 
     #[test]
