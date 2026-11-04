@@ -11,8 +11,8 @@
 <meta property="og:description" content="Hold a key, speak, let go. Your voice never leaves your computer.">
 <meta property="og:image" content="https://jshowah-dev.github.io/murmur/poster.jpg">
 <link rel="icon" href="murmur.png">
-<link rel="preload" href="fonts/bricolage-grotesque.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="fonts/figtree.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/fraunces-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/hanken-grotesk.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="motion.css">
 <link rel="stylesheet" href="style.css">
 </head>
@@ -49,14 +49,16 @@
   </div>
 
   <div class="stage-col">
-    <p class="sr-only">Animation: scattered spoken words turn into fireflies, fly into a text window and become a clean sentence.</p>
+    <p class="sr-only">Animation: as you speak, your words show at the cursor and Murmur's pill lights up with your voice. The spoken words turn into fireflies, pour into the pill and land in the text window as a clean sentence.</p>
     <div class="stage" id="stage">
+      <div class="screen" aria-hidden="true"><div class="bar"></div></div>
       <div class="win" aria-hidden="true">
         <div class="win-bar"><span>notes.txt</span><span class="ctl">— ▢ ✕</span></div>
         <div class="field" id="field"><div class="line"><span class="caret" id="caret"></span></div></div>
         <div class="status"><span id="status"></span></div>
       </div>
-      <button class="pill" id="pill" type="button" aria-label="Press and hold to try a dictation"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></button>
+      <div class="caption" id="caption" aria-hidden="true"></div>
+      <button class="pill" id="pill" type="button" aria-label="Press and hold to try a dictation"><canvas id="scope"></canvas></button>
       <canvas id="fx" aria-hidden="true"></canvas>
     </div>
     <p class="try" id="try">Hold <kbd id="key-name">Right Ctrl</kbd> to try it. A scripted demo, no microphone.</p>

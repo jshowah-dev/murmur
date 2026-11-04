@@ -1,5 +1,6 @@
-// The hero: words as they're heard scatter over a window, break into a murmuration of fireflies,
-// pour into Murmur's pill, and one mote flies to the caret and bursts into the clean sentence.
+// The hero: words as they're heard scatter over a window and show at the caret in the live
+// caption, while Murmur's dot-scope pill lights with the voice. Then they break into a murmuration
+// of fireflies, pour into the pill, and one mote flies to the caret and bursts into the clean sentence.
 // Hold your push-to-talk key (or press and hold the pill) to drive it yourself.
 (() => {
   // A reload starts at the top. Browsers otherwise go back to where you were, or to the section a
@@ -16,15 +17,16 @@
 
   const $ = (id) => document.getElementById(id);
   const stage = $("stage"), cv = $("fx"), ctx = cv.getContext("2d");
-  const field = $("field"), statusEl = $("status"), pill = $("pill"), live = $("said-live");
-  const bars = [...pill.querySelectorAll("i")];
+  const field = $("field"), statusEl = $("status"), pill = $("pill"), live = $("said-live"), caption = $("caption");
 
   // The key the real app uses on this machine, and this machine's download first.
   const platform = navigator.userAgentData?.platform || navigator.platform || navigator.userAgent || "";
-  const isMac = /mac/i.test(platform) && !/iphone|ipad/i.test(navigator.userAgent);
+  const os = new URLSearchParams(location.search).get("os"); // ?os=mac or ?os=windows shows the other one
+  const isMac = os ? os === "mac" : /mac/i.test(platform) && !/iphone|ipad/i.test(navigator.userAgent);
   const KEY = isMac ? { codes: ["AltRight", "AltLeft"], name: "Right Option" } : { codes: ["ControlRight", "ControlLeft"], name: "Right Ctrl" };
   $("key-name").textContent = KEY.name;
   $(isMac ? "plat-macos" : "plat-windows").classList.add("you");
+  stage.classList.add(isMac ? "mac" : "pc");
   if (isMac) { $("cta-label").textContent = "Download for Mac"; $("cta-alt").textContent = "Windows"; }
   if (matchMedia("(pointer: coarse)").matches) $("try").textContent = "Press and hold the pill to try it. A scripted demo, no microphone.";
 
@@ -78,15 +80,16 @@
   }
 
   function build(ph, seed) {
-    const rand = rng(seed), parts = [], birds = [];
-    // four clumps over the top of the window: the words as heard, out of order
-    const clumps = [[0.14, 0.24], [0.44, 0.1], [0.3, 0.44], [0.58, 0.32]];
+    const rand = rng(seed), parts = [], birds = [], words = [];
+    // four clumps over the window, below the caption: the words as heard, out of order
+    const clumps = [[0.2, 0.5], [0.46, 0.4], [0.32, 0.66], [0.62, 0.56]];
     ph.raw.split(" ").forEach((w, wi) => {
       const c = clumps[(wi * 3) % 4];
       const filler = FILLERS.has(w), wrong = (ph.wrong || []).includes(w);
+      if (!filler) words.push({ w, k: parts.length });
       for (const ch of w) parts.push({
         ch, filler, wrong,
-        nx: clamp(c[0] + (rand() - 0.5) * 0.3, 0.04, 0.94), ny: clamp(c[1] + (rand() - 0.5) * 0.28, 0.05, 0.62),
+        nx: clamp(c[0] + (rand() - 0.5) * 0.3, 0.15, 0.92), ny: clamp(c[1] + (rand() - 0.5) * 0.24, 0.34, 0.78),
         rot: (rand() - 0.5) * 1.4, size: 15 + rand() * 17, ph: rand() * 6.283,
         fx: (rand() - 0.5) * 2, fy: -0.5 - rand(), d: 0, at: 0,
       });
@@ -101,7 +104,8 @@
         birds.push({ p: k, a, r: Math.sqrt(rand()), z: rand() * 2 - 1, ox: (rand() - 0.5) * 2, oy: (rand() - 0.5) * 2, ph: rand() * 6.283, d: (a / 6.283) * 0.6 });
       }
     });
-    return { parts, birds };
+    words.forEach((w) => { w.at = parts[w.k].at; });
+    return { parts, birds, words, spoke: parts[n - 1].at + 450 };
   }
 
   // the window's lines; the caret sits at the end of the last one
@@ -151,13 +155,148 @@
     run = { i, ph: PHRASES[i], ...build(PHRASES[i], 7 + i * 13), ...timings(manual), t0: now + delay, fired: {}, manual, held: false, line: null };
     sparks = [];
     statusEl.classList.remove("show");
+    setCaption("");
   }
 
-  function setBars(level, now) {
-    bars.forEach((b, i) => {
-      const n = 0.5 + 0.5 * Math.sin(now / 90 + i * 1.7) * Math.sin(now / 237 + i);
-      b.style.transform = `scaleY(${(0.18 + level * (0.25 + 0.75 * n)).toFixed(3)})`;
-    });
+  // The live preview: the words as heard so far, in a caption just under the caret.
+  let captionText = "";
+  function setCaption(text) {
+    if (text === captionText) return;
+    captionText = text;
+    caption.classList.toggle("show", !!text);
+    if (!text) return;
+    caption.innerHTML = "";
+    const b = document.createElement("bdi");
+    b.textContent = text;
+    caption.appendChild(b);
+    const s = stage.getBoundingClientRect(), c = $("caret").getBoundingClientRect(), w = field.getBoundingClientRect();
+    const left = clamp(c.left - s.left - 12, w.left - s.left + 6, Math.max(0, W - caption.offsetWidth - 6));
+    caption.style.left = `${left.toFixed(1)}px`;
+    caption.style.top = `${(c.bottom - s.top + 8).toFixed(1)}px`;
+  }
+
+  // ---- Murmur's pill, ported from src/overlay.rs: a plate of small dots lit by the voice, the newest
+  // moment in the middle and older ones drifting out to both ends, dimming like phosphor; two strands
+  // twisting round each other while it works. On a Mac it hangs from the notch as a black island.
+  const scope = $("scope"), sx = scope.getContext("2d");
+  const PITCH = 4.5, HIST = 32, DRIFT = 36, TAIL = 7, BRAID_TURN = 1.2, BRAID_TWISTS = 1.5;
+  const IDLE = [56, 14], LIVE = [160, 36], EAR = 26, PAD = 4, NOTCH_R = 8, NOTCH = [124, 28];
+  const GREEN = [96, 208, 96], CORE = [228, 255, 228];
+  // the canvas holds the pill at its largest; the plate grows up from the bottom, the island down from the top
+  const BOX = isMac ? [2 * (Math.max(NOTCH[0] / 2 + EAR, LIVE[0] / 2 + PAD) + 6), NOTCH[1] + LIVE[1] + 2 * PAD] : LIVE;
+  const look = { grow: 0, level: 0, history: new Array(HIST).fill(0), scroll: 0, braid: 0, mode: "idle", edge: 0, cy: 0 };
+  const sstep = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0)); return t * t * (3 - 2 * t); };
+  const roundedBox = (x, y, hw, hh, r) => {
+    const qx = Math.abs(x) - hw + r, qy = Math.abs(y) - hh + r;
+    return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r;
+  };
+  const circle = (x, y, r, rgb, a) => { if (a <= 0.004) return; sx.globalAlpha = Math.min(1, a); sx.fillStyle = rgb; sx.beginPath(); sx.arc(x, y, r, 0, 6.2832); sx.fill(); };
+  const mix = (t) => `rgb(${GREEN.map((g, i) => Math.round(lerp(g, CORE[i], t))).join(",")})`;
+  {
+    const dpr = Math.min(2, devicePixelRatio || 1);
+    scope.width = Math.round(BOX[0] * dpr); scope.height = Math.round(BOX[1] * dpr);
+    scope.style.width = `${BOX[0]}px`; scope.style.height = `${BOX[1]}px`;
+    sx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function traceAt(k) {
+    const s = Math.max(0, k - look.scroll), i = Math.floor(s);
+    return i + 1 >= HIST ? 0 : lerp(look.history[i], look.history[i + 1], s - i);
+  }
+  function scopeLight(dx, dy, f) {
+    const k = Math.abs(dx) / PITCH, v = clamp(traceAt(k)), fresh = Math.exp(-k / TAIL), r = Math.abs(dy) / (f.h / 2);
+    return [sstep(v + 0.15, v - 0.15, r) * (0.4 + 0.6 * Math.sqrt(v)) * lerp(0.35, 1, fresh), fresh];
+  }
+  function braidLight(dx, dy, f) {
+    const x = dx / (f.w / 2), amp = (f.h / 2 - PITCH) * Math.sqrt(Math.max(0, 1 - x * x));
+    const th = (x * BRAID_TWISTS - look.braid / BRAID_TURN) * 6.2832;
+    let best = [0, 0];
+    for (const sign of [1, -1]) {
+      const near = (sign * Math.cos(th) + 1) / 2, d = (dy - sign * amp * Math.sin(th)) / (PITCH * 0.75);
+      const p = lerp(0.3, 1, near) * Math.exp(-d * d);
+      if (p > best[0]) best = [p, near];
+    }
+    return best;
+  }
+  function dots(f, alpha, light) {
+    const cols = Math.floor(f.w / PITCH), rows = Math.floor(f.h / PITCH);
+    if (cols <= 0 || rows <= 0 || alpha <= 0) return;
+    const ox = (cols - 1) / 2, oy = (rows - 1) / 2, hw = f.w / 2, hh = f.h / 2;
+    for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
+      const dx = (i - ox) * PITCH, dy = (j - oy) * PITCH;
+      const mask = sstep(1.4, 4.6, -roundedBox(dx, dy, hw, hh, hh));
+      if (mask <= 0) continue;
+      let [power, fresh] = light(dx, dy, f);
+      power = clamp(power, 1e-5, 1);
+      const unlit = 0.07 * (1 - 0.7 * sstep(0.35, 0.95, Math.abs(dy) / hh));
+      const a = unlit + (0.96 - unlit) * Math.pow(power, 0.9 * lerp(1.4, 1, fresh));
+      const r = (0.25 + 0.17 * Math.pow(power, 0.6)) * lerp(1, lerp(0.82, 1, fresh), sstep(0.03, 0.2, power)) * PITCH;
+      const rgb = mix(Math.min(power * power * 1.1, 0.9) * lerp(0.3, 1, fresh)), x = f.cx + dx, y = f.cy + dy;
+      if (power > 0.05) circle(x, y, 2 * r, rgb, 0.132 * power * power * mask * alpha);
+      circle(x, y, r, rgb, a * mask * alpha);
+    }
+  }
+
+  // one step of the pill: follow the voice, scroll the trace, turn the braid, grow or settle
+  function stepPill(dt, voice, grown) {
+    const target = clamp(voice);
+    look.level = target > look.level ? look.level + (target - look.level) * Math.min(1, dt / 40) : Math.max(target, look.level - dt / 400);
+    look.grow = grown ? Math.min(1, look.grow + dt / 150) : Math.max(0, look.grow - dt / 100);
+    look.braid += dt / 1000;
+    if (look.mode === "listen") {
+      look.history[0] = look.level;
+      if (look.history.some((v) => v > 0.001)) {
+        look.scroll += (dt / 1000) * DRIFT / PITCH;
+        const n = Math.min(HIST, Math.floor(look.scroll));
+        for (let i = 0; i < n; i++) { look.history.pop(); look.history.unshift(look.level); }
+        look.scroll -= Math.floor(look.scroll);
+      }
+    }
+  }
+  function setMode(mode) {
+    // a fresh dictation starts from a flat line
+    if (mode === "listen" && look.mode !== "listen") { look.history.fill(0); look.scroll = 0; }
+    look.mode = mode;
+  }
+  function drawPill() {
+    const [bw, bh] = BOX, cx = bw / 2, g = smooth(look.grow);
+    const fw = lerp(IDLE[0], LIVE[0], g), fh = lerp(IDLE[1], LIVE[1], g);
+    let f, rest;
+    sx.clearRect(0, 0, bw, bh);
+    sx.globalAlpha = 1;
+    if (isMac) {
+      // hidden behind the notch at rest, the field drops out below it as it grows
+      const hw = Math.max(NOTCH[0] / 2 + EAR, fw / 2 + PAD), height = NOTCH[1] + (fh + 2 * PAD) * g;
+      const r = Math.min(lerp(NOTCH_R, fh / 2 + PAD, g), height, hw), fil = clamp(height * 0.25, 0, 6);
+      sx.fillStyle = "#000"; sx.beginPath();
+      sx.moveTo(cx - hw - fil, 0); sx.quadraticCurveTo(cx - hw, 0, cx - hw, fil);
+      sx.arcTo(cx - hw, height, cx, height, r); sx.arcTo(cx + hw, height, cx + hw, fil, r);
+      sx.lineTo(cx + hw, fil); sx.quadraticCurveTo(cx + hw, 0, cx + hw + fil, 0);
+      sx.closePath(); sx.fill();
+      const top = NOTCH[1] + PAD * g;
+      f = { cx, cy: top + fh / 2, w: lerp(fw, 2 * (hw - PAD), g), h: fh };
+      rest = [cx + NOTCH[0] / 2 + EAR / 2, NOTCH[1] / 2];
+      look.edge = height;
+    } else {
+      // a dark plate, dim at rest; its bottom edge stays put as it grows
+      const y0 = bh - fh;
+      sx.globalAlpha = lerp(0.62, 0.94, g); sx.fillStyle = "#161616";
+      sx.beginPath(); sx.roundRect(cx - fw / 2, y0, fw, fh, fh / 2); sx.fill();
+      f = { cx, cy: y0 + fh / 2, w: fw, h: fh };
+      rest = [f.cx, f.cy];
+      look.edge = y0;
+    }
+    look.cy = f.cy;
+    circle(rest[0], rest[1], (IDLE[1] - 8) / 2, mix(0), 1 - g);
+    // live content arrives late in the growth, once there's room for it
+    if (look.mode === "listen") dots(f, g * g, scopeLight);
+    else if (look.mode === "braid") dots(f, g * g, braidLight);
+    sx.globalAlpha = 1;
+  }
+  // where the flock pours in, and the edge a mote leaves from, in stage coordinates
+  function port() {
+    const s = stage.getBoundingClientRect(), r = scope.getBoundingClientRect();
+    return { x: r.left - s.left + r.width / 2, y: r.top - s.top + look.cy, edge: r.top - s.top + look.edge, h: LIVE[1] };
   }
 
   const letterAt = (p, now) => ({ x: p.nx * W + Math.sin(now / 700 + p.ph) * 7, y: p.ny * H + Math.cos(now / 820 + p.ph) * 6 });
@@ -178,7 +317,7 @@
 
   // The flock folds, stretches and banks like starlings at dusk, drifting over the window.
   function flockAt(b, s) {
-    const cx = W * (0.46 + 0.15 * Math.sin(s * 1.15 + 0.4)), cy = H * (0.36 + 0.06 * Math.sin(s * 1.9));
+    const cx = W * (0.5 + 0.13 * Math.sin(s * 1.15 + 0.4)), cy = H * (0.5 + 0.06 * Math.sin(s * 1.9));
     let x = b.r * Math.cos(b.a), y = b.r * Math.sin(b.a) * 0.34;
     x += 0.24 * Math.sin(y * 5 + s * 1.6);
     y += 0.13 * Math.sin(x * 3.2 + s * 1.1);
@@ -226,19 +365,28 @@
     }
   }
 
+  let last = 0;
   function frame(now) {
     raf = requestAnimationFrame(frame);
+    const dt = last ? Math.min(64, now - last) : 16;
+    last = now;
     if (!run) return;
     let t = now - run.t0;
     // while your key is held, Murmur keeps hearing
     if (run.held && t > run.T.mess - 16) { run.t0 = now - (run.T.mess - 16); t = run.T.mess - 16; }
     if (t >= run.E.all) { startPhrase((run.i + 1) % PHRASES.length, now, false); t = now - run.t0; }
     ctx.clearRect(0, 0, W, H);
-    if (t < 0) { setBars(0, now); return; }
-    const { T, E, ph } = run, pc = rel(pill);
-
-    setBars(t < E.gather ? smooth(t / 300) : 0, now);
-    pill.classList.toggle("pulse", t > E.morph - 120 && t < E.gather + 80);
+    const { T, E, ph } = run;
+    // listening while the words come (and while your key is held), working until the mote leaves
+    setMode(t < 0 || t >= E.gather ? "idle" : t < T.mess ? "listen" : "braid");
+    const talking = t >= 0 && (run.held || t < run.spoke);
+    const syllables = 0.5 + 0.5 * Math.sin(now / 83) * Math.sin(now / 211 + 1.3);
+    stepPill(dt, talking ? 0.18 + 0.8 * Math.pow(syllables, 1.4) : 0, look.mode !== "idle");
+    drawPill();
+    // the caption goes once the words have broken up into the flock
+    setCaption(t >= 0 && t < T.mess + T.dissolve ? run.words.filter((w) => w.at <= t).map((w) => w.w).join(" ") : "");
+    if (t < 0) return;
+    const pc = port();
 
     ctx.save();
     ctx.globalCompositeOperation = "lighter";
@@ -247,12 +395,12 @@
     // the light gathers on top of the pill
     if (t >= E.morph && t < E.gather) {
       const k = smooth((t - E.morph) / T.gather);
-      dot(pc.x, pc.y - pc.h / 2, 1.5 + 2.7 * k, 0.4 + 0.6 * k);
+      dot(pc.x, pc.edge, 1.5 + 2.7 * k, 0.4 + 0.6 * k);
     }
     // one mote leaves the pill on an upward arc to the caret, as in the app
     if (t >= E.gather && !run.fired.line) { run.line = newLine(); run.fired.line = true; }
     if (t >= E.gather && t < E.burst) {
-      const c = rel($("caret")), from = { x: pc.x, y: pc.y - pc.h / 2 };
+      const c = rel($("caret")), from = { x: pc.x, y: pc.edge };
       const arc = (k) => {
         const dx = c.x - from.x, dy = c.y - from.y, len = Math.max(1, Math.hypot(dx, dy));
         let px = -dy / len, py = dx / len;
@@ -299,7 +447,8 @@
   let stillShown = false, stillNext = 0;
   function still() {
     stillShown = true;
-    pause(); run = null; ctx.clearRect(0, 0, W, H); setBars(0, 0); pill.classList.remove("pulse");
+    pause(); run = null; ctx.clearRect(0, 0, W, H); setCaption("");
+    setMode("idle"); look.grow = 0; drawPill();
     field.innerHTML = PHRASES.map((p, i) => `<div class="line"><span class="t">${p.out}</span>${i === PHRASES.length - 1 ? '<span class="caret" id="caret"></span>' : ""}</div>`).join("");
     showTag(PHRASES[0], false);
   }
@@ -315,7 +464,8 @@
   // Your key takes over: hold it and Murmur listens; let go and the words land.
   function hold() {
     pill.classList.add("held");
-    if (reduce.matches) return;
+    // reduced motion: the pill opens at once and shows a still trace
+    if (reduce.matches) { setMode("listen"); look.history.fill(0.45); look.grow = 1; drawPill(); return; }
     const i = run && !run.fired.burst ? run.i : ((run ? run.i : -1) + 1) % PHRASES.length;
     startPhrase(i, performance.now(), true);
     run.held = true;
@@ -325,6 +475,7 @@
     if (!pill.classList.contains("held")) return;
     pill.classList.remove("held");
     if (reduce.matches) {
+      setMode("idle"); look.grow = 0; drawPill();
       if (cancel) return;
       const ph = PHRASES[stillNext++ % PHRASES.length];
       if (lines().filter(hasText).length >= PHRASES.length) clearField(false);
