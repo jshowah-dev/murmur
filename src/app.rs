@@ -353,6 +353,9 @@ pub fn main() -> Result<()> {
     let mut resting_tick: u32 = 0;
     let mut output_mute = audio_out::OutputMute::new();
     overlay.set(OverlayState::Idle);
+    // the pill starts Idle, so set() doesn't paint it: paint now, or a message said before the
+    // first frame flies to where it isn't yet (the top-left corner on macOS)
+    overlay.refresh_resting();
     // where the invitation was said, to follow the pill when it moves
     let mut invite_at = overlay.above_physical();
     if invite_open {
