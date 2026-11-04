@@ -13,6 +13,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
 
 /// Premultiplied RGBA canvas; shapes are drawn with per-pixel coverage so edges are antialiased.
+#[derive(Clone)]
 pub(crate) struct Canvas {
     w: i32,
     h: i32,
@@ -64,13 +65,32 @@ impl Canvas {
         }
     }
 
+    /// Composite any shape given as a signed distance in units (negative inside) from a point in
+    /// units, in 0xRRGGBB at `alpha`, antialiased over one pixel.
+    pub(crate) fn shape(&mut self, sdf: impl Fn(f32, f32) -> f32, rgb: u32, alpha: f32) {
+        let col = [(rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF].map(|c| c as f32 / 255.0);
+        for py in 0..self.h {
+            for pxl in 0..self.w {
+                let d = sdf((pxl as f32 + 0.5) / self.s, (py as f32 + 0.5) / self.s) * self.s;
+                let a = (0.5 - d).clamp(0.0, 1.0) * alpha;
+                if a > 0.0 {
+                    let dst = &mut self.px[(py * self.w + pxl) as usize];
+                    for i in 0..3 {
+                        dst[i] = col[i] * a + dst[i] * (1.0 - a);
+                    }
+                    dst[3] = a + dst[3] * (1.0 - a);
+                }
+            }
+        }
+    }
+
     /// A soft round light at (cx, cy) fading to nothing at `r`, laid only over what's already
     /// drawn, so it never spills past the shape.
     pub(crate) fn glow(&mut self, cx: f32, cy: f32, r: f32, rgb: u32, alpha: f32) {
         let (cx, cy, r) = (cx * self.s, cy * self.s, r * self.s);
         let col = [(rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF].map(|c| c as f32 / 255.0);
-        for py in 0..self.h {
-            for pxl in 0..self.w {
+        for py in ((cy - r).floor() as i32).max(0)..((cy + r).ceil() as i32).min(self.h) {
+            for pxl in ((cx - r).floor() as i32).max(0)..((cx + r).ceil() as i32).min(self.w) {
                 let d = (pxl as f32 + 0.5 - cx).hypot(py as f32 + 0.5 - cy);
                 if d >= r {
                     continue;
@@ -89,8 +109,8 @@ impl Canvas {
     pub(crate) fn halo(&mut self, cx: f32, cy: f32, r: f32, rgb: u32, alpha: f32) {
         let (cx, cy, r) = (cx * self.s, cy * self.s, r * self.s);
         let col = [(rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF].map(|c| c as f32 / 255.0);
-        for py in 0..self.h {
-            for pxl in 0..self.w {
+        for py in ((cy - r).floor() as i32).max(0)..((cy + r).ceil() as i32).min(self.h) {
+            for pxl in ((cx - r).floor() as i32).max(0)..((cx + r).ceil() as i32).min(self.w) {
                 let d = (pxl as f32 + 0.5 - cx).hypot(py as f32 + 0.5 - cy);
                 if d >= r {
                     continue;

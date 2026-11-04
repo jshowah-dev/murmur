@@ -1,8 +1,9 @@
-//! The pill on macOS: drawn by the shared `Pill` and `render`, shown in a `platform::Panel`
-//! above the Dock. It lets clicks through except while the cursor is over it, where a
-//! right-click opens the menu bar item's menu. No hover hint yet.
+//! The pill on macOS: drawn by the shared `Pill` and `render` as an island hanging from the top
+//! of the screen, out of the notch if there is one, shown in a `platform::Panel`. It lets clicks
+//! through except while the cursor is over it, where a right-click opens the menu bar item's
+//! menu. No hover hint yet.
 
-use super::{nearness, render_scaled, OverlayState, Pill};
+use super::{nearness, render_scaled, Mount, OverlayState, Pill};
 use crate::platform::{self, Panel, Rect};
 use anyhow::Result;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,8 +15,9 @@ pub fn live() -> bool {
     LIVE.load(Ordering::Relaxed)
 }
 
-/// Points between the bottom of the usable screen (the Dock's top) and the pill, as on Windows.
-const LIFT: f32 = 24.0;
+/// Points below the island to a message's anchor, so a tag or caption shown "above" it (as on
+/// Windows, where the pill is at the bottom) lands just under the island instead.
+const BELOW: f32 = 50.0;
 
 pub struct Overlay {
     panel: Panel,
@@ -29,12 +31,12 @@ impl Overlay {
         Ok(Overlay { panel: Panel::new()?, pill: Pill::new(crate::editor_kit::reduced_motion()), at: (0.0, 0.0, 0.0, 0.0) })
     }
 
-    /// Bottom-centre of the screen you're working on; the bottom edge stays put as the pill grows.
+    /// Top-centre of the screen you're working on; the top edge stays put as the island grows.
     fn paint(&mut self) {
-        let ((sx, sy, sw, sh), scale) = platform::work_area();
-        let (w, h, pixels) = render_scaled(self.pill.state, self.pill.look, scale);
+        let ((mid, top), scale, (notch_w, notch_h)) = platform::top_edge();
+        let (w, h, pixels) = render_scaled(self.pill.state, self.pill.look, Mount::Island { notch_w, notch_h }, scale);
         let (w, h) = (w as f32, h as f32);
-        self.at = ((sx + sw / 2.0 - w / 2.0).round(), (sy + sh - h - LIFT).round(), w, h);
+        self.at = ((mid - w / 2.0).round(), top.round(), w, h);
         let size = (crate::canvas::pixels(w as i32, scale) as usize, crate::canvas::pixels(h as i32, scale) as usize);
         self.panel.show(self.at, &pixels, size, scale);
     }
@@ -45,10 +47,11 @@ impl Overlay {
         (x + w / 2.0, y + h / 2.0)
     }
 
-    /// The pill's top centre: where a message goes when there's no caret.
+    /// Where a message goes when there's no caret: shown above this point, it sits just under
+    /// the island.
     pub fn above_physical(&self) -> (f32, f32) {
-        let (x, y, w, _) = self.at;
-        (x + w / 2.0, y)
+        let (x, y, w, h) = self.at;
+        (x + w / 2.0, y + h + BELOW)
     }
 
     /// The view the menu is shown in.
@@ -58,8 +61,12 @@ impl Overlay {
 
     pub fn set(&mut self, state: OverlayState) {
         LIVE.store(!state.is_resting(), Ordering::Relaxed);
+        let level_only = std::mem::discriminant(&state) == std::mem::discriminant(&self.pill.state);
         self.pill.set(state);
-        self.paint();
+        // a new voice level alone waits for the next frame, which eases toward it
+        if !level_only {
+            self.paint();
+        }
     }
 
     /// Re-paint the resting pill so it follows the screen you're working on.

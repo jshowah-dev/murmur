@@ -287,6 +287,28 @@ pub fn work_area() -> ((f32, f32, f32, f32), f32) {
     ((f.origin.x as f32, top as f32, f.size.width as f32, f.size.height as f32), screen.backingScaleFactor() as f32)
 }
 
+/// The top edge of the screen you're working on, for a pill hanging from it: its middle x and
+/// top y (points from the top-left of the main display), pixels per point, and the notch's
+/// width and height in points. Without a notch the edge is the menu bar's bottom and the notch
+/// is (0, 0).
+pub fn top_edge() -> ((f32, f32), f32, (f32, f32)) {
+    let Some(mtm) = MainThreadMarker::new() else { return ((720.0, 25.0), 2.0, (0.0, 0.0)) };
+    let Some(screen) = NSScreen::mainScreen(mtm) else { return ((720.0, 25.0), 2.0, (0.0, 0.0)) };
+    let primary = primary_height(mtm);
+    let f = screen.frame();
+    let mid = (f.origin.x + f.size.width / 2.0) as f32;
+    let scale = screen.backingScaleFactor() as f32;
+    let inset = screen.safeAreaInsets().top;
+    if inset > 0.0 {
+        // the menu bar either side of the notch; what's left between them is the notch
+        let between = f.size.width - screen.auxiliaryTopLeftArea().size.width - screen.auxiliaryTopRightArea().size.width;
+        let top = primary - (f.origin.y + f.size.height);
+        return ((mid, top as f32), scale, (between.max(0.0) as f32, inset as f32));
+    }
+    let v = screen.visibleFrame();
+    ((mid, (primary - (v.origin.y + v.size.height)) as f32), scale, (0.0, 0.0))
+}
+
 /// The mouse pointer, in points from the top-left of the main display.
 pub fn cursor() -> (f32, f32) {
     let Some(mtm) = MainThreadMarker::new() else { return (0.0, 0.0) };
