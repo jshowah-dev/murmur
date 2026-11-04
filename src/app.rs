@@ -767,10 +767,11 @@ pub fn main() -> Result<()> {
                     if offer.available(r) {
                         log::info!("update available: v{tag}");
                         tray.set_update(Some(&update_label(&tag, installed_copy)), true);
-                        if update::should_alert(&tag, update::read_alerted().as_deref()) {
-                            tray.notify_update(&format!("Murmur v{tag} is available"), update_balloon_body(installed_copy));
-                            update::write_alerted(&tag);
-                        }
+                    }
+                    // About may have put it in the tray already, without a balloon
+                    if offer.offers(&tag) && update::should_alert(&tag, update::read_alerted().as_deref()) {
+                        tray.notify_update(&format!("Murmur v{tag} is available"), update_balloon_body(installed_copy));
+                        update::write_alerted(&tag);
                     }
                 }
                 // the installer would force-close the editor and lose unsaved edits

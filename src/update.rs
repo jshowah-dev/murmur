@@ -193,6 +193,11 @@ impl Offer {
         true
     }
 
+    /// `tag` is the release on offer and its download isn't running.
+    pub fn offers(&self, tag: &str) -> bool {
+        !self.busy && self.release.as_ref().is_some_and(|o| o.tag == tag)
+    }
+
     pub fn release(&self) -> Option<&Release> {
         self.release.as_ref()
     }
@@ -477,6 +482,20 @@ mod tests {
         assert_eq!(o.start(), None);
         o.failed();
         assert_eq!(o.start(), Some(release("0.4.5")));
+    }
+
+    #[test]
+    fn a_release_about_already_offered_still_gets_its_balloon() {
+        let mut o = Offer::default();
+        assert!(!o.offers("0.4.5"));
+        // About found it first
+        assert!(o.available(release("0.4.5")));
+        // the hourly check: no menu change, but it's on offer, so the balloon may show
+        assert!(!o.available(release("0.4.5")));
+        assert!(o.offers("0.4.5"));
+        assert!(!o.offers("0.4.4"));
+        o.start();
+        assert!(!o.offers("0.4.5"));
     }
 
     #[test]
