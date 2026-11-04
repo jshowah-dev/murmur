@@ -1,3 +1,4 @@
+use super::restore::{Board, Restorer, RESTORE_AFTER};
 use crate::history::{InjectMethod, InjectRecord};
 use anyhow::{anyhow, Result};
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
@@ -43,21 +44,33 @@ fn record(pid: isize) -> InjectRecord {
     InjectRecord { hwnd: pid, at: Instant::now(), method: InjectMethod::Paste }
 }
 
-/// Save clipboard text, set ours, Cmd+V, restore. Without the Accessibility permission macOS drops
-/// the Cmd+V, so the text is left on the clipboard for you to paste.
+struct Pasteboard;
+
+impl Board for Pasteboard {
+    fn read(&self) -> Option<String> {
+        read_text()
+    }
+    fn write(&self, text: &str) -> Result<()> {
+        set_clipboard_text(text)
+    }
+    fn count(&self) -> i64 {
+        NSPasteboard::generalPasteboard().changeCount() as i64
+    }
+}
+
+static CLIPBOARD: Restorer<Pasteboard> = Restorer::new(Pasteboard, RESTORE_AFTER);
+
+/// Save clipboard text, set ours, Cmd+V, restore a little later. Without the Accessibility
+/// permission macOS drops the Cmd+V, so the text is left on the clipboard for you to paste.
 pub fn paste(text: &str) -> Result<InjectRecord> {
-    let saved = read_text();
-    set_clipboard_text(text)?;
+    let swapped = CLIPBOARD.put(text)?;
     if !crate::platform::accessibility_trusted(false) {
         return Err(anyhow!("Accessibility isn't allowed for Murmur, so the text was left on the clipboard"));
     }
     sleep(Duration::from_millis(30));
     let pid = foreground_hwnd();
     command(KEY_V);
-    sleep(Duration::from_millis(150));
-    if let Some(prev) = saved {
-        let _ = set_clipboard_text(&prev);
-    }
+    CLIPBOARD.restore_later(swapped);
     Ok(record(pid))
 }
 

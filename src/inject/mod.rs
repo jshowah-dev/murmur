@@ -1,5 +1,7 @@
 //! Puts a finished dictation into the app in front.
 
+mod restore;
+
 #[cfg(windows)]
 mod win;
 #[cfg(windows)]

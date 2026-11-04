@@ -1,10 +1,12 @@
+use super::restore::{Board, Restorer, RESTORE_AFTER};
 use crate::history::{InjectMethod, InjectRecord};
 use anyhow::{anyhow, Result};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard, SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardSequenceNumber, IsClipboardFormatAvailable,
+    OpenClipboard, SetClipboardData,
 };
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -138,42 +140,39 @@ fn record(hwnd: isize, method: InjectMethod) -> InjectRecord {
     InjectRecord { hwnd, at: Instant::now(), method }
 }
 
-/// Save clipboard text, set ours, Ctrl+V, restore. Types the text in when the clipboard can't be opened or written.
+struct SystemClipboard;
+
+impl Board for SystemClipboard {
+    fn read(&self) -> Option<String> {
+        let _c = Clipboard::open().ok()?;
+        read_text_locked()
+    }
+    fn write(&self, text: &str) -> Result<()> {
+        set_clipboard_text(text)
+    }
+    fn count(&self) -> i64 {
+        unsafe { GetClipboardSequenceNumber() as i64 }
+    }
+}
+
+static CLIPBOARD: Restorer<SystemClipboard> = Restorer::new(SystemClipboard, RESTORE_AFTER);
+
+/// Save clipboard text, set ours, Ctrl+V, restore a little later. Types the text in when the
+/// clipboard can't be opened or written.
 pub fn paste(text: &str) -> Result<InjectRecord> {
-    // None: the clipboard can't be used, so type the text in instead
-    let saved = match Clipboard::open() {
-        Ok(_c) => {
-            let saved = read_text_locked();
-            match write_text_locked(text) {
-                Ok(()) => Some(saved),
-                Err(e) => {
-                    log::warn!("{e}; falling back to unicode typing");
-                    if let Some(prev) = &saved {
-                        let _ = write_text_locked(prev);
-                    }
-                    None
-                }
-            }
-        }
+    let swapped = match CLIPBOARD.put(text) {
+        Ok(s) => s,
         Err(e) => {
             log::warn!("{e}; falling back to unicode typing");
-            None
+            let hwnd = foreground_hwnd();
+            type_unicode(text);
+            return Ok(record(hwnd, InjectMethod::Typed));
         }
-    };
-    let Some(saved) = saved else {
-        let hwnd = foreground_hwnd();
-        type_unicode(text);
-        return Ok(record(hwnd, InjectMethod::Typed));
     };
     sleep(Duration::from_millis(30));
     let hwnd = foreground_hwnd();
     chord(VK_V);
-    sleep(Duration::from_millis(150));
-    if let Some(prev) = saved {
-        if let Ok(_c) = Clipboard::open() {
-            let _ = write_text_locked(&prev);
-        }
-    }
+    CLIPBOARD.restore_later(swapped);
     Ok(record(hwnd, InjectMethod::Paste))
 }
 
