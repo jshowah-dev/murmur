@@ -75,6 +75,8 @@ fn open_editor(tray: &Tray, tab: editor::Tab) {
 /// Results from the update checker and download threads.
 enum UpdateMsg {
     Available(update::Release),
+    /// the update's download, percent
+    UpdateProgress(u8),
     Downloaded(PathBuf),
     Failed(String),
     ModelProgress(u8),
@@ -325,6 +327,8 @@ pub fn main() -> Result<()> {
     let mut unheard_pending = false;
     // the window a caret message is about; leaving it closes the message
     let mut said_in: Option<isize> = None;
+    // a downloaded update and when to install it
+    let mut install_at: Option<(PathBuf, Instant)> = None;
     let tray = Tray::create(&cfg.ptt_key_label())?;
     let (up_tx, up_rx) = unbounded::<UpdateMsg>();
     let checker_tx = up_tx.clone();
@@ -528,7 +532,8 @@ pub fn main() -> Result<()> {
                     if let (Some(tag), true) = (tag, start_update(&mut offer, &tray, &up_tx)) {
                         // the balloon or the menu is gone: say something's happening
                         tray.notify(&format!("Updating to Murmur v{tag}"), "Murmur restarts when it's installed.");
-                        said_in = say(&mut mote, &overlay, Message::plain(&updating(&tag)), overlay.centre_physical(), None);
+                        mote.say_progress(Message::plain(&updating(&tag, 0)), overlay.centre_physical(), Target::Pill(overlay.above_physical()));
+                        said_in = None;
                     }
                 }
                 TrayEvent::DownloadModel => {
@@ -549,7 +554,8 @@ pub fn main() -> Result<()> {
                         if clicked && start_update(&mut offer, &tray, &up_tx) {
                             // the window is gone and the tray menu is closed: say something's happening
                             tray.notify(&format!("Updating to Murmur v{tag}"), "Murmur restarts when it's installed.");
-                            said_in = say(&mut mote, &overlay, Message::plain(&updating(&tag)), overlay.centre_physical(), None);
+                            mote.say_progress(Message::plain(&updating(&tag, 0)), overlay.centre_physical(), Target::Pill(overlay.above_physical()));
+                            said_in = None;
                         }
                     }
                     while hk_rx.try_recv().is_ok() {}
@@ -788,25 +794,29 @@ pub fn main() -> Result<()> {
                         }
                     }
                 }
+                UpdateMsg::UpdateProgress(p) => {
+                    if let Some(tag) = offer.release().map(|r| r.tag.clone()) {
+                        mote.progress(Message::plain(&updating(&tag, p)), p as f32 / 100.0);
+                    }
+                }
                 // the installer would force-close the editor and lose unsaved edits
                 UpdateMsg::Downloaded(_) if editor::is_open() => {
+                    if mote.is_filling() {
+                        mote.dismiss();
+                    }
                     offer.failed();
                     restore_update_item(&tray, &offer, installed_copy);
                     tray.notify("Close the Dictionary & Snippets window to update", "Then choose Update again.");
                 }
-                UpdateMsg::Downloaded(path) => match update::install(&path) {
-                    Ok(()) => {
-                        log::info!("installing {}; quitting", path.display());
-                        break 'main;
-                    }
-                    Err(e) => {
-                        log::error!("start installer: {e}");
-                        offer.failed();
-                        restore_update_item(&tray, &offer, installed_copy);
-                        tray.notify("Update failed", &format!("Couldn't start the installer: {e}"));
-                    }
-                },
+                UpdateMsg::Downloaded(path) => {
+                    // the note reads Restarting… for a beat first; the install blocks the loop
+                    let beat = if mote.progress(Message::plain(RESTARTING), 1.0) { motion::scaled(motion::duration::CONFIRM) } else { Duration::ZERO };
+                    install_at = Some((path, Instant::now() + beat));
+                }
                 UpdateMsg::Failed(why) => {
+                    if mote.is_filling() {
+                        mote.dismiss();
+                    }
                     log::error!("update download: {why}");
                     offer.failed();
                     restore_update_item(&tray, &offer, installed_copy);
@@ -821,6 +831,23 @@ pub fn main() -> Result<()> {
                 UpdateMsg::ModelFailed(why) => {
                     tray.set_model(Some(&model_offer_label()), true);
                     tray.notify("Speech model download failed", &why);
+                }
+            }
+        }
+        if let Some((path, _)) = install_at.take_if(|(_, at)| Instant::now() >= *at) {
+            match update::install(&path) {
+                Ok(()) => {
+                    log::info!("installing {}; quitting", path.display());
+                    break 'main;
+                }
+                Err(e) => {
+                    log::error!("start installer: {e}");
+                    if mote.is_filling() {
+                        mote.dismiss();
+                    }
+                    offer.failed();
+                    restore_update_item(&tray, &offer, installed_copy);
+                    tray.notify("Update failed", &format!("Couldn't start the installer: {e}"));
                 }
             }
         }
@@ -926,9 +953,12 @@ fn available(tag: &str, installed: bool) -> String {
     }
 }
 
-fn updating(tag: &str) -> String {
-    format!("Updating to Murmur v{tag}. Murmur restarts when it's installed.")
+/// The note above the pill while an update downloads; it fills as the percent rises.
+fn updating(tag: &str, percent: u8) -> String {
+    format!("Updating to Murmur v{tag} · {percent}%")
 }
+
+const RESTARTING: &str = "Restarting…";
 
 /// The mote says `m`, flying from `from` to `to`, or to just above the pill with no caret.
 /// Returns the window a caret message is about, for `said_in`.
@@ -1007,7 +1037,15 @@ fn start_update(offer: &mut update::Offer, tray: &Tray, tx: &crossbeam_channel::
     tray.set_update(Some("Downloading update…"), false);
     let tx = tx.clone();
     std::thread::spawn(move || {
-        let msg = match update::download(&r, &update::download_dir()) {
+        let mut last = u8::MAX;
+        let progress_tx = tx.clone();
+        let msg = match update::download(&r, &update::download_dir(), &mut |n| {
+            let p = percent(n, r.setup_size);
+            if p != last {
+                last = p;
+                let _ = progress_tx.send(UpdateMsg::UpdateProgress(p));
+            }
+        }) {
             Ok(path) => UpdateMsg::Downloaded(path),
             Err(e) => UpdateMsg::Failed(update::failure_text(&e)),
         };

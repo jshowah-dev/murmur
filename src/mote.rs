@@ -106,6 +106,26 @@ pub(crate) struct Sprite {
     pub radius: f32,
     pub open: f32,
     pub words: f32,
+    /// how much of an open capsule is filled from the left (0..=1), for a note with progress
+    pub fill: Option<f32>,
+}
+
+/// A progress note's fill, easing from `from` to `to` since `start`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Fill {
+    from: f32,
+    to: f32,
+    start: Instant,
+}
+
+impl Fill {
+    fn at(&self, now: Instant, reduced: bool) -> f32 {
+        if reduced {
+            return self.to;
+        }
+        let t = (now.saturating_duration_since(self.start).as_secs_f32() / motion::scaled(motion::duration::FILL).as_secs_f32()).min(1.0);
+        self.from + (self.to - self.from) * ease(motion::easing::STANDARD, t)
+    }
 }
 
 /// What a flight does on arrival.
@@ -136,11 +156,13 @@ pub(crate) struct Flight {
     centred: bool,
     /// the message holds until dismissed instead of for its read time
     sticky: bool,
+    /// the open message shows progress
+    fill: Option<Fill>,
 }
 
 impl Flight {
     pub(crate) fn new(reduced: bool) -> Flight {
-        Flight { phase: Phase::Hidden, reduced, message: None, centred: false, sticky: false }
+        Flight { phase: Phase::Hidden, reduced, message: None, centred: false, sticky: false, fill: None }
     }
 
     /// Starts a flight from the pill to the caret, replacing whatever was showing.
@@ -164,6 +186,7 @@ impl Flight {
     /// one flies from `from` to the target and says it there.
     pub(crate) fn say(&mut self, m: Message, from: Pt, to: Target, now: Instant) {
         self.sticky = false;
+        self.fill = None;
         self.message = Some(m);
         self.phase = match self.phase {
             Phase::Flying { from, to, start, then } => {
@@ -194,6 +217,26 @@ impl Flight {
     pub(crate) fn say_until_dismissed(&mut self, m: Message, from: Pt, to: Target, now: Instant) {
         self.say(m, from, to, now);
         self.sticky = true;
+    }
+
+    /// Says `m` with an empty fill behind it; it stays open while `progress` moves the fill on.
+    pub(crate) fn say_progress(&mut self, m: Message, from: Pt, to: Target, now: Instant) {
+        self.say_until_dismissed(m, from, to, now);
+        self.fill = Some(Fill { from: 0.0, to: 0.0, start: now });
+    }
+
+    /// Whether a progress note is on its way or open.
+    pub(crate) fn is_filling(&self) -> bool {
+        self.fill.is_some() && matches!(self.phase, Phase::Flying { then: Then::Say, .. } | Phase::Speaking { .. })
+    }
+
+    /// Moves an open progress note's fill on to `to` (0..=1) and its words to `m`, in place.
+    /// False, changing nothing, when no progress note is showing.
+    pub(crate) fn progress(&mut self, m: Message, to: f32, now: Instant) -> bool {
+        let Some(f) = self.fill.filter(|_| self.is_filling()) else { return false };
+        self.fill = Some(Fill { from: f.at(now, self.reduced), to: to.clamp(0.0, 1.0), start: now });
+        self.message = Some(m);
+        true
     }
 
     /// Closes an open message early, from however far it has opened.
@@ -261,6 +304,11 @@ impl Flight {
 
     /// The frame at `now`, moving on to the next phase when one ends; None once gone.
     pub(crate) fn sprite(&mut self, now: Instant) -> Option<Sprite> {
+        let fill = self.fill.map(|f| f.at(now, self.reduced));
+        self.step(now).map(|s| Sprite { fill, ..s })
+    }
+
+    fn step(&mut self, now: Instant) -> Option<Sprite> {
         let secs = |since: Instant, d: Duration| now.saturating_duration_since(since).as_secs_f32() / motion::scaled(d).as_secs_f32();
         let phase = self.phase;
         match phase {
@@ -274,9 +322,9 @@ impl Flight {
                         Then::Dissolve => Phase::Leaving { at: to, start: landed + motion::scaled(DWELL), alpha: 1.0, grow: true },
                         Then::Say => Phase::Speaking { at: to, start: landed },
                     };
-                    return self.sprite(now);
+                    return self.step(now);
                 }
-                Some(Sprite { at: arc_point(from, to, ease(motion::easing::ENTER, t)), alpha: 1.0, radius: 1.0, open: 0.0, words: 0.0 })
+                Some(Sprite { at: arc_point(from, to, ease(motion::easing::ENTER, t)), alpha: 1.0, radius: 1.0, open: 0.0, words: 0.0, fill: None })
             }
             Phase::Speaking { at, start } => {
                 let unfurl = if self.reduced { Duration::ZERO } else { motion::scaled(motion::duration::ENTER) };
@@ -284,26 +332,26 @@ impl Flight {
                 let el = now.saturating_duration_since(start);
                 if !self.sticky && el >= unfurl + hold {
                     self.phase = if self.reduced { Phase::Hidden } else { Phase::Furling { at, start: start + unfurl + hold, open: 1.0 } };
-                    return self.sprite(now);
+                    return self.step(now);
                 }
                 let open = if unfurl.is_zero() { 1.0 } else { ease(motion::easing::ENTER, (el.as_secs_f32() / unfurl.as_secs_f32()).min(1.0)) };
-                Some(Sprite { at, alpha: 1.0, radius: 1.0, open, words: words_for(open) })
+                Some(Sprite { at, alpha: 1.0, radius: 1.0, open, words: words_for(open), fill: None })
             }
             Phase::Furling { at, start, open } => {
                 let t = secs(start, motion::duration::EXIT);
                 if t >= 1.0 {
                     self.phase = Phase::Leaving { at, start: start + motion::scaled(motion::duration::EXIT), alpha: 1.0, grow: true };
-                    return self.sprite(now);
+                    return self.step(now);
                 }
                 // the words go in the first half; the capsule pulls back over the whole furl
                 let words = (1.0 - 2.0 * t).max(0.0).min(words_for(open));
-                Some(Sprite { at, alpha: 1.0, radius: 1.0, open: open * (1.0 - ease(motion::easing::EXIT, t)), words })
+                Some(Sprite { at, alpha: 1.0, radius: 1.0, open: open * (1.0 - ease(motion::easing::EXIT, t)), words, fill: None })
             }
             Phase::Settled { at, since } => {
                 // breathes slowly while the words are on their way
                 let breath = (secs(since, motion::duration::LOCATE) * std::f32::consts::TAU).cos();
                 let alpha = if self.reduced { 1.0 } else { 0.85 + 0.15 * breath };
-                Some(Sprite { at, alpha, radius: 1.0, open: 0.0, words: 0.0 })
+                Some(Sprite { at, alpha, radius: 1.0, open: 0.0, words: 0.0, fill: None })
             }
             Phase::Leaving { at, start, alpha, grow } => {
                 let t = secs(start, motion::duration::EXIT);
@@ -312,7 +360,7 @@ impl Flight {
                     return None;
                 }
                 let e = ease(motion::easing::EXIT, t);
-                Some(Sprite { at, alpha: alpha * (1.0 - e), radius: if grow { 1.0 + 0.6 * e } else { 1.0 }, open: 0.0, words: 0.0 })
+                Some(Sprite { at, alpha: alpha * (1.0 - e), radius: if grow { 1.0 + 0.6 * e } else { 1.0 }, open: 0.0, words: 0.0, fill: None })
             }
         }
     }
@@ -393,6 +441,12 @@ fn fit(x: i32, y: i32, w: i32, h: i32, work: RECT) -> (i32, i32) {
     (x.clamp(work.left, (work.right - w).max(work.left)), y.clamp(work.top, (work.bottom - h).max(work.top)))
 }
 
+/// A progress note's fill: the mote's green, dark enough that the light text on it stays AA
+/// (#EEEEEE on it is 5.7:1).
+const FILL_GREEN: u32 = 0x1E6B2E;
+/// The light on the fill's leading edge; above 0.15 the text crossing it drops under 4.5:1.
+const EDGE_LIGHT: f32 = 0.15;
+
 /// A frame of a speaking mote, `w`×`h`, with the capsule centred at `centre`.
 #[allow(clippy::too_many_arguments)]
 fn render_tag(s: &Sprite, m: &Message, b: &TagBox, centre: Pt, w: i32, h: i32, font: i32, text: (i32, i32), scale: f32) -> Vec<u32> {
@@ -403,6 +457,20 @@ fn render_tag(s: &Sprite, m: &Message, b: &TagBox, centre: Pt, w: i32, h: i32, f
         c.halo(cx, cy, 12.0 * s.radius, 0x60D060, 0.5 * s.alpha * dot);
     }
     c.capsule(cx - b.w / 2.0, cy - b.h / 2.0, b.w, b.h, 0x202020, 0.9 * s.alpha);
+    if let Some(f) = s.fill.filter(|f| *f > 0.0) {
+        // the same capsule in green, cut off at the fill's edge, with the mote's light on that edge
+        let (left, edge) = (cx - b.w / 2.0, cx - b.w / 2.0 + b.w * f);
+        let r = b.w.min(b.h) / 2.0;
+        let (hx, hy) = (b.w / 2.0 - r, b.h / 2.0 - r);
+        let capsule = move |x: f32, y: f32| {
+            let (qx, qy) = ((x - cx).abs() - hx, (y - cy).abs() - hy);
+            qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - r
+        };
+        c.shape(|x, y| capsule(x, y).max(x - edge), FILL_GREEN, 0.95 * s.alpha * s.open);
+        if f < 1.0 && edge > left {
+            c.glow(edge, cy, b.h, 0x60D060, EDGE_LIGHT * s.alpha * s.open);
+        }
+    }
     if dot > 0.0 {
         let core = DOT * s.radius;
         c.capsule(cx - core / 2.0, cy - core / 2.0, core, core, 0xE8FFE8, s.alpha * dot);
@@ -576,6 +644,25 @@ impl Mote {
     pub(crate) fn say_until_dismissed(&mut self, m: Message, from: Pt, to: Target) {
         self.layout = None;
         self.flight.say_until_dismissed(m, self.px(from), self.target(to), Instant::now());
+    }
+
+    pub(crate) fn say_progress(&mut self, m: Message, from: Pt, to: Target) {
+        self.layout = None;
+        self.flight.say_progress(m, self.px(from), self.target(to), Instant::now());
+    }
+
+    /// Moves the open progress note on; false when none is showing.
+    pub(crate) fn progress(&mut self, m: Message, to: f32) -> bool {
+        let moved = self.flight.progress(m, to, Instant::now());
+        if moved {
+            // new words, maybe a new width
+            self.layout = None;
+        }
+        moved
+    }
+
+    pub(crate) fn is_filling(&self) -> bool {
+        self.flight.is_filling()
     }
 
     pub(crate) fn dismiss(&mut self) {
@@ -752,13 +839,13 @@ mod tests {
 
     #[test]
     fn mote_is_a_bright_core_in_a_soft_halo() {
-        let px = render(&Sprite { at: (0.0, 0.0), alpha: 1.0, radius: 1.0, open: 0.0, words: 0.0 });
+        let px = render(&Sprite { at: (0.0, 0.0), alpha: 1.0, radius: 1.0, open: 0.0, words: 0.0, fill: None });
         let mid = (S / 2 * S + S / 2) as usize;
         assert!(px[mid] >> 24 > 0xE0, "core opaque: {:08X}", px[mid]);
         assert_eq!(px[0], 0, "corner clear");
-        let dim = render(&Sprite { at: (0.0, 0.0), alpha: 0.5, radius: 1.0, open: 0.0, words: 0.0 });
+        let dim = render(&Sprite { at: (0.0, 0.0), alpha: 0.5, radius: 1.0, open: 0.0, words: 0.0, fill: None });
         assert!(dim[mid] >> 24 < px[mid] >> 24);
-        let big = render(&Sprite { at: (0.0, 0.0), alpha: 1.0, radius: 1.6, open: 0.0, words: 0.0 });
+        let big = render(&Sprite { at: (0.0, 0.0), alpha: 1.0, radius: 1.6, open: 0.0, words: 0.0, fill: None });
         let ring = (S / 2 * S + S / 2 + 9) as usize;
         assert!(big[ring] >> 24 > px[ring] >> 24, "dissolving spreads out");
     }
@@ -882,7 +969,7 @@ mod tests {
 
     #[test]
     fn an_identical_frame_is_skipped_until_something_changes() {
-        let s = Sprite { at: CARET, alpha: 1.0, radius: 1.0, open: 1.0, words: 1.0 };
+        let s = Sprite { at: CARET, alpha: 1.0, radius: 1.0, open: 1.0, words: 1.0, fill: None };
         let mut last = None;
         assert!(changed(&mut last, &s, 10, 20, 100, 40), "first frame always draws");
         assert!(!changed(&mut last, &s, 10, 20, 100, 40), "the held frame repeats");
@@ -1047,5 +1134,63 @@ mod tests {
         let second = RECT { left: 1920, top: 0, right: 3840, bottom: 1040 };
         assert_eq!(fit(1900, 500, 200, 40, second).0, 1920);
     }
-}
 
+    #[test]
+    fn a_progress_note_eases_its_fill_and_stays_open() {
+        let t0 = Instant::now();
+        let mut f = Flight::new(false);
+        f.say_progress(Message::plain("Updating · 0%"), PILL, Target::Pill(PILL), t0);
+        assert!(f.is_filling());
+        let open = t0 + FLIGHT + motion::duration::ENTER;
+        assert_eq!(f.sprite(open).unwrap().fill, Some(0.0));
+        assert!(f.progress(Message::plain("Updating · 50%"), 0.5, open));
+        let mid = f.sprite(open + motion::duration::FILL / 2).unwrap().fill.unwrap();
+        assert!(mid > 0.0 && mid < 0.5, "eases toward 50%: {mid}");
+        assert_eq!(f.sprite(open + motion::duration::FILL).unwrap().fill, Some(0.5));
+        // far past its read time it's still open
+        let s = f.sprite(open + ms(60_000)).unwrap();
+        assert_eq!((s.open, s.fill), (1.0, Some(0.5)));
+        assert_eq!(f.message(), Some(&Message::plain("Updating · 50%")));
+    }
+
+    #[test]
+    fn reduced_motion_jumps_the_fill() {
+        let t0 = Instant::now();
+        let mut f = Flight::new(true);
+        f.say_progress(Message::plain("Updating · 0%"), PILL, Target::Pill(PILL), t0);
+        f.progress(Message::plain("Updating · 40%"), 0.4, t0);
+        assert_eq!(f.sprite(t0).unwrap().fill, Some(0.4));
+    }
+
+    #[test]
+    fn progress_only_moves_a_progress_note() {
+        let t0 = Instant::now();
+        let mut f = Flight::new(false);
+        f.say(Message::plain("Didn't catch that"), PILL, Target::Pill(PILL), t0);
+        assert!(!f.progress(Message::plain("Updating · 10%"), 0.1, t0));
+        assert_eq!(f.message(), Some(&Message::plain("Didn't catch that")));
+        assert_eq!(f.sprite(t0).unwrap().fill, None);
+
+        // a progress note replaced by another message loses its fill
+        let mut g = Flight::new(true);
+        g.say_progress(Message::plain("Updating · 0%"), PILL, Target::Pill(PILL), t0);
+        g.say(Message::plain("Replaced"), PILL, Target::Pill(PILL), t0);
+        assert!(!g.is_filling() && g.sprite(t0).unwrap().fill.is_none());
+
+        // once dismissed it takes no more progress
+        let mut h = Flight::new(true);
+        h.say_progress(Message::plain("Updating · 0%"), PILL, Target::Pill(PILL), t0);
+        h.dismiss(t0);
+        assert!(!h.progress(Message::plain("Updating · 10%"), 0.1, t0));
+    }
+
+    #[test]
+    fn the_fill_is_green_left_of_its_edge_only() {
+        let m = Message::plain("");
+        let b = TagBox { cx: 60.0, cy: 20.0, w: 100.0, h: 26.0, pad: 12.0 };
+        let s = Sprite { at: (60.0, 20.0), alpha: 1.0, radius: 1.0, open: 1.0, words: 0.0, fill: Some(0.5) };
+        let px = render_tag(&s, &m, &b, (60.0, 20.0), 120, 40, 16, (0, 0), 1.0);
+        let green = |x: usize| (px[20 * 120 + x] >> 8) & 0xFF;
+        assert!(green(30) > green(90) + 0x30, "filled left {:x} vs unfilled right {:x}", green(30), green(90));
+    }
+}

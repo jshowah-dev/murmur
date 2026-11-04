@@ -301,15 +301,16 @@ pub fn download_dir() -> PathBuf {
     std::env::temp_dir().join("Murmur")
 }
 
-/// Downloads the setup exe into `dir`, checked against the release's `.sha256` file.
-pub fn download(r: &Release, dir: &Path) -> Result<PathBuf, FetchError> {
+/// Downloads the setup exe into `dir`, checked against the release's `.sha256` file, calling
+/// `progress` with the bytes so far.
+pub fn download(r: &Release, dir: &Path, progress: &mut dyn FnMut(u64)) -> Result<PathBuf, FetchError> {
     let text = get_text(&r.sha_url).map_err(|e| match e {
         ureq::Error::StatusCode(n) => FetchError::Http(n),
         e => FetchError::Interrupted(e.to_string()),
     })?;
     let sha256 = parse_sha256_file(&text).ok_or(FetchError::ChecksumMismatch)?;
     let asset = Asset { url: r.setup_url.clone(), file: installer_name(&r.tag), sha256, size: r.setup_size };
-    Fetcher::standard().download(&asset, dir, &mut |_| {}, &AtomicBool::new(false))
+    Fetcher::standard().download(&asset, dir, progress, &AtomicBool::new(false))
 }
 
 /// Starts the installer and returns; the caller quits Murmur so the files are free.
@@ -609,7 +610,9 @@ mod tests {
         let setup = b"pretend installer".repeat(1000);
         let r = served_release(&setup, format!("{}  murmur-v9.9.9-setup.exe\n", hex(Sha256::digest(&setup).as_slice())));
         let dir = tmp("ok");
-        let got = download(&r, &dir).unwrap();
+        let mut seen = 0;
+        let got = download(&r, &dir, &mut |n| seen = n).unwrap();
+        assert_eq!(seen, setup.len() as u64, "reports progress to the end");
         assert_eq!(got, dir.join(installer_name("9.9.9")));
         assert_eq!(std::fs::read(&got).unwrap(), setup);
     }
@@ -619,14 +622,14 @@ mod tests {
         let setup = b"pretend installer".to_vec();
         let r = served_release(&setup, format!("{}  murmur-v9.9.9-setup.exe\n", hex(Sha256::digest(b"something else").as_slice())));
         let dir = tmp("mismatch");
-        assert!(matches!(download(&r, &dir), Err(FetchError::ChecksumMismatch)));
+        assert!(matches!(download(&r, &dir, &mut |_| {}), Err(FetchError::ChecksumMismatch)));
         assert!(!dir.join(installer_name("9.9.9")).exists());
     }
 
     #[test]
     fn download_refuses_an_unreadable_sha256_file() {
         let r = served_release(b"x", "not a hash".into());
-        assert!(matches!(download(&r, &tmp("badsha")), Err(FetchError::ChecksumMismatch)));
+        assert!(matches!(download(&r, &tmp("badsha"), &mut |_| {}), Err(FetchError::ChecksumMismatch)));
     }
 
     #[test]
