@@ -356,8 +356,11 @@ pub fn main() -> Result<()> {
     // the pill starts Idle, so set() doesn't paint it: paint now, or a message said before the
     // first frame flies to where it isn't yet (the top-left corner on macOS)
     overlay.refresh_resting();
-    // where the invitation was said, to follow the pill when it moves
+    // where the invitation (or the update note) was said, to follow the pill when it moves
     let mut invite_at = overlay.above_physical();
+    // "an update is available", held above the pill until you dictate: macOS may hide the
+    // notification, leaving nothing on screen but the menu item
+    let mut note: Option<Message> = None;
     if invite_open {
         let from = card_at.unwrap_or_else(|| overlay.centre_physical());
         mote.say_until_dismissed(invite(&cfg.ptt_key_label()), from, Target::Pill(invite_at));
@@ -511,13 +514,10 @@ pub fn main() -> Result<()> {
                         open_path(std::path::Path::new(update::RELEASES_PAGE));
                     }
                 }
-                TrayEvent::Update => {
-                    start_update(&mut offer, &tray, &up_tx);
-                }
-                TrayEvent::BalloonUpdate => {
+                TrayEvent::Update | TrayEvent::BalloonUpdate => {
                     let tag = offer.release().map(|r| r.tag.clone());
                     if let (Some(tag), true) = (tag, start_update(&mut offer, &tray, &up_tx)) {
-                        // the balloon is gone and the tray menu is closed: say something's happening
+                        // the balloon or the menu is gone: say something's happening
                         tray.notify(&format!("Updating to Murmur v{tag}"), "Murmur restarts when it's installed.");
                         said_in = say(&mut mote, &overlay, Message::plain(&updating(&tag)), overlay.centre_physical(), None);
                     }
@@ -772,6 +772,13 @@ pub fn main() -> Result<()> {
                     if offer.offers(&tag) && update::should_alert(&tag, update::read_alerted().as_deref()) {
                         tray.notify_update(&format!("Murmur v{tag} is available"), update_balloon_body(installed_copy));
                         update::write_alerted(&tag);
+                        // not over a dictation or another message
+                        if !mote.is_active() {
+                            let m = Message::plain(&available(&tag, installed_copy));
+                            invite_at = overlay.above_physical();
+                            mote.say_until_dismissed(m.clone(), overlay.centre_physical(), Target::Pill(invite_at));
+                            note = Some(m);
+                        }
                     }
                 }
                 // the installer would force-close the editor and lose unsaved edits
@@ -813,8 +820,8 @@ pub fn main() -> Result<()> {
         resting_tick = resting_tick.wrapping_add(1);
         if resting_tick % 64 == 0 {
             overlay.refresh_resting();
-            let m = invite(&cfg.ptt_key_label());
-            if let Some((from, to)) = follow_pill(invite_at, overlay.above_physical()).filter(|_| mote.is_saying(&m)) {
+            let held = std::iter::once(invite(&cfg.ptt_key_label())).chain(note.clone()).find(|m| mote.is_saying(m));
+            if let Some((m, (from, to))) = held.zip(follow_pill(invite_at, overlay.above_physical())) {
                 // closed here, then carried over: a fresh flight from where it was
                 mote.dismiss();
                 mote.say_until_dismissed(m, from, Target::Pill(to));
@@ -903,6 +910,15 @@ fn unheard(expect_words: bool, mote_active: bool, caret_pending: bool) -> Option
 }
 
 /// Said above the pill, since a notification can be switched off or hidden by Focus.
+/// The note above the pill when an update is found; right-clicking the pill opens the menu.
+fn available(tag: &str, installed: bool) -> String {
+    if installed {
+        format!("Murmur v{tag} is available. Right-click the pill to update.")
+    } else {
+        format!("Murmur v{tag} is available. Right-click the pill to get it.")
+    }
+}
+
 fn updating(tag: &str) -> String {
     format!("Updating to Murmur v{tag}. Murmur restarts when it's installed.")
 }
@@ -1055,6 +1071,12 @@ mod tests {
     fn update_label_depends_on_the_copy() {
         assert_eq!(update_label("0.4.5", true), "Update to v0.4.5…");
         assert_eq!(update_label("0.4.5", false), "Get v0.4.5…");
+    }
+
+    #[test]
+    fn available_note_says_what_to_do() {
+        assert_eq!(available("0.5.11", true), "Murmur v0.5.11 is available. Right-click the pill to update.");
+        assert!(available("0.5.11", false).ends_with("to get it."));
     }
 
     #[test]
