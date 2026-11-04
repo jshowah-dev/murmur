@@ -1071,8 +1071,10 @@ mod tests {
         }
         let each = t0.elapsed() / 20;
         eprintln!("live island frame: {each:?}");
-        // the main thread draws this every frame and must keep hearing the keyboard
-        let budget = Duration::from_millis(if cfg!(debug_assertions) { 40 } else { 2 });
+        // the main thread draws this every frame and must keep hearing the keyboard. Loose
+        // enough for a busy shared CI runner running other tests alongside (2.6 ms seen); the
+        // freeze this guards against was over 20 ms a frame
+        let budget = Duration::from_millis(if cfg!(debug_assertions) { 40 } else { 8 });
         assert!(each < budget, "{each:?} a frame");
     }
 }
