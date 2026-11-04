@@ -1,5 +1,6 @@
 //! Putting the clipboard back after a paste. The restore waits long enough for a slow app to read
-//! the clipboard (since macOS 27.2 some read it well over 150 ms after the keystroke), and is
+//! the clipboard (since macOS 27.2 some read it well over 150 ms after the keystroke, and an
+//! Electron app busy building its accessibility tree for the caret lookup takes longer still), and is
 //! skipped if anything else wrote to the clipboard in the meantime.
 
 use anyhow::Result;
@@ -8,8 +9,9 @@ use std::sync::Mutex;
 use std::thread::sleep;
 use std::time::Duration;
 
-/// How long after the paste keystroke the old clipboard goes back.
-pub(super) const RESTORE_AFTER: Duration = Duration::from_millis(600);
+/// How long after the paste keystroke the old clipboard goes back. 600 ms was too short for
+/// the Claude app right after Murmur started.
+pub(super) const RESTORE_AFTER: Duration = Duration::from_secs(2);
 
 /// The system clipboard, as much of it as a paste needs.
 pub(super) trait Board: Sync + 'static {
