@@ -590,7 +590,7 @@ pub fn main() -> Result<()> {
                     }
                     forwarding = true;
                     if cfg.live_preview {
-                        caption.begin(overlay.above_physical());
+                        caption.begin(overlay.caption_place());
                         captioning = true;
                         let target = inject::foreground_hwnd();
                         let tx = live_caret_tx.clone();

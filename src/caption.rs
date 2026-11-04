@@ -1,5 +1,5 @@
 //! The live caption: the words you're saying, shown just below the caret while you dictate
-//! (above the pill when there's no caret to find). It's a click-through window of its own and
+//! (by the pill when there's no caret to find). It's a click-through window of its own and
 //! never touches the app you're typing in; the paste on release is what lands there.
 
 use crate::canvas::{self, Canvas};
@@ -16,24 +16,27 @@ const MAX_W: f32 = 560.0;
 const HEIGHT: f32 = 30.0;
 const PAD: f32 = 12.0;
 const FONT: f32 = 15.0;
-/// Space between the pill's top and the caption above it.
-const ABOVE_PILL: f32 = 10.0;
+/// Space between the live pill and the caption beside it.
+const FROM_PILL: f32 = 10.0;
 
 /// Where the caption goes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Place {
     /// Below this caret line, or above it near the bottom of the screen.
     Caret(RECT),
-    /// Centred above this point: the pill's top centre.
+    /// Centred above this point: the top centre of the pill at its live size (Windows).
     Pill(Pt),
+    /// Centred below this point: the bottom centre of the island at its live size (macOS).
+    UnderPill(Pt),
 }
 
 /// Top-left for a `w`×`h` caption at `place`, kept inside `work`.
 pub(crate) fn position(place: Place, w: i32, h: i32, work: RECT) -> (i32, i32) {
     match place {
         Place::Caret(r) => caret::place(&Anchor::Caret(r), w, h, work),
-        Place::Pill((x, y)) => {
-            let (x, y) = ((x - w as f32 / 2.0).round() as i32, (y - ABOVE_PILL - h as f32).round() as i32);
+        Place::Pill((x, y)) | Place::UnderPill((x, y)) => {
+            let y = if let Place::Pill(_) = place { y - FROM_PILL - h as f32 } else { y + FROM_PILL };
+            let (x, y) = ((x - w as f32 / 2.0).round() as i32, y.round() as i32);
             (x.clamp(work.left, (work.right - w).max(work.left)), y.clamp(work.top, (work.bottom - h).max(work.top)))
         }
     }
@@ -58,12 +61,12 @@ impl Caption {
     }
 
     /// A dictation started: nothing to show until words arrive, and the place is still unknown.
-    pub(crate) fn begin(&mut self, pill: Pt) {
+    pub(crate) fn begin(&mut self, pill: Place) {
         self.hide();
-        self.place = Some(Place::Pill(pill));
+        self.place = Some(pill);
     }
 
-    /// The caret lookup answered; without a caret the caption stays above the pill.
+    /// The caret lookup answered; without a caret the caption stays by the pill.
     pub(crate) fn set_caret(&mut self, caret: Option<RECT>) {
         if let Some(r) = caret {
             self.place = Some(Place::Caret(r));
@@ -111,7 +114,7 @@ impl Caption {
         let (w, h) = (size.0 + (2.0 * pad).ceil() as i32, ((HEIGHT * self.scale).round() as i32).max(size.1));
         let anchor = match place {
             Place::Caret(r) => Anchor::Caret(r),
-            Place::Pill((x, y)) => Anchor::Area(RECT { left: x as i32, top: y as i32, right: x as i32 + 1, bottom: y as i32 + 1 }),
+            Place::Pill((x, y)) | Place::UnderPill((x, y)) => Anchor::Area(RECT { left: x as i32, top: y as i32, right: x as i32 + 1, bottom: y as i32 + 1 }),
         };
         let work = caret::work_area(&anchor);
         let (x, y) = position(place, w, h, work);
@@ -142,6 +145,11 @@ mod tests {
     #[test]
     fn without_a_caret_it_is_centred_above_the_pill() {
         assert_eq!(position(Place::Pill((960.0, 1000.0)), 300, 30, WORK), (810, 960));
+    }
+
+    #[test]
+    fn on_a_mac_it_is_centred_below_the_live_island() {
+        assert_eq!(position(Place::UnderPill((960.0, 76.0)), 300, 30, WORK), (810, 86));
     }
 
     #[test]

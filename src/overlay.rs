@@ -517,6 +517,17 @@ impl Overlay {
         })
     }
 
+    /// Where the live caption goes when there's no caret: above the pill at its live size, which
+    /// it grows to (upward, its bottom fixed) as you talk, so the caption never sits on it.
+    pub fn caption_place(&self) -> crate::caption::Place {
+        crate::caret::physical(|| unsafe {
+            let mut r = RECT::default();
+            let _ = GetWindowRect(self.hwnd, &mut r);
+            let live_h = H as f32 * windows::Win32::UI::HiDpi::GetDpiForSystem() as f32 / 96.0;
+            crate::caption::Place::Pill(((r.left + r.right) as f32 / 2.0, r.bottom as f32 - live_h))
+        })
+    }
+
     pub fn hwnd(&self) -> crate::platform::Window {
         crate::platform::Window(self.hwnd.0 as isize)
     }

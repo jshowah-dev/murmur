@@ -54,6 +54,14 @@ impl Overlay {
         (x + w / 2.0, y + h + BELOW)
     }
 
+    /// Where the live caption goes when there's no caret: under the island at its live size,
+    /// which it grows to as you talk, so the caption never sits on it.
+    pub fn caption_place(&self) -> crate::caption::Place {
+        let (x, top, w, _) = self.at;
+        let (_, _, (notch_w, notch_h)) = platform::top_edge();
+        crate::caption::Place::UnderPill((x + w / 2.0, top + super::layout(1.0, Mount::Island { notch_w, notch_h }).h as f32))
+    }
+
     /// The view the menu is shown in.
     pub fn hwnd(&self) -> platform::Window {
         self.panel.view()
