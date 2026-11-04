@@ -152,6 +152,29 @@ pub fn write_alerted(tag: &str) {
     }
 }
 
+fn last_run_path() -> PathBuf {
+    crate::config::config_dir().join("last-run-version")
+}
+
+/// Whether `current` is a new version since the last start. Before `last-run-version` existed,
+/// a version that was offered as an update and is now running counts too.
+pub fn just_updated(current: &str, last_run: Option<&str>, alerted: Option<&str>) -> bool {
+    match last_run {
+        Some(v) => v.trim() != current,
+        None => alerted.map(str::trim) == Some(current),
+    }
+}
+
+pub fn read_last_run() -> Option<String> {
+    fs::read_to_string(last_run_path()).ok()
+}
+
+pub fn write_last_run(version: &str) {
+    if let Err(e) = fs::write(last_run_path(), version) {
+        log::warn!("last-run-version: {e}");
+    }
+}
+
 /// The release on offer in the tray, and whether its download is running.
 #[derive(Default)]
 pub struct Offer {
@@ -433,6 +456,16 @@ mod tests {
         assert!(should_alert("0.4.5", Some("0.4.4")));
         assert!(!should_alert("0.4.5", Some("0.4.5")));
         assert!(!should_alert("0.4.5", Some("0.4.5\r\n")));
+    }
+
+    #[test]
+    fn updated_when_the_version_changed_since_last_start() {
+        assert!(just_updated("0.5.9", Some("0.5.8"), None));
+        assert!(!just_updated("0.5.9", Some("0.5.9\n"), Some("0.5.9")));
+        // the first start of a version that writes last-run-version
+        assert!(just_updated("0.5.9", None, Some("0.5.9")));
+        assert!(!just_updated("0.5.9", None, Some("0.5.8")));
+        assert!(!just_updated("0.5.9", None, None));
     }
 
     #[test]

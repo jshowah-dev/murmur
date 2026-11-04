@@ -360,6 +360,16 @@ pub fn main() -> Result<()> {
         mote.say_until_dismissed(invite(&cfg.ptt_key_label()), from, Target::Pill(invite_at));
     }
 
+    // the installed copy only: a dev build of another version isn't an update
+    if installed_copy {
+        let version = env!("CARGO_PKG_VERSION");
+        if !invite_open && update::just_updated(version, update::read_last_run().as_deref(), update::read_alerted().as_deref()) {
+            log::info!("updated to v{version}");
+            mote.say(Message::plain(&format!("Updated to Murmur v{version}")), overlay.centre_physical(), Target::Pill(overlay.above_physical()));
+        }
+        update::write_last_run(version);
+    }
+
     // only reachable with a custom model_dir: the default one is set up above
     let model_gone = model_missing.then(|| {
         log::error!("model missing at {} (LOCALAPPDATA={:?})", model_dir.display(), std::env::var("LOCALAPPDATA"));
@@ -506,6 +516,7 @@ pub fn main() -> Result<()> {
                     if let (Some(tag), true) = (tag, start_update(&mut offer, &tray, &up_tx)) {
                         // the balloon is gone and the tray menu is closed: say something's happening
                         tray.notify(&format!("Updating to Murmur v{tag}"), "Murmur restarts when it's installed.");
+                        said_in = say(&mut mote, &overlay, Message::plain(&updating(&tag)), overlay.centre_physical(), None);
                     }
                 }
                 TrayEvent::DownloadModel => {
@@ -526,6 +537,7 @@ pub fn main() -> Result<()> {
                         if clicked && start_update(&mut offer, &tray, &up_tx) {
                             // the window is gone and the tray menu is closed: say something's happening
                             tray.notify(&format!("Updating to Murmur v{tag}"), "Murmur restarts when it's installed.");
+                            said_in = say(&mut mote, &overlay, Message::plain(&updating(&tag)), overlay.centre_physical(), None);
                         }
                     }
                     while hk_rx.try_recv().is_ok() {}
@@ -884,6 +896,11 @@ fn unheard(expect_words: bool, mote_active: bool, caret_pending: bool) -> Option
     } else {
         Unheard::AbovePill
     })
+}
+
+/// Said above the pill, since a notification can be switched off or hidden by Focus.
+fn updating(tag: &str) -> String {
+    format!("Updating to Murmur v{tag}. Murmur restarts when it's installed.")
 }
 
 /// The mote says `m`, flying from `from` to `to`, or to just above the pill with no caret.
