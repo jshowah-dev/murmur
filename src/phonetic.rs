@@ -40,16 +40,21 @@ fn levenshtein(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
+/// Normalised Levenshtein <= 0.5, case-insensitive.
+pub fn spelled_alike(a: &str, b: &str) -> bool {
+    let la = a.to_ascii_lowercase();
+    let lb = b.to_ascii_lowercase();
+    let max = la.chars().count().max(lb.chars().count()).max(1);
+    (levenshtein(&la, &lb) as f32 / max as f32) <= 0.5
+}
+
 /// Spec rule: Metaphone keys equal, or normalised Levenshtein <= 0.5.
 pub fn similar(a: &str, b: &str) -> bool {
     let (ka, kb) = (key(a), key(b));
     if !ka.is_empty() && ka == kb {
         return true;
     }
-    let la = a.to_ascii_lowercase();
-    let lb = b.to_ascii_lowercase();
-    let max = la.chars().count().max(lb.chars().count()).max(1);
-    (levenshtein(&la, &lb) as f32 / max as f32) <= 0.5
+    spelled_alike(a, b)
 }
 
 #[cfg(test)]

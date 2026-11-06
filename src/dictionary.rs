@@ -158,7 +158,9 @@ impl Dictionary {
         // Double Metaphone codes are short and collide across word lengths
         // (e.g. "hob"/"hobby" both -> "HP"); require equal length so an
         // unrelated longer word doesn't false-match a shorter dictionary entry.
-        let close = |candidate: &str| candidate.chars().count() == core.chars().count();
+        // Keys also collide across unrelated words of the same length ("scroll"/"sequel"
+        // both -> "SKL"), so the spelling must be close too.
+        let close = |candidate: &str| candidate.chars().count() == core.chars().count() && phonetic::spelled_alike(candidate, core);
         // An all-caps acronym is spelled out when spoken ("bee oh el"), so its written form
         // is never what the STT heard; matching it phonetically turns any short "PL"-sounding
         // word into "BOL". Acronyms match only through their spoken forms.
@@ -382,6 +384,14 @@ mod tests {
     #[test]
     fn phonetic_match_for_uncommon_token() {
         assert_eq!(dict().apply("the haub arrived"), "the HAWB arrived");
+    }
+
+    #[test]
+    fn phonetic_needs_close_spelling() {
+        // "scroll" keys to "SKL" like "sequel"; Jeff said "scroll up", got "SQL up"
+        let d = Dictionary::from_terms(vec![Term { written: "SQL".into(), spoken: vec!["sequel".into()], phonetic: true }]);
+        assert_eq!(d.apply("so I don't have to scroll up"), "so I don't have to scroll up");
+        assert_eq!(d.apply("write the sequel query"), "write the SQL query");
     }
 
     #[test]
