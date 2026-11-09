@@ -50,12 +50,34 @@ fn stutters(prev: &str, next: &str, dict: &Dictionary) -> bool {
     if p == n {
         return !DOUBLED_ON_PURPOSE.contains(&p.as_str()) && !DIGIT_WORDS.contains(&p.as_str());
     }
+    if inflects(&p, &n) {
+        return true;
+    }
     p.len() >= 2
         && n.len() > p.len() + 1
         && n.starts_with(&p)
         && !crate::phonetic::is_common(&p)
         && !JARGON.contains(&p.as_str())
         && !in_dictionary(&p, dict)
+}
+
+/// True when `next` is `prev` with an ending added: "guess guessing", "make making", "run running".
+/// Short words are left out, since "give it its due" and "give her hers" are said on purpose.
+fn inflects(prev: &str, next: &str) -> bool {
+    const ENDINGS: &[&str] = &["s", "es", "ed", "ing"];
+    if prev.len() < 3 || prev == "her" {
+        return false;
+    }
+    let Some(rest) = next.strip_prefix(prev) else {
+        // "make making": the silent e goes before -ing
+        return prev.strip_suffix('e').is_some_and(|stem| next.strip_prefix(stem) == Some("ing"));
+    };
+    if ENDINGS.contains(&rest) {
+        return true;
+    }
+    // "run running", "stop stopped": the last letter doubles before -ing or -ed
+    let last = &prev[prev.len() - 1..];
+    rest.strip_prefix(last).is_some_and(|e| e == "ing" || e == "ed")
 }
 
 /// The word is a term's written form or one of its single-word spoken forms.
@@ -650,6 +672,23 @@ best,
         let (d, c) = bare_env();
         assert_eq!(clean("That's not rel relevant here.", &d, &Snippets::default(), &c), "That's not relevant here.");
         assert_eq!(clean("Rel- relevant.", &d, &Snippets::default(), &c), "Relevant.");
+    }
+
+    #[test]
+    fn word_restarted_with_an_ending_is_dropped() {
+        let (d, c) = bare_env();
+        for (raw, want) in [
+            ("Okay, I'm guess guessing I was mistaken.", "Okay, I'm guessing I was mistaken."),
+            ("She send sends it daily.", "She sends it daily."),
+            ("We test tested it.", "We tested it."),
+            ("I was make making dinner.", "I was making dinner."),
+            ("He was run running late.", "He was running late."),
+        ] {
+            assert_eq!(clean(raw, &d, &Snippets::default(), &c), want);
+        }
+        for keep in ["Give it its due.", "Give her hers.", "Done. Doing more."] {
+            assert_eq!(clean(keep, &d, &Snippets::default(), &c), keep);
+        }
     }
 
     #[test]
