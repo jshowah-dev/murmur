@@ -7,7 +7,7 @@ use anyhow::Result;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How long after the paste keystroke the old clipboard goes back. 600 ms was too short for
 /// the Claude app right after Murmur started.
@@ -30,6 +30,7 @@ struct Pending<S> {
     id: u64,
     original: Option<S>,
     count: i64,
+    due: Instant,
 }
 
 /// Our text is on the clipboard; `original` goes back once the paste has been read.
@@ -73,11 +74,22 @@ impl<B: Board> Restorer<B> {
     /// another paste took the restore over.
     pub(super) fn restore_later(&'static self, s: Swapped<B::Saved>) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending { id, original: s.original, count: s.count });
+        let due = Instant::now() + self.delay;
+        *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending { id, original: s.original, count: s.count, due });
         std::thread::spawn(move || {
             sleep(self.delay);
             self.restore_now(id);
         });
+    }
+
+    /// Puts a waiting original back now, once its delay is up, so quitting doesn't leave the
+    /// last dictation on the clipboard in place of what you'd copied.
+    pub(super) fn finish(&self) {
+        let waiting = self.pending.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|p| (p.id, p.due));
+        if let Some((id, due)) = waiting {
+            sleep(due.saturating_duration_since(Instant::now()));
+            self.restore_now(id);
+        }
     }
 
     fn restore_now(&self, id: u64) {
@@ -194,5 +206,27 @@ mod tests {
         r.restore_later(s);
         wait();
         assert_eq!(r.board.read().as_deref(), Some("copied"));
+    }
+
+    #[test]
+    fn finishing_puts_the_original_back_without_the_restore_thread() {
+        // no restore thread is started here, so only `finish` can put it back
+        let r = Box::leak(Box::new(Restorer::new(Fake::default(), Duration::from_millis(100))));
+        r.board.write("old").unwrap();
+        let s = r.put("dictated").unwrap();
+        *r.pending.lock().unwrap() = Some(Pending { id: 99, original: s.original, count: s.count, due: Instant::now() });
+        r.finish();
+        assert_eq!(r.board.read().as_deref(), Some("old"));
+    }
+
+    #[test]
+    fn finishing_waits_out_the_delay() {
+        let r = restorer("old");
+        let s = r.put("dictated").unwrap();
+        let t0 = Instant::now();
+        r.restore_later(s);
+        r.finish();
+        assert!(t0.elapsed() >= Duration::from_millis(50), "the app gets its time to read the paste");
+        assert_eq!(r.board.read().as_deref(), Some("old"));
     }
 }

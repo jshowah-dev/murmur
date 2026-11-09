@@ -202,6 +202,11 @@ pub fn paste(text: &str) -> Result<InjectRecord> {
     Ok(record(hwnd, InjectMethod::Paste))
 }
 
+/// Before quitting: the clipboard a paste borrowed goes back.
+pub fn finish() {
+    CLIPBOARD.finish();
+}
+
 /// Undo the last edit in the foreground app.
 pub fn undo() {
     chord(VK_Z);

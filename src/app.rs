@@ -883,6 +883,7 @@ pub fn main() -> Result<()> {
     while !pipeline.is_finished() && quit_at.elapsed() < QUIT_WAIT {
         std::thread::sleep(Duration::from_millis(20));
     }
+    inject::finish();
     Ok(())
 }
 

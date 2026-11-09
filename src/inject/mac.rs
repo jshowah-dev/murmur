@@ -101,6 +101,11 @@ pub fn paste(text: &str) -> Result<InjectRecord> {
     Ok(record(pid))
 }
 
+/// Before quitting: the clipboard a paste borrowed goes back.
+pub fn finish() {
+    CLIPBOARD.finish();
+}
+
 /// Undo the last edit in the foreground app.
 pub fn undo() {
     command(KEY_Z);
