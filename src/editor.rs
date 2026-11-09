@@ -148,7 +148,7 @@ impl EditorApp {
         }
         let question = self.question();
         let mut choice = None;
-        let modal = Modal::new(Id::new("unsaved-changes")).show(ctx, |ui| {
+        let modal = Modal::new(Id::unique("unsaved-changes")).show(ctx, |ui| {
             ui.label(question);
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -249,7 +249,8 @@ mod tests {
         if close {
             input.viewports.get_mut(&egui::ViewportId::ROOT).unwrap().events.push(egui::ViewportEvent::Close);
         }
-        let out = ctx.run_ui(input, |ui| app.draw(ui));
+        let mut out = ctx.run_ui(input, |ui| app.draw(ui));
+        out.textures_delta.clear();
         let mut text = Vec::new();
         out.shapes.iter().for_each(|c| walk(&c.shape, &mut text));
         text

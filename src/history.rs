@@ -45,7 +45,7 @@ impl History {
         self.items.back()
     }
     #[cfg(test)]
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.items.len()
     }
     pub fn pop_last(&mut self) -> Option<Entry> {

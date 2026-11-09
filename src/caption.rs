@@ -25,6 +25,7 @@ pub(crate) enum Place {
     /// Below this caret line, or above it near the bottom of the screen.
     Caret(RECT),
     /// Centred above this point: the top centre of the pill at its live size (Windows).
+    #[cfg_attr(not(windows), allow(dead_code))]
     Pill(Pt),
     /// Centred below this point: the bottom centre of the island at its live size (macOS).
     UnderPill(Pt),

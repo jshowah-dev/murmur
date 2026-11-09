@@ -28,15 +28,19 @@ fi
 
 hits=()
 while IFS= read -r -d '' path; do
-  added=$(git diff --unified=0 --no-color --no-renames "$base" "$head" -- "$path" |
-    tr -d '\000' | awk '/^@@/ { body = 1; next } body && /^\+/ { print substr($0, 2) }')
-  if printf '%s\n' "$added" | grep -Eq -- "$secrets"; then
+  [ -n "$path" ] || continue
+  # every commit's additions, not the net diff: a key added and then deleted still lands in history
+  added=$(git log --format= --patch --unified=0 --no-color --no-renames "$base..$head" -- "$path" |
+    tr -d '\000' | awk '/^diff --git / { body = 0; next } /^@@/ { body = 1; next } body && /^\+/ { print substr($0, 2) }')
+  # here-strings, not pipes: grep -q stops reading at the first hit, and under pipefail the
+  # writer's SIGPIPE would turn that hit into a miss on a large file
+  if grep -Eq -- "$secrets" <<<"$added"; then
     hits+=("secret: $path")
   fi
-  if [ -n "$terms" ] && printf '%s\n%s\n' "$path" "$added" | grep -Eiq -f <(printf '%s\n' "$terms"); then
+  if [ -n "$terms" ] && grep -Eiq -f <(printf '%s\n' "$terms") <<<"$path"$'\n'"$added"; then
     hits+=("work term: $path")
   fi
-done < <(git diff --name-only -z --no-renames --diff-filter=AM "$base" "$head")
+done < <(git log --format= --name-only -z --no-renames --diff-filter=AM "$base..$head" | sort -zu)
 
 if [ ${#hits[@]} -gt 0 ]; then
   printf '%s\n' "${hits[@]}"

@@ -18,6 +18,9 @@ const GAIN: f32 = 1.0;
 
 pub struct Segment {
     pub samples: Vec<f32>,
+    /// How many of `samples` are speech, after the pre-roll. Less than `samples.len() - PRE_ROLL`
+    /// would say when the speech began within PRE_ROLL of the start or of the last segment.
+    pub speech: usize,
 }
 
 pub struct Vad {
@@ -52,10 +55,12 @@ impl Vad {
         let mut out = Vec::new();
         while let Some(seg) = self.inner.front() {
             let start = seg.start().max(0) as usize;
-            let from = start.saturating_sub(PRE_ROLL).min(self.fed.len());
             let end = (start + seg.samples().len()).min(self.fed.len());
+            // never back into the last segment, which a 15 s force-split abuts: the seam's audio
+            // would be heard twice
+            let from = start.saturating_sub(PRE_ROLL).max(self.last_end).min(end);
             // from what was fed, not the detector's copy, which is louder by GAIN
-            out.push(Segment { samples: self.fed[from..end].to_vec() });
+            out.push(Segment { samples: self.fed[from..end].to_vec(), speech: end - start.clamp(from, end) });
             self.last_end = end;
             self.inner.pop();
         }
@@ -138,6 +143,7 @@ mod tests {
         let head: f32 = seg.samples[..PRE_ROLL].iter().map(|s| s * s).sum::<f32>() / PRE_ROLL as f32;
         let body: f32 = seg.samples[PRE_ROLL..].iter().map(|s| s * s).sum::<f32>() / (seg.samples.len() - PRE_ROLL) as f32;
         eprintln!("segments={} first_len={} head={head:e} body={body:e}", segs.len(), seg.samples.len());
+        assert_eq!(seg.speech, seg.samples.len() - PRE_ROLL, "a full pre-roll isn't speech");
         assert!(head < body * 0.5, "pre-roll should be quieter than the speech: head={head} body={body}");
     }
 
@@ -153,7 +159,7 @@ mod tests {
         let wave = sherpa_onnx::Wave::read(&wav.to_string_lossy()).expect("read wav");
         let mut vad = Vad::new(&cfg.vad_model_path(), 500).unwrap();
         let mut audio = wave.samples().to_vec();
-        audio.extend(std::iter::repeat(0.0).take(24_000));
+        audio.extend(std::iter::repeat_n(0.0, 24_000));
         let segs = vad.push(&audio);
         assert!(!segs.is_empty(), "the pause should end a segment");
         let quiet = vad.quiet_samples();
@@ -184,5 +190,24 @@ mod tests {
         let got = segs.iter().map(|s| peak(&s.samples)).fold(0f32, f32::max);
         let want = peak(wave.samples()) * 0.05;
         assert!((got - want).abs() < want * 0.01, "{got} vs {want}");
+    }
+
+    /// Speech from the first sample has no pre-roll in front of it, so none of it is taken off.
+    #[test]
+    fn speech_at_the_start_counts_in_full() {
+        let cfg = crate::config::Config::default();
+        let wav = cfg.model_dir_path().join("test_wavs").join("0.wav");
+        if !cfg.vad_model_path().exists() || !wav.exists() {
+            eprintln!("model not installed; skipped");
+            return;
+        }
+        let wave = sherpa_onnx::Wave::read(&wav.to_string_lossy()).expect("read wav");
+        // the WAV opens with silence; start where the voice does
+        let onset = wave.samples().iter().position(|s| s.abs() > 0.02).expect("the WAV has speech");
+        let mut vad = Vad::new(&cfg.vad_model_path(), 300).unwrap();
+        let mut segs = vad.push(&wave.samples()[onset..]);
+        segs.extend(vad.flush());
+        let seg = &segs[0];
+        assert!(seg.speech > seg.samples.len() - PRE_ROLL, "speech={} len={}", seg.speech, seg.samples.len());
     }
 }

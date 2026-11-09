@@ -5,8 +5,8 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardSequenceNumber, IsClipboardFormatAvailable,
-    OpenClipboard, SetClipboardData,
+    CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardSequenceNumber, OpenClipboard,
+    SetClipboardData,
 };
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -43,40 +43,51 @@ impl Drop for Clipboard {
     }
 }
 
-fn read_text_locked() -> Option<String> {
-    unsafe {
-        if IsClipboardFormatAvailable(CF_UNICODETEXT).is_err() {
-            return None;
+/// Formats whose handle is a GDI object or a window message, not memory that can be copied.
+/// Windows makes a CF_DIB copy of a bitmap and keeps it, so an image still comes back.
+fn is_memory_format(f: u32) -> bool {
+    // CF_BITMAP, CF_METAFILEPICT, CF_PALETTE, CF_ENHMETAFILE, CF_OWNERDISPLAY, CF_DSPBITMAP,
+    // CF_DSPMETAFILEPICT, CF_DSPENHMETAFILE, then the CF_GDIOBJFIRST..CF_GDIOBJLAST range
+    !matches!(f, 2 | 3 | 9 | 14 | 0x80 | 0x82 | 0x83 | 0x8E) && !(0x300..=0x3FF).contains(&f)
+}
+
+/// Every memory format on the open clipboard, copied out.
+fn save_locked() -> Vec<(u32, Vec<u8>)> {
+    let mut saved = Vec::new();
+    let mut f = 0;
+    loop {
+        f = unsafe { EnumClipboardFormats(f) };
+        if f == 0 {
+            return saved;
         }
-        let h = GetClipboardData(CF_UNICODETEXT).ok()?;
-        let p = GlobalLock(HGLOBAL(h.0)) as *const u16;
-        if p.is_null() {
-            return None;
+        if !is_memory_format(f) {
+            continue;
         }
-        let max = GlobalSize(HGLOBAL(h.0)) / 2;
-        let mut len = 0;
-        while len < max && *p.add(len) != 0 {
-            len += 1;
+        unsafe {
+            let Ok(h) = GetClipboardData(f) else { continue };
+            let g = HGLOBAL(h.0);
+            let p = GlobalLock(g) as *const u8;
+            if p.is_null() {
+                continue;
+            }
+            saved.push((f, std::slice::from_raw_parts(p, GlobalSize(g)).to_vec()));
+            let _ = GlobalUnlock(g);
         }
-        let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, len));
-        let _ = GlobalUnlock(HGLOBAL(h.0));
-        Some(s)
     }
 }
 
-fn write_text_locked(text: &str) -> Result<()> {
-    let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+/// Puts `bytes` on the open clipboard as format `f`; the clipboard owns the memory once it's set.
+fn set_locked(f: u32, bytes: &[u8]) -> Result<()> {
     unsafe {
-        EmptyClipboard()?;
-        let h: HGLOBAL = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2)?;
-        let p = GlobalLock(h) as *mut u16;
+        let h: HGLOBAL = GlobalAlloc(GMEM_MOVEABLE, bytes.len().max(1))?;
+        let p = GlobalLock(h) as *mut u8;
         if p.is_null() {
             let _ = GlobalFree(Some(h));
             return Err(anyhow!("GlobalLock"));
         }
-        std::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len());
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len());
         let _ = GlobalUnlock(h);
-        if let Err(e) = SetClipboardData(CF_UNICODETEXT, Some(HANDLE(h.0))) {
+        if let Err(e) = SetClipboardData(f, Some(HANDLE(h.0))) {
             let _ = GlobalFree(Some(h));
             return Err(e.into());
         }
@@ -85,8 +96,10 @@ fn write_text_locked(text: &str) -> Result<()> {
 }
 
 pub fn set_clipboard_text(text: &str) -> Result<()> {
+    let wide: Vec<u8> = text.encode_utf16().chain(std::iter::once(0)).flat_map(u16::to_le_bytes).collect();
     let _c = Clipboard::open()?;
-    write_text_locked(text)
+    unsafe { EmptyClipboard()? };
+    set_locked(CF_UNICODETEXT, &wide)
 }
 
 fn key(vk: VIRTUAL_KEY, up: bool) -> INPUT {
@@ -143,9 +156,22 @@ fn record(hwnd: isize, method: InjectMethod) -> InjectRecord {
 struct SystemClipboard;
 
 impl Board for SystemClipboard {
-    fn read(&self) -> Option<String> {
-        let _c = Clipboard::open().ok()?;
-        read_text_locked()
+    type Saved = Vec<(u32, Vec<u8>)>;
+    fn save(&self) -> Result<Option<Self::Saved>> {
+        let _c = Clipboard::open()?;
+        let saved = save_locked();
+        Ok((!saved.is_empty()).then_some(saved))
+    }
+    fn put_back(&self, saved: &Self::Saved) -> Result<()> {
+        let _c = Clipboard::open()?;
+        unsafe { EmptyClipboard()? };
+        for (f, bytes) in saved {
+            // one format failing (a private one an app won't take back) shouldn't lose the rest
+            if let Err(e) = set_locked(*f, bytes) {
+                log::warn!("clipboard format {f} didn't go back: {e}");
+            }
+        }
+        Ok(())
     }
     fn write(&self, text: &str) -> Result<()> {
         set_clipboard_text(text)
@@ -157,8 +183,8 @@ impl Board for SystemClipboard {
 
 static CLIPBOARD: Restorer<SystemClipboard> = Restorer::new(SystemClipboard, RESTORE_AFTER);
 
-/// Save clipboard text, set ours, Ctrl+V, restore a little later. Types the text in when the
-/// clipboard can't be opened or written.
+/// Save the clipboard, set our text, Ctrl+V, restore a little later. Types the text in when the
+/// clipboard can't be opened, read or written.
 pub fn paste(text: &str) -> Result<InjectRecord> {
     let swapped = match CLIPBOARD.put(text) {
         Ok(s) => s,

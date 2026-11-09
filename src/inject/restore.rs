@@ -15,29 +15,34 @@ pub(super) const RESTORE_AFTER: Duration = Duration::from_secs(2);
 
 /// The system clipboard, as much of it as a paste needs.
 pub(super) trait Board: Sync + 'static {
-    fn read(&self) -> Option<String>;
+    /// Everything on the clipboard, in every format, so an image or copied files come back too.
+    type Saved: Send + 'static;
+    /// `Ok(None)` for an empty clipboard; an error when it couldn't be read, so a paste doesn't
+    /// go on to overwrite what it couldn't save.
+    fn save(&self) -> Result<Option<Self::Saved>>;
+    fn put_back(&self, saved: &Self::Saved) -> Result<()>;
     fn write(&self, text: &str) -> Result<()>;
     /// Goes up on every write to the clipboard, by any app.
     fn count(&self) -> i64;
 }
 
-struct Pending {
+struct Pending<S> {
     id: u64,
-    original: Option<String>,
+    original: Option<S>,
     count: i64,
 }
 
 /// Our text is on the clipboard; `original` goes back once the paste has been read.
-pub(super) struct Swapped {
-    original: Option<String>,
+pub(super) struct Swapped<S> {
+    original: Option<S>,
     count: i64,
 }
 
-pub(super) struct Restorer<B> {
+pub(super) struct Restorer<B: Board> {
     board: B,
     delay: Duration,
     // held while the clipboard is written, so a restore and the next paste can't interleave
-    pending: Mutex<Option<Pending>>,
+    pending: Mutex<Option<Pending<B::Saved>>>,
     next_id: AtomicU64,
 }
 
@@ -46,17 +51,18 @@ impl<B: Board> Restorer<B> {
         Restorer { board, delay, pending: Mutex::new(None), next_id: AtomicU64::new(0) }
     }
 
-    /// Puts `text` on the clipboard. When a restore is still waiting, its original is the one kept,
-    /// not the previous dictation's text.
-    pub(super) fn put(&self, text: &str) -> Result<Swapped> {
+    /// Puts `text` on the clipboard. When a restore is still waiting and nothing else has
+    /// written to the clipboard since, its original is the one kept, not the previous
+    /// dictation's text.
+    pub(super) fn put(&self, text: &str) -> Result<Swapped<B::Saved>> {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         let original = match pending.take() {
-            Some(p) => p.original,
-            None => self.board.read(),
+            Some(p) if self.board.count() == p.count => p.original,
+            _ => self.board.save()?,
         };
         if let Err(e) = self.board.write(text) {
             if let Some(o) = &original {
-                let _ = self.board.write(o);
+                let _ = self.board.put_back(o);
             }
             return Err(e);
         }
@@ -65,7 +71,7 @@ impl<B: Board> Restorer<B> {
 
     /// Puts the original back after the delay, unless the clipboard changed since `put` or
     /// another paste took the restore over.
-    pub(super) fn restore_later(&'static self, s: Swapped) {
+    pub(super) fn restore_later(&'static self, s: Swapped<B::Saved>) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending { id, original: s.original, count: s.count });
         std::thread::spawn(move || {
@@ -82,7 +88,9 @@ impl<B: Board> Restorer<B> {
             return;
         }
         if let Some(o) = p.original {
-            let _ = self.board.write(&o);
+            if let Err(e) = self.board.put_back(&o) {
+                log::warn!("couldn't put the clipboard back: {e}");
+            }
         }
     }
 }
@@ -91,16 +99,32 @@ impl<B: Board> Restorer<B> {
 mod tests {
     use super::*;
 
+    /// A clipboard holding one item, in any number of formats.
     #[derive(Default)]
-    struct Fake(Mutex<(Option<String>, i64)>);
+    struct Fake(Mutex<(Vec<(String, String)>, i64)>);
+
+    impl Fake {
+        fn read(&self) -> Option<String> {
+            self.0.lock().unwrap().0.iter().find(|(f, _)| f == "text").map(|(_, v)| v.clone())
+        }
+        fn set(&self, item: Vec<(String, String)>) {
+            let mut b = self.0.lock().unwrap();
+            *b = (item, b.1 + 1);
+        }
+    }
 
     impl Board for Fake {
-        fn read(&self) -> Option<String> {
-            self.0.lock().unwrap().0.clone()
+        type Saved = Vec<(String, String)>;
+        fn save(&self) -> Result<Option<Self::Saved>> {
+            let b = self.0.lock().unwrap();
+            Ok((!b.0.is_empty()).then(|| b.0.clone()))
+        }
+        fn put_back(&self, saved: &Self::Saved) -> Result<()> {
+            self.set(saved.clone());
+            Ok(())
         }
         fn write(&self, text: &str) -> Result<()> {
-            let mut b = self.0.lock().unwrap();
-            *b = (Some(text.to_string()), b.1 + 1);
+            self.set(vec![("text".into(), text.into())]);
             Ok(())
         }
         fn count(&self) -> i64 {
@@ -148,5 +172,27 @@ mod tests {
         assert_eq!(r.board.read().as_deref(), Some("two"));
         wait();
         assert_eq!(r.board.read().as_deref(), Some("old"));
+    }
+
+    #[test]
+    fn an_image_comes_back_too() {
+        let r = restorer("unused");
+        r.board.set(vec![("png".into(), "pixels".into())]);
+        let s = r.put("dictated").unwrap();
+        r.restore_later(s);
+        wait();
+        assert_eq!(r.board.save().unwrap(), Some(vec![("png".into(), "pixels".into())]));
+    }
+
+    #[test]
+    fn a_copy_between_two_pastes_is_the_one_restored() {
+        let r = restorer("old");
+        let s = r.put("one").unwrap();
+        r.restore_later(s);
+        r.board.write("copied").unwrap();
+        let s = r.put("two").unwrap();
+        r.restore_later(s);
+        wait();
+        assert_eq!(r.board.read().as_deref(), Some("copied"));
     }
 }

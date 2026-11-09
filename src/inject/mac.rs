@@ -1,9 +1,11 @@
 use super::restore::{Board, Restorer, RESTORE_AFTER};
 use crate::history::{InjectMethod, InjectRecord};
 use anyhow::{anyhow, Result};
-use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
+use objc2_app_kit::{NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSPasteboardWriting};
 use objc2_core_graphics::{CGEvent, CGEventFlags, CGEventTapLocation, CGKeyCode};
-use objc2_foundation::NSString;
+use objc2_foundation::{NSArray, NSData, NSString};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -14,10 +16,6 @@ const KEY_Z: CGKeyCode = 0x06;
 /// The app in front, by process id: what a dictation lands in.
 pub fn foreground_hwnd() -> isize {
     crate::platform::frontmost_pid()
-}
-
-fn read_text() -> Option<String> {
-    unsafe { NSPasteboard::generalPasteboard().stringForType(NSPasteboardTypeString) }.map(|s| s.to_string())
 }
 
 pub fn set_clipboard_text(text: &str) -> Result<()> {
@@ -46,9 +44,38 @@ fn record(pid: isize) -> InjectRecord {
 
 struct Pasteboard;
 
+/// Each pasteboard item as its (type, bytes) pairs.
+type Items = Vec<Vec<(String, Vec<u8>)>>;
+
 impl Board for Pasteboard {
-    fn read(&self) -> Option<String> {
-        read_text()
+    type Saved = Items;
+    fn save(&self) -> Result<Option<Items>> {
+        let Some(items) = NSPasteboard::generalPasteboard().pasteboardItems() else { return Ok(None) };
+        let saved: Items = items
+            .iter()
+            .map(|item| item.types().iter().filter_map(|t| item.dataForType(&t).map(|d| (t.to_string(), d.to_vec()))).collect::<Vec<_>>())
+            .filter(|types| !types.is_empty())
+            .collect();
+        Ok((!saved.is_empty()).then_some(saved))
+    }
+    fn put_back(&self, saved: &Items) -> Result<()> {
+        let pb = NSPasteboard::generalPasteboard();
+        pb.clearContents();
+        let items: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = saved
+            .iter()
+            .map(|types| {
+                let item = NSPasteboardItem::new();
+                for (t, bytes) in types {
+                    item.setData_forType(&NSData::with_bytes(bytes), &NSString::from_str(t));
+                }
+                ProtocolObject::from_retained(item)
+            })
+            .collect();
+        if pb.writeObjects(&NSArray::from_retained_slice(&items)) {
+            Ok(())
+        } else {
+            Err(anyhow!("the clipboard didn't take its old contents back"))
+        }
     }
     fn write(&self, text: &str) -> Result<()> {
         set_clipboard_text(text)
@@ -60,7 +87,7 @@ impl Board for Pasteboard {
 
 static CLIPBOARD: Restorer<Pasteboard> = Restorer::new(Pasteboard, RESTORE_AFTER);
 
-/// Save clipboard text, set ours, Cmd+V, restore a little later. Without the Accessibility
+/// Save the clipboard, set our text, Cmd+V, restore a little later. Without the Accessibility
 /// permission macOS drops the Cmd+V, so the text is left on the clipboard for you to paste.
 pub fn paste(text: &str) -> Result<InjectRecord> {
     let swapped = CLIPBOARD.put(text)?;
@@ -85,4 +112,35 @@ pub fn undo_then_paste(text: &str) -> Result<InjectRecord> {
     undo();
     sleep(Duration::from_millis(100));
     paste(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Uses the real clipboard, so it's run by hand: `cargo test --lib -- --ignored pasteboard`.
+    /// Whatever was on the clipboard is put back at the end.
+    #[test]
+    #[ignore]
+    fn pasteboard_keeps_formats_that_arent_text() {
+        let yours = Pasteboard.save().unwrap();
+        let pb = NSPasteboard::generalPasteboard();
+        pb.clearContents();
+        let item = NSPasteboardItem::new();
+        item.setData_forType(&NSData::with_bytes(b"\x89PNG fake"), &NSString::from_str("public.png"));
+        assert!(pb.writeObjects(&NSArray::from_retained_slice(&[ProtocolObject::from_retained(item)])));
+
+        let saved = Pasteboard.save().unwrap().expect("the png was saved");
+        Pasteboard.write("dictated").unwrap();
+        Pasteboard.put_back(&saved).unwrap();
+        let back = Pasteboard.save().unwrap();
+
+        match &yours {
+            Some(y) => Pasteboard.put_back(y).unwrap(),
+            None => {
+                pb.clearContents();
+            }
+        }
+        assert_eq!(back, Some(vec![vec![("public.png".to_string(), b"\x89PNG fake".to_vec())]]));
+    }
 }

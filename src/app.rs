@@ -306,7 +306,7 @@ pub fn main() -> Result<()> {
     // the live preview's captions, from its own thread
     let (caption_tx, caption_rx) = unbounded::<String>();
     let preview_tx = cfg.live_preview.then(|| start_preview(&cfg, &dict, caption_tx));
-    pipeline::spawn(cfg.clone(), dict.clone(), snippet_file, cmd_rx, msg_tx, preview_tx);
+    let pipeline = pipeline::spawn(cfg.clone(), dict.clone(), snippet_file, cmd_rx, msg_tx, preview_tx);
 
     let mut overlay = Overlay::create()?;
     let mut mote = Mote::create()?;
@@ -359,6 +359,8 @@ pub fn main() -> Result<()> {
     let mut mic_used = Instant::now();
     let mut ring: VecDeque<f32> = VecDeque::with_capacity(PRE_ROLL_SAMPLES * 2);
     let mut forwarding = false;
+    // a Release or Cancel that came in while a window had the loop's attention
+    let mut ended: Option<HotkeyEvent> = None;
     let mut paused = false;
     let mut listening = false;
     // hands-free: recording continues after the key is let go
@@ -483,11 +485,11 @@ pub fn main() -> Result<()> {
                 TrayEvent::FixLast => {
                     let out = correction::fix_last(&mut history, &dict);
                     said_in = after_fix(out, true, &mut mote, &overlay);
-                    while hk_rx.try_recv().is_ok() {}
+                    ended = ended.or(drop_presses(&hk_rx, forwarding));
                 }
                 TrayEvent::History => {
                     history_ui::show(history.newest_first().map(|e| (e.cleaned.clone(), e.at)).collect(), cfg.ptt_key_label());
-                    while hk_rx.try_recv().is_ok() {}
+                    ended = ended.or(drop_presses(&hk_rx, forwarding));
                 }
                 TrayEvent::EditDictionary => open_editor(&tray, editor::Tab::Dictionary),
                 TrayEvent::EditSnippets => open_editor(&tray, editor::Tab::Snippets),
@@ -510,7 +512,7 @@ pub fn main() -> Result<()> {
                         }
                     }
                     set_ptt(&ptt_vks, cfg.ptt_vks());
-                    while hk_rx.try_recv().is_ok() {}
+                    ended = ended.or(drop_presses(&hk_rx, forwarding));
                 }
                 TrayEvent::OpenConfigDir => open_path(&config::config_dir()),
                 TrayEvent::Help => open_path(std::path::Path::new(HELP_PAGE)),
@@ -558,12 +560,12 @@ pub fn main() -> Result<()> {
                             said_in = None;
                         }
                     }
-                    while hk_rx.try_recv().is_ok() {}
+                    ended = ended.or(drop_presses(&hk_rx, forwarding));
                 }
                 TrayEvent::Quit => break 'main,
             }
         }
-        while let Ok(ev) = hk_rx.try_recv() {
+        while let Some(ev) = ended.take().or_else(|| hk_rx.try_recv().ok()) {
             match ev {
                 HotkeyEvent::Down if !paused => {
                     // a new dictation closes the last message
@@ -671,7 +673,7 @@ pub fn main() -> Result<()> {
                     log::info!("fix-last hotkey");
                     let out = correction::fix_last(&mut history, &dict);
                     said_in = after_fix(out, false, &mut mote, &overlay);
-                    while hk_rx.try_recv().is_ok() {}
+                    ended = ended.or(drop_presses(&hk_rx, forwarding));
                 }
                 _ => {}
             }
@@ -711,6 +713,7 @@ pub fn main() -> Result<()> {
                     overlay.set(resting(paused));
                     overlay.set_quiet(false);
                     let heard = !e.cleaned.is_empty();
+                    let unpasted = heard && e.inject.is_none();
                     let finished = std::mem::take(&mut expect_words);
                     match unheard(finished && !heard, mote.is_active(), caret_pending) {
                         Some(Unheard::WaitForCaret) => unheard_pending = true,
@@ -733,6 +736,9 @@ pub fn main() -> Result<()> {
                                 Landing::Nothing => {}
                             }
                         }
+                    }
+                    if unpasted {
+                        said_in = say(&mut mote, &overlay, Message::plain(not_pasted()), overlay.centre_physical(), None);
                     }
                     if heard {
                         history.push(e);
@@ -834,7 +840,8 @@ pub fn main() -> Result<()> {
                 }
             }
         }
-        if let Some((path, _)) = install_at.take_if(|(_, at)| Instant::now() >= *at) {
+        // not mid-dictation: installing quits Murmur
+        if let Some((path, _)) = install_at.take_if(|(_, at)| Instant::now() >= *at && !forwarding && !expect_words) {
             match update::install(&path) {
                 Ok(()) => {
                     log::info!("installing {}; quitting", path.display());
@@ -852,7 +859,7 @@ pub fn main() -> Result<()> {
             }
         }
         resting_tick = resting_tick.wrapping_add(1);
-        if resting_tick % 64 == 0 {
+        if resting_tick.is_multiple_of(64) {
             overlay.refresh_resting();
             let m = invite(&cfg.ptt_key_label());
             if let Some((from, to)) = follow_pill(invite_at, overlay.above_physical()).filter(|_| mote.is_saying(&m)) {
@@ -870,9 +877,17 @@ pub fn main() -> Result<()> {
         }
         std::thread::sleep(Duration::from_millis(15));
     }
+    // a dictation already let go of is still decoded and pasted: Shutdown queues behind it
     let _ = cmd_tx.send(PipelineCmd::Shutdown);
+    let quit_at = Instant::now();
+    while !pipeline.is_finished() && quit_at.elapsed() < QUIT_WAIT {
+        std::thread::sleep(Duration::from_millis(20));
+    }
     Ok(())
 }
+
+/// How long quitting waits for a dictation in progress.
+const QUIT_WAIT: Duration = Duration::from_secs(10);
 
 /// Voice level to pill meter, mapping each system's typical loudest speech rms to about 0.8:
 /// a laptop's Intel Smart Sound array reads 0.075 on Windows, a MacBook's built-in mic 0.02.
@@ -884,7 +899,29 @@ const METER_GAIN: f32 = 40.0;
 /// Audio kept while idle and prepended on key-down: 500 ms at 16 kHz.
 const PRE_ROLL_SAMPLES: usize = 8_000;
 
+/// Drops the hotkey events that came in while a window was open, so a key pressed there doesn't
+/// dictate. A recording that was already going keeps its end: dropping that Release or Cancel
+/// would leave the mic open and the pill stuck on Locked.
+fn drop_presses(rx: &crossbeam_channel::Receiver<HotkeyEvent>, recording: bool) -> Option<HotkeyEvent> {
+    let mut end = None;
+    while let Ok(ev) = rx.try_recv() {
+        if recording && end.is_none() && matches!(ev, HotkeyEvent::Release | HotkeyEvent::Cancel) {
+            end = Some(ev);
+        }
+    }
+    end
+}
+
 const UNHEARD: &str = "Didn't catch that";
+
+/// Said when a dictation was heard but the paste failed, so it isn't lost silently.
+fn not_pasted() -> &'static str {
+    #[cfg(target_os = "macos")]
+    if !platform::accessibility_trusted(false) {
+        return "Allow Murmur in Accessibility to paste. It's on the clipboard.";
+    }
+    "Couldn't paste that. It's in History."
+}
 const SCRATCHED: &str = "Scratched";
 /// The last dictation is over a minute old, typed in, or in another window: one undo can't take it out.
 const NOTHING_TO_SCRATCH: &str = "Nothing to scratch";
@@ -1063,6 +1100,20 @@ fn restore_update_item(tray: &Tray, offer: &update::Offer, installed: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_window_keeps_the_end_of_a_recording_and_drops_new_presses() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        for ev in [HotkeyEvent::Down, HotkeyEvent::Cancel, HotkeyEvent::Release] {
+            tx.send(ev).unwrap();
+        }
+        assert_eq!(drop_presses(&rx, true), Some(HotkeyEvent::Cancel));
+        assert!(rx.try_recv().is_err());
+        for ev in [HotkeyEvent::Down, HotkeyEvent::Cancel] {
+            tx.send(ev).unwrap();
+        }
+        assert_eq!(drop_presses(&rx, false), None, "a tap made in the window starts nothing");
+    }
 
     fn args(a: &[&str]) -> impl Iterator<Item = String> {
         a.iter().map(|s| s.to_string()).collect::<Vec<_>>().into_iter()

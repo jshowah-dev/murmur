@@ -673,8 +673,7 @@ mod tests {
 
     #[test]
     fn a_chord_in_config_is_used_and_a_bad_one_falls_back_to_the_default() {
-        let mut c = Config::default();
-        c.ptt_key = "LControl+LAlt".into();
+        let mut c = Config { ptt_key: "LControl+LAlt".into(), ..Default::default() };
         assert_eq!(c.ptt_vks(), [0xA2, 0xA4]);
         assert_eq!(c.ptt_key_label(), label("Left Ctrl + Left Alt", "Left Control + Left Option"));
         c.ptt_key = "LWin".into();

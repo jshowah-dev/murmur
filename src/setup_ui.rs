@@ -591,7 +591,8 @@ mod tests {
             }
         }
         let input = egui::RawInput { events, ..Default::default() };
-        let out = ctx.run_ui(input, |ui| app.draw(ui));
+        let mut out = ctx.run_ui(input, |ui| app.draw(ui));
+        out.textures_delta.clear();
         let mut text = Vec::new();
         out.shapes.iter().for_each(|c| walk(&c.shape, &mut text));
         let close = out.viewport_output.values().any(|v| v.commands.contains(&ViewportCommand::Close));

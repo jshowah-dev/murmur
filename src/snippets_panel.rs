@@ -508,7 +508,8 @@ mod tests {
             }
         }
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)), events, ..Default::default() };
-        let out = ctx.run_ui(input, |ui| panel.ui(ui));
+        let mut out = ctx.run_ui(input, |ui| panel.ui(ui));
+        out.textures_delta.clear();
         let mut text = Vec::new();
         out.shapes.iter().for_each(|c| walk(&c.shape, &mut text));
         text

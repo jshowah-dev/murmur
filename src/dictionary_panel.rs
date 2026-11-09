@@ -755,7 +755,9 @@ mod tests {
         let mut output = None;
         // panels settle their sizes over the first frames
         for _ in 0..3 {
-            output = Some(ctx.run_ui(input(), |ui| panel.ui(ui)));
+            let mut o = ctx.run_ui(input(), |ui| panel.ui(ui));
+            o.textures_delta.clear();
+            output = Some(o);
         }
         let mut out = Vec::new();
         output.unwrap().shapes.iter().for_each(|c| walk(&c.shape, &mut out));
@@ -882,7 +884,8 @@ mod tests {
     /// Runs one frame with `events`, returning every piece of text drawn.
     fn frame(ctx: &egui::Context, panel: &mut DictionaryPanel, events: Vec<egui::Event>) -> Vec<String> {
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(736.0, 536.0));
-        let out = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), events, ..Default::default() }, |ui| panel.ui(ui));
+        let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), events, ..Default::default() }, |ui| panel.ui(ui));
+        out.textures_delta.clear();
         fn walk(shape: &egui::epaint::Shape, out: &mut Vec<String>) {
             match shape {
                 egui::epaint::Shape::Text(t) => out.push(t.galley.text().to_string()),

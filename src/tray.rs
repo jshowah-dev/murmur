@@ -148,9 +148,11 @@ impl Tray {
             (about.id().clone(), TrayEvent::About),
             (quit.id().clone(), TrayEvent::Quit),
         ];
-        let builder = TrayIconBuilder::new().with_menu(Box::new(menu.clone())).with_tooltip("Murmur").with_icon(icon(false, false));
+        let builder = TrayIconBuilder::new().with_menu(Box::new(menu.clone())).with_tooltip("Murmur");
         #[cfg(target_os = "macos")]
-        let builder = builder.with_icon_as_template(true);
+        let builder = builder.with_icon_templated(icon(false, false));
+        #[cfg(not(target_os = "macos"))]
+        let builder = builder.with_icon(icon(false, false));
         let _icon = builder.build()?;
         // tray-icon reports clicks on the icon but not on a balloon, so listen on its window for those
         #[cfg(windows)]
@@ -221,9 +223,10 @@ impl Tray {
     fn show_icon(&self, paused: bool, live: bool) {
         if self.shows.get() != (paused, live) {
             self.shows.set((paused, live));
-            let _ = self._icon.set_icon(Some(icon(paused, live)));
             #[cfg(target_os = "macos")]
-            self._icon.set_icon_as_template(true);
+            let _ = self._icon.set_icon_templated(Some(icon(paused, live)));
+            #[cfg(not(target_os = "macos"))]
+            let _ = self._icon.set_icon(Some(icon(paused, live)));
         }
     }
 

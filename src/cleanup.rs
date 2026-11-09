@@ -6,8 +6,12 @@ use crate::snippets::Snippets;
 fn strip_fillers(text: &str, fillers: &[String]) -> String {
     let mut out: Vec<String> = Vec::new();
     for tok in text.split(' ') {
-        let core: String = tok.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_ascii_lowercase();
-        if fillers.iter().any(|f| f == &core) {
+        let raw: String = tok.chars().filter(|c| c.is_alphanumeric()).collect();
+        let core = raw.to_ascii_lowercase();
+        // "the ER" and "5 mm" are words, not hesitations
+        let acronym = raw.len() > 1 && raw.chars().all(|c| c.is_ascii_uppercase());
+        let unit = core == "mm" && out.last().is_some_and(|p| p.ends_with(|c: char| c.is_ascii_digit()));
+        if !acronym && !unit && fillers.iter().any(|f| f == &core) {
             // keep the filler's trailing sentence punctuation on the previous token
             if tok.ends_with(['.', '!', '?']) {
                 if let Some(last) = out.last_mut() {
@@ -76,7 +80,7 @@ fn inflects(prev: &str, next: &str) -> bool {
         return true;
     }
     // "run running", "stop stopped": the last letter doubles before -ing or -ed
-    let last = &prev[prev.len() - 1..];
+    let last = prev.chars().next_back().expect("three or more bytes");
     rest.strip_prefix(last).is_some_and(|e| e == "ing" || e == "ed")
 }
 
@@ -452,7 +456,8 @@ fn apply_symbols(text: &str, symbols: &std::collections::BTreeMap<String, String
 /// The model writes numbers as digits but a spoken decimal as a word: "5 point 2" → "5.2".
 /// Only between two numbers, so "the point 2 of us made" keeps its word.
 fn join_decimals(text: &str) -> String {
-    let number = |t: &str| t.starts_with(|c: char| c.is_ascii_digit()) && t.chars().all(|c| c.is_ascii_digit() || c == '.');
+    // ends in a digit, so a sentence-ending "5." doesn't take the next sentence's "Point 2"
+    let number = |t: &str| t.ends_with(|c: char| c.is_ascii_digit()) && t.chars().all(|c| c.is_ascii_digit() || c == '.');
     let tokens: Vec<&str> = text.split(' ').collect();
     let mut out: Vec<String> = Vec::with_capacity(tokens.len());
     let mut i = 0;
@@ -672,6 +677,28 @@ best,
         let (d, c) = bare_env();
         assert_eq!(clean("That's not rel relevant here.", &d, &Snippets::default(), &c), "That's not relevant here.");
         assert_eq!(clean("Rel- relevant.", &d, &Snippets::default(), &c), "Relevant.");
+    }
+
+    #[test]
+    fn non_ascii_words_never_panic() {
+        let (d, c) = env();
+        // each first word reads as a false start of the next; the point is that "ë" and "é" don't panic
+        assert_eq!(clean("Zoë Zoë's bag.", &d, &Snippets::default(), &c), "Zoë's bag.");
+        assert_eq!(clean("The café cafébar opens.", &d, &Snippets::default(), &c), "The cafébar opens.");
+    }
+
+    #[test]
+    fn fillers_spare_real_words() {
+        let (d, c) = bare_env();
+        assert_eq!(clean("I went to the ER.", &d, &Snippets::default(), &c), "I went to the ER.");
+        assert_eq!(clean("Use a 5 mm screw.", &d, &Snippets::default(), &c), "Use a 5 mm screw.");
+        assert_eq!(clean("Er, send it.", &d, &Snippets::default(), &c), "Send it.");
+    }
+
+    #[test]
+    fn a_sentence_ending_number_takes_no_decimal() {
+        let (d, c) = bare_env();
+        assert_eq!(clean("I counted 5. Point 2 is next.", &d, &Snippets::default(), &c), "I counted 5. Point 2 is next.");
     }
 
     #[test]

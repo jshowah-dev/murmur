@@ -43,7 +43,7 @@ pub fn ensure_file() -> Result<()> {
 
 impl Snippets {
     pub fn from_toml(s: &str) -> Result<Self> {
-        Ok(toml::from_str(s).context("parse snippets.toml")?)
+        toml::from_str(s).context("parse snippets.toml")
     }
 
     pub fn to_toml(&self) -> Result<String> {

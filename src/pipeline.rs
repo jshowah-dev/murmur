@@ -102,10 +102,10 @@ impl State {
     fn collect_segments(&mut self, segs: Vec<crate::vad::Segment>) -> usize {
         let mut last = 0;
         for s in segs {
-            last = s.samples.len().saturating_sub(crate::vad::PRE_ROLL);
+            last = s.speech;
             self.speech_samples += last;
             if !self.speech.is_empty() {
-                self.speech.extend(std::iter::repeat(0.0).take(SEGMENT_GAP));
+                self.speech.extend(std::iter::repeat_n(0.0, SEGMENT_GAP));
             }
             self.speech.extend(s.samples);
         }

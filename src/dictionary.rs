@@ -49,7 +49,7 @@ pub fn path() -> PathBuf {
 /// Split into (leading, core, trailing) where core is the alphabetic-ish token.
 fn split_token(tok: &str) -> (&str, &str, &str) {
     let start = tok.find(|c: char| c.is_alphanumeric()).unwrap_or(tok.len());
-    let end = tok.rfind(|c: char| c.is_alphanumeric()).map(|i| i + 1).unwrap_or(start);
+    let end = tok.char_indices().rev().find(|(_, c)| c.is_alphanumeric()).map_or(start, |(i, c)| i + c.len_utf8());
     (&tok[..start], &tok[start..end], &tok[end..])
 }
 
@@ -96,7 +96,7 @@ impl Dictionary {
     }
 
     pub fn from_toml(s: &str) -> Result<Self> {
-        Ok(toml::from_str(s).context("parse dictionary.toml")?)
+        toml::from_str(s).context("parse dictionary.toml")
     }
 
     pub fn to_toml(&self) -> Result<String> {
@@ -134,16 +134,20 @@ impl Dictionary {
         Ok(SaveOutcome::Saved(file_stamp(p)))
     }
 
-    /// All (phrase, written) pairs, longest phrase first, lowercased phrase.
+    /// All (phrase, written) pairs, longest phrase first, lowercased phrase. A blank written or
+    /// spoken form (possible in a hand-edited file) is left out: it would match any token.
     fn phrases(&self) -> Vec<(Vec<String>, &str)> {
         let mut v: Vec<(Vec<String>, &str)> = Vec::new();
-        for t in &self.terms {
+        for t in self.terms.iter().filter(|t| !t.written.trim().is_empty()) {
             v.push((vec![t.written.to_ascii_lowercase()], &t.written));
             for s in &t.spoken {
-                v.push((s.to_ascii_lowercase().split_whitespace().map(String::from).collect(), &t.written));
+                let words: Vec<String> = s.to_ascii_lowercase().split_whitespace().map(String::from).collect();
+                if !words.is_empty() {
+                    v.push((words, &t.written));
+                }
             }
         }
-        v.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        v.sort_by_key(|e| std::cmp::Reverse(e.0.len()));
         v
     }
 
@@ -187,19 +191,20 @@ impl Dictionary {
                 if i + n > tokens.len() {
                     continue;
                 }
-                let mut ok = true;
-                for j in 0..n {
-                    let (_, core, _) = split_token(tokens[i + j]);
-                    let (stem, _) = if j == n - 1 { strip_suffix(core) } else { (core, "") };
-                    if stem.to_ascii_lowercase() != phrase[j] {
-                        ok = false;
-                        break;
-                    }
+                let same = |j: usize| split_token(tokens[i + j]).1.eq_ignore_ascii_case(&phrase[j]);
+                if !(0..n - 1).all(same) {
+                    continue;
                 }
-                if ok {
+                // the last word whole ("chris"), else with a plural or possessive ending ("hobs")
+                let (_, last_core, trail) = split_token(tokens[i + n - 1]);
+                let suffix = if same(n - 1) {
+                    Some("")
+                } else {
+                    let (stem, suffix) = strip_suffix(last_core);
+                    stem.eq_ignore_ascii_case(&phrase[n - 1]).then_some(suffix)
+                };
+                if let Some(suffix) = suffix {
                     let (lead, _, _) = split_token(tokens[i]);
-                    let (_, last_core, trail) = split_token(tokens[i + n - 1]);
-                    let (_, suffix) = strip_suffix(last_core);
                     out.push(format!("{lead}{written}{suffix}{trail}"));
                     i += n;
                     continue 'outer;
@@ -247,7 +252,7 @@ impl Dictionary {
                 };
                 // Never learn a common word as a spoken form: exact matching would then
                 // rewrite it everywhere ("all" -> "Call" after a clipped first word).
-                if !o_core.is_empty() && !n_core.is_empty() && !phonetic::is_common(o_core) && o_core.to_ascii_lowercase() != n_core.to_ascii_lowercase() && phonetic::similar(o_core, n_core) {
+                if !o_core.is_empty() && !n_core.is_empty() && !phonetic::is_common(o_core) && !o_core.eq_ignore_ascii_case(n_core) && phonetic::similar(o_core, n_core) {
                     let spoken = o_core.to_ascii_lowercase();
                     if let Some(t) = this.terms.iter_mut().find(|t| t.written == n_core) {
                         if !t.spoken.contains(&spoken) {
@@ -341,6 +346,29 @@ mod tests {
             Term { written: "BOL".into(), spoken: vec!["bee oh el".into()], phonetic: true },
             Term { written: "Delgado".into(), spoken: vec![], phonetic: true },
         ])
+    }
+
+    #[test]
+    fn non_ascii_words_pass_through() {
+        assert_eq!(dict().apply("meet me at the café, Zoë"), "meet me at the café, Zoë");
+        let mut d = dict();
+        d.learn("the cafe", "the café");
+    }
+
+    #[test]
+    fn an_empty_spoken_form_matches_nothing() {
+        let d = Dictionary::from_terms(vec![
+            Term { written: "Acme".into(), spoken: vec!["".into(), " ".into()], phonetic: false },
+            Term { written: "".into(), spoken: vec![], phonetic: false },
+        ]);
+        assert_eq!(d.apply("wait … then go"), "wait … then go");
+    }
+
+    #[test]
+    fn a_spoken_form_ending_in_s_matches_whole() {
+        let d = Dictionary::from_terms(vec![Term { written: "Kris".into(), spoken: vec!["chris".into()], phonetic: false }]);
+        assert_eq!(d.apply("call chris now"), "call Kris now");
+        assert_eq!(d.apply("call chris's phone"), "call Kris's phone");
     }
 
     #[test]

@@ -101,7 +101,7 @@ impl HistoryApp {
                 }
                 egui::ScrollArea::vertical().max_height(MAX_LIST).auto_shrink([false, true]).show(ui, |ui| {
                     for (i, (text, at)) in self.items.iter().enumerate() {
-                        let id = ui.id().with(("row", i));
+                        let id = ui.scope_id().with(("row", i));
                         let hovered = ctx.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
                         let row = Frame::new()
                             .fill(if hovered { HOVER } else { Color32::TRANSPARENT })
@@ -245,7 +245,8 @@ mod tests {
             }
         }
         let input = egui::RawInput { events, ..Default::default() };
-        let out = ctx.run_ui(input, |ui| app.draw(ui));
+        let mut out = ctx.run_ui(input, |ui| app.draw(ui));
+        out.textures_delta.clear();
         let mut text = Vec::new();
         out.shapes.iter().for_each(|c| walk(&c.shape, &mut text));
         let close = out.viewport_output.values().any(|v| v.commands.contains(&ViewportCommand::Close));
