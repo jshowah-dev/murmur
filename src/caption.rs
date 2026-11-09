@@ -28,6 +28,7 @@ pub(crate) enum Place {
     #[cfg_attr(not(windows), allow(dead_code))]
     Pill(Pt),
     /// Centred below this point: the bottom centre of the island at its live size (macOS).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     UnderPill(Pt),
 }
 

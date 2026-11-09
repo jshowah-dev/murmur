@@ -61,7 +61,7 @@ fn read(key: PCWSTR, flags: REG_ROUTINE_FLAGS) -> Option<Vec<u8>> {
 
 fn read_string(key: PCWSTR) -> Option<String> {
     let bytes = read(key, RRF_RT_REG_SZ)?;
-    let wide: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|&c| c != 0).collect();
+    let wide: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|&c| u16::from_le_bytes(c)).take_while(|&c| c != 0).collect();
     Some(String::from_utf16_lossy(&wide))
 }
 
