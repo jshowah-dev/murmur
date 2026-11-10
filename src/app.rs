@@ -367,6 +367,8 @@ pub fn main() -> Result<()> {
     let mut locked = false;
     // the loudest chunk of the dictation, logged on release to tune the pill's meter
     let mut loudest: f32 = 0.0;
+    // the last dictation's mic sent nothing but zeros: blocked, muted or the wrong device
+    let mut silent_mic = false;
     let mut resting_tick: u32 = 0;
     let mut output_mute = audio_out::OutputMute::new();
     overlay.set(OverlayState::Idle);
@@ -446,9 +448,9 @@ pub fn main() -> Result<()> {
         while let Ok(chunk) = audio_rx.try_recv() {
             if forwarding {
                 // level is metered here, not in the pipeline, so it keeps moving while a chunk decodes
+                let rms = audio::rms(&chunk);
+                loudest = loudest.max(rms);
                 if listening {
-                    let rms = audio::rms(&chunk);
-                    loudest = loudest.max(rms);
                     let l = (rms * METER_GAIN).min(1.0);
                     overlay.set(if locked { OverlayState::Locked(l) } else { OverlayState::Listening(l) });
                 }
@@ -568,6 +570,8 @@ pub fn main() -> Result<()> {
         while let Some(ev) = ended.take().or_else(|| hk_rx.try_recv().ok()) {
             match ev {
                 HotkeyEvent::Down if !paused => {
+                    loudest = 0.0;
+                    silent_mic = false;
                     // a new dictation closes the last message
                     if mote.is_speaking() {
                         mote.dismiss();
@@ -634,12 +638,17 @@ pub fn main() -> Result<()> {
                 }
                 HotkeyEvent::Release => {
                     let released = Instant::now();
-                    log::info!("loudest voice rms {loudest:.3}");
-                    loudest = 0.0;
                     let dictating = forwarding;
                     while let Ok(chunk) = audio_rx.try_recv() {
+                        loudest = loudest.max(audio::rms(&chunk));
                         let _ = cmd_tx.send(PipelineCmd::Audio(chunk));
                     }
+                    log::info!("loudest voice rms {loudest:.3}");
+                    silent_mic = dictating && is_silent(loudest);
+                    if silent_mic {
+                        log::warn!("the mic sent only silence; it may be blocked in privacy settings, muted, or the wrong input");
+                    }
+                    loudest = 0.0;
                     output_mute.restore();
                     forwarding = false;
                     listening = false;
@@ -694,7 +703,7 @@ pub fn main() -> Result<()> {
             let to = landing_point(awaiting, target, inject::foreground_hwnd(), caret);
             if std::mem::take(&mut unheard_pending) {
                 awaiting = None;
-                said_in = say(&mut mote, &overlay, Message::plain(UNHEARD), overlay.centre_physical(), to);
+                said_in = say(&mut mote, &overlay, Message::plain(unheard_text(silent_mic)), overlay.centre_physical(), to);
             } else if let Some(to) = to {
                 mote.launch(overlay.centre_physical(), to);
                 overlay.set_quiet(true);
@@ -720,12 +729,12 @@ pub fn main() -> Result<()> {
                         Some(Unheard::Here) => {
                             // the mote is at (or flying to) the caret: it says it there; if it's already fading, say starts a fresh flight to the pill target
                             awaiting = None;
-                            mote.say(Message::plain(UNHEARD), overlay.centre_physical(), Target::Pill(overlay.above_physical()));
+                            mote.say(Message::plain(unheard_text(silent_mic)), overlay.centre_physical(), Target::Pill(overlay.above_physical()));
                             said_in = Some(inject::foreground_hwnd());
                         }
                         Some(Unheard::AbovePill) => {
                             awaiting = None;
-                            said_in = say(&mut mote, &overlay, Message::plain(UNHEARD), overlay.centre_physical(), None);
+                            said_in = say(&mut mote, &overlay, Message::plain(unheard_text(silent_mic)), overlay.centre_physical(), None);
                         }
                         None => {
                             let same = awaiting.take().is_some_and(|t| t == inject::foreground_hwnd());
@@ -915,6 +924,28 @@ fn drop_presses(rx: &crossbeam_channel::Receiver<HotkeyEvent>, recording: bool) 
 
 const UNHEARD: &str = "Didn't catch that";
 
+/// Said instead of UNHEARD when the mic sent only zeros. Windows and macOS both hand a blocked
+/// app digital silence rather than an error, so "Didn't catch that" sent you to speak up.
+#[cfg(windows)]
+const SILENT_MIC: &str = "Your mic is silent. Check Windows mic privacy and input.";
+#[cfg(not(windows))]
+const SILENT_MIC: &str = "Your mic is silent. Allow Murmur in Privacy & Security.";
+
+/// Below any real microphone's noise floor: a room reads about 1e-4 even when you say nothing.
+const SILENT_RMS: f32 = 1e-5;
+
+fn is_silent(loudest_rms: f32) -> bool {
+    loudest_rms < SILENT_RMS
+}
+
+fn unheard_text(silent_mic: bool) -> &'static str {
+    if silent_mic {
+        SILENT_MIC
+    } else {
+        UNHEARD
+    }
+}
+
 /// Said when a dictation was heard but the paste failed, so it isn't lost silently.
 fn not_pasted() -> &'static str {
     #[cfg(target_os = "macos")]
@@ -1101,6 +1132,14 @@ fn restore_update_item(tray: &Tray, offer: &update::Offer, installed: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_silent_mic_says_so_instead_of_didnt_catch_that() {
+        assert!(is_silent(0.0), "a blocked mic sends zeros");
+        assert!(!is_silent(1e-4), "a quiet room is not a blocked mic");
+        assert_eq!(unheard_text(true), SILENT_MIC);
+        assert_eq!(unheard_text(false), UNHEARD);
+    }
 
     #[test]
     fn a_window_keeps_the_end_of_a_recording_and_drops_new_presses() {
