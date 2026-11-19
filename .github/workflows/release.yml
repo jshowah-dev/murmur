@@ -47,8 +47,15 @@ jobs:
       - name: Test
         shell: pwsh
         run: |
-          # the ONNX tests crash on System32's older onnxruntime.dll unless the bundled DLLs sit next to the test binaries
-          Copy-Item target/release/*.dll target/release/deps/
+          # the ONNX tests crash on System32's older onnxruntime.dll unless the bundled DLLs sit next to the test binaries;
+          # asked of cargo where those are: on Rust 1.100 target/release/deps no longer existed
+          $exes = cargo test --release --locked --bin murmur --lib --test stt_integration --no-run --message-format=json |
+            ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.executable } | ForEach-Object { $_.executable }
+          if ($LASTEXITCODE -or -not $exes) { throw "no test binaries from cargo test --no-run" }
+          $exes | Split-Path -Parent | Sort-Object -Unique | ForEach-Object {
+            Write-Output "DLLs next to the tests in $_"
+            Copy-Item target/release/*.dll $_
+          }
           cargo test --release --locked --bin murmur
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cargo test --release --locked --lib
