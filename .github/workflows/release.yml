@@ -52,7 +52,9 @@ jobs:
           $exes = cargo test --release --locked --bin murmur --lib --test stt_integration --no-run --message-format=json |
             ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.executable } | ForEach-Object { $_.executable }
           if ($LASTEXITCODE -or -not $exes) { throw "no test binaries from cargo test --no-run" }
-          $exes | Split-Path -Parent | Sort-Object -Unique | ForEach-Object {
+          # on Rust 1.100 they're in target/release itself, where the DLLs already are
+          $release = (Resolve-Path target/release).Path
+          $exes | Split-Path -Parent | Sort-Object -Unique | Where-Object { $_ -ne $release } | ForEach-Object {
             Write-Output "DLLs next to the tests in $_"
             Copy-Item target/release/*.dll $_
           }
