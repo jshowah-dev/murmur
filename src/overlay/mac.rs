@@ -1,8 +1,7 @@
 //! The pill on macOS: drawn by the shared `Pill` and `render` as an island hanging from the top
-//! of the screen, out of the notch if there is one, shown in a `platform::Panel`. It shows only
-//! while you dictate: once it has shrunk back to resting and its landing pulse is over, it hides,
-//! and the menu bar item is what's left. It lets clicks through except while the cursor is over
-//! it, where a right-click opens the menu bar item's menu. No hover hint yet.
+//! of the screen, out of the notch if there is one, shown in a `platform::Panel`. It lets clicks
+//! through except while the cursor is over it, where a right-click opens the menu bar item's
+//! menu. No hover hint yet.
 
 use super::{nearness, render_scaled, Mount, OverlayState, Pill};
 use crate::platform::{self, Panel, Rect};
@@ -33,19 +32,13 @@ impl Overlay {
     }
 
     /// Top-centre of the screen you're working on; the top edge stays put as the island grows.
-    /// Hidden once it's resting and still: the resting pill stays out of the way.
     fn paint(&mut self) {
         let ((mid, top), scale, (notch_w, notch_h)) = platform::top_edge();
         let (w, h, pixels) = render_scaled(self.pill.state, self.pill.look, Mount::Island { notch_w, notch_h }, scale);
         let (w, h) = (w as f32, h as f32);
         self.at = ((mid - w / 2.0).round(), top.round(), w, h);
         let size = (crate::canvas::pixels(w as i32, scale) as usize, crate::canvas::pixels(h as i32, scale) as usize);
-        let look = self.pill.look;
-        if self.pill.state.is_resting() && look.grow == 0.0 && look.pulse == 0.0 {
-            self.panel.hide();
-        } else {
-            self.panel.show(self.at, &pixels, size, scale);
-        }
+        self.panel.show(self.at, &pixels, size, scale);
     }
 
     /// The pill's centre, where the mote takes off.
@@ -84,7 +77,7 @@ impl Overlay {
         }
     }
 
-    /// Re-place the resting pill so it follows the screen you're working on.
+    /// Re-paint the resting pill so it follows the screen you're working on.
     pub fn refresh_resting(&mut self) {
         if self.pill.state.is_resting() {
             self.paint();

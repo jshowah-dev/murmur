@@ -395,13 +395,6 @@ impl Panel {
         front(&self.panel);
     }
 
-    /// Takes it off the screen until the next `show`.
-    pub fn hide(&self) {
-        if self.panel.isVisible() {
-            self.panel.orderOut(None);
-        }
-    }
-
     /// Takes clicks only while the cursor is over it, so the app underneath gets them otherwise.
     /// A right-click there then shows up in `take_pill_right_click`.
     pub fn set_clickable(&self, clickable: bool) {
