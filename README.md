@@ -6,7 +6,7 @@ Offline push-to-talk dictation for Windows and macOS. Hold a key, speak, let go 
 
 ## Features
 
-- **Live preview** — your words appear just below the cursor as you speak, so you can see they're being heard. What's pasted when you let go is unchanged.
+- **Live preview** (off by default) — turn on `live_preview` and your words appear just below the cursor as you speak, so you can see they're being heard. What's pasted when you let go is unchanged.
 - **Push-to-talk** — hold Right Ctrl (Right Option on a Mac; configurable), speak, release. Works in any app that accepts typing.
 - **Hands-free** — double-tap the key to keep recording without holding it. Tap again to finish, Esc to cancel. Stops on its own after 5 minutes.
 - **Spoken commands** — say "new line" or "new paragraph", or punctuation: "comma", "semicolon", "full stop", "question mark", "exclamation point". Punctuation is automatic too; say it only to force a mark. "Add a comma" and "literal comma" keep the word.
@@ -26,7 +26,7 @@ Offline push-to-talk dictation for Windows and macOS. Hold a key, speak, let go 
 |---|---|---|
 | System | Windows 10 or 11, 64-bit (x64) | macOS 13 or later |
 | Processor | 64-bit (x64). No GPU needed | Apple Silicon (M1 or newer) |
-| Memory | About 1.2 GB for the speech model while it's loaded, and about 300 MB more for the live preview | About 1.2 GB for the speech model while it's loaded, and about 300 MB more for the live preview |
+| Memory | About 1.2 GB for the speech model while it's loaded, and about 300 MB more with the live preview on | About 1.2 GB for the speech model while it's loaded, and about 300 MB more with the live preview on |
 | Disk | About 840 MB: the app (36 MB), the speech model (661 MB) and the live preview's model (137 MB). 1.2 GB free for the one-time model download | About 840 MB, mostly the speech models. 1.2 GB free for the one-time model download |
 
 Recognition runs on your processor, so speed depends on it. On a 4-core 2.8 GHz Intel Xeon, 10 seconds of speech took 1.7 s to transcribe with 4 threads. Murmur transcribes long dictations in chunks while you're still talking, so the wait after you let go stays short. It uses one thread per core, up to 8 (see [`threads`](#configuration)): on that 4-core machine, 8 threads took twice as long. Murmur frees the model's memory after 15 idle minutes (`idle_unload_minutes`).
@@ -117,7 +117,8 @@ Settings live in `config.toml` in the config folder (`%APPDATA%\Murmur` on Windo
 | `mute_output` | `true` | Mute the speakers while the key is held |
 | `hands_free_max_minutes` | `5` | Hands-free recordings stop and paste after this long |
 | `idle_unload_minutes` | `15` | Idle minutes before the model is unloaded and the mic closes, to free memory. `0` = never |
-| `live_preview` | `true` | Show your words below the cursor while you speak, from a small speech model (about 140 MB, downloaded in the background the first time). Above the pill when the app doesn't report a cursor. What's pasted is unchanged. `false` = no preview and no download |
+| `live_preview` | `false` | Show your words below the cursor while you speak, from a small speech model (about 140 MB, downloaded in the background the first time). Above the pill when the app doesn't report a cursor. What's pasted is unchanged. `false` = no preview and no download |
+| `message_bubbles` | `false` | Say Murmur's messages ("Didn't catch that", an update) in a bubble at the cursor or under the pill. `false` = as notifications; the dot still flies to the cursor when you let go |
 | `debug_log` | `false` | Also log dictated text. Leave off for privacy |
 
 ### Email formatting

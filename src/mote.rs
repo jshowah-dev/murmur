@@ -70,6 +70,11 @@ impl Message {
         Message(vec![(s.to_string(), crate::correction_ui::rgb(crate::correction_ui::TEXT))])
     }
 
+    /// The words alone, for a notification.
+    pub(crate) fn text(&self) -> String {
+        self.0.iter().map(|(s, _)| s.as_str()).collect()
+    }
+
     pub(crate) fn chars(&self) -> usize {
         self.0.iter().map(|(s, _)| s.chars().count()).sum()
     }
@@ -598,13 +603,32 @@ pub(crate) struct Mote {
     layout: Option<(i32, (i32, i32), RECT)>,
     /// the last frame pushed, to skip an identical one
     last: Option<(Sprite, i32, i32, i32, i32)>,
+    /// messages open into a bubble; false = they wait in `notes` for a notification instead
+    bubbles: bool,
+    notes: Vec<String>,
 }
 
 impl Mote {
-    pub(crate) fn create() -> Result<Mote> {
+    pub(crate) fn create(bubbles: bool) -> Result<Mote> {
         let surface = Surface::create()?;
         let (scale, unit, px_scale, dot) = surface.scales();
-        Ok(Mote { surface, flight: Flight::new(reduced_motion()), shown: false, scale, unit, px_scale, dot, layout: None, last: None })
+        Ok(Mote { surface, flight: Flight::new(reduced_motion()), shown: false, scale, unit, px_scale, dot, layout: None, last: None, bubbles, notes: Vec::new() })
+    }
+
+    /// Without bubbles a message becomes a note to notify, and a mote waiting at the caret fades.
+    /// True when it was taken that way.
+    fn noted(&mut self, m: &Message) -> bool {
+        if self.bubbles {
+            return false;
+        }
+        self.notes.push(m.text());
+        self.flight.fade(Instant::now());
+        true
+    }
+
+    /// Messages said since the last call, for notifications; always empty with bubbles.
+    pub(crate) fn take_notes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.notes)
     }
 
     /// A point from the app in the mote's pixels.
@@ -637,16 +661,26 @@ impl Mote {
     }
 
     pub(crate) fn say(&mut self, m: Message, from: Pt, to: Target) {
+        if self.noted(&m) {
+            return;
+        }
         self.layout = None;
         self.flight.say(m, self.px(from), self.target(to), Instant::now());
     }
 
     pub(crate) fn say_until_dismissed(&mut self, m: Message, from: Pt, to: Target) {
+        if self.noted(&m) {
+            return;
+        }
         self.layout = None;
         self.flight.say_until_dismissed(m, self.px(from), self.target(to), Instant::now());
     }
 
+    /// Without bubbles there's no note to fill: the caller's own notification says it's updating.
     pub(crate) fn say_progress(&mut self, m: Message, from: Pt, to: Target) {
+        if !self.bubbles {
+            return;
+        }
         self.layout = None;
         self.flight.say_progress(m, self.px(from), self.target(to), Instant::now());
     }

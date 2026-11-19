@@ -309,7 +309,7 @@ pub fn main() -> Result<()> {
     let pipeline = pipeline::spawn(cfg.clone(), dict.clone(), snippet_file, cmd_rx, msg_tx, preview_tx);
 
     let mut overlay = Overlay::create()?;
-    let mut mote = Mote::create()?;
+    let mut mote = Mote::create(cfg.message_bubbles)?;
     let mut caption = caption::Caption::create()?;
     // a dictation is under way, so its captions are wanted
     let mut captioning = false;
@@ -418,6 +418,9 @@ pub fn main() -> Result<()> {
             awaiting = None;
         }
         mote.animate();
+        for note in mote.take_notes() {
+            tray.notify("Murmur", &note);
+        }
         if said_in.is_some_and(|w| w != inject::foreground_hwnd()) {
             mote.dismiss();
             said_in = None;
@@ -804,7 +807,7 @@ pub fn main() -> Result<()> {
                         update::write_alerted(&tag);
                         // above the pill too, as macOS may hide the notification; not over a dictation
                         // or another message
-                        if !mote.is_active() {
+                        if cfg.message_bubbles && !mote.is_active() {
                             mote.say(Message::plain(&available(&tag, installed_copy)), overlay.centre_physical(), Target::Pill(overlay.above_physical()));
                         }
                     }

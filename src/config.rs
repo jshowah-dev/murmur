@@ -44,6 +44,9 @@ pub struct Config {
     pub symbols: BTreeMap<String, String>,
     /// Show the words at the caret while you speak, from a small model downloaded on first use. What is pasted is unchanged. false = no preview and no download.
     pub live_preview: bool,
+    /// Say Murmur's messages ("Didn't catch that", an update) in a bubble at the caret or under
+    /// the pill. false = as notifications; the dot still flies to the caret as you let go.
+    pub message_bubbles: bool,
 }
 
 impl Default for Config {
@@ -66,7 +69,8 @@ impl Default for Config {
             email_apps: EMAIL_APPS.iter().map(|s| s.to_string()).collect(),
             email_titles: ["Gmail", "Outlook", "Proton Mail", "Yahoo Mail"].iter().map(|s| s.to_string()).collect(),
             symbols: SYMBOLS.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
-            live_preview: true,
+            live_preview: false,
+            message_bubbles: false,
         }
     }
 }
@@ -523,11 +527,13 @@ mod tests {
     }
 
     #[test]
-    fn live_preview_is_on_for_a_config_written_before_it() {
+    fn live_preview_and_bubbles_are_off_unless_asked_for() {
         let c: Config = toml::from_str("ptt_key = \"F13\"\n").unwrap();
-        assert!(c.live_preview);
-        let off: Config = toml::from_str("live_preview = false\n").unwrap();
-        assert!(!off.live_preview);
+        assert!(!c.live_preview);
+        assert!(!c.message_bubbles);
+        let on: Config = toml::from_str("live_preview = true\nmessage_bubbles = true\n").unwrap();
+        assert!(on.live_preview);
+        assert!(on.message_bubbles);
     }
 
     #[test]
