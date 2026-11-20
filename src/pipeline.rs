@@ -150,6 +150,7 @@ impl State {
             return;
         }
         self.vad.as_mut().unwrap().reset();
+        crate::rewrite::warm(&self.cfg);
         // read while you speak: an Accessibility round trip to the app can take tens of ms
         self.screen = self.cfg.screen_words.then(|| {
             thread::spawn(|| crate::caret::field_text().map(|t| context::screen_words(&t)).unwrap_or_default())
