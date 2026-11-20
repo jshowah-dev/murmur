@@ -83,6 +83,8 @@ struct State {
     last_used: Instant,
     /// The live preview's thread, when it's on: it hears the same audio and each chunk's text.
     preview: Option<Sender<PreviewCmd>>,
+    /// Names being read from the field dictated into, started as the key goes down.
+    screen: Option<JoinHandle<Vec<String>>>,
 }
 
 impl State {
@@ -146,6 +148,10 @@ impl State {
             return;
         }
         self.vad.as_mut().unwrap().reset();
+        // read while you speak: an Accessibility round trip to the app can take tens of ms
+        self.screen = self.cfg.screen_words.then(|| {
+            thread::spawn(|| crate::caret::field_text().map(|t| context::screen_words(&t)).unwrap_or_default())
+        });
         self.speech.clear();
         self.speech_samples = 0;
         self.texts.clear();
@@ -214,10 +220,15 @@ impl State {
             let _ = self.tx.send(PipelineMsg::FileProblem(p));
         }
         let (profile, before) = lookup.join().unwrap_or((Profile::Plain, None));
-        log::info!("profile: {}", profile.name());
+        let screen = self.screen.take().and_then(|h| h.join().ok()).unwrap_or_default();
+        log::info!("profile: {}, {} names on screen", profile.name(), screen.len());
         let cleaned = {
             let d = self.dict.lock().unwrap_or_else(|e| e.into_inner());
-            cleanup::clean(&raw, &d, &self.snippets.current, &self.cfg, profile)
+            if screen.is_empty() {
+                cleanup::clean(&raw, &d, &self.snippets.current, &self.cfg, profile)
+            } else {
+                cleanup::clean(&raw, &d.with_screen_words(screen), &self.snippets.current, &self.cfg, profile)
+            }
         };
         let cleaned_at = Instant::now();
         if cleanup::opens_with_scratch(&raw, &self.cfg) {
@@ -243,6 +254,7 @@ impl State {
 
     fn abort(&mut self) {
         self.recording = false;
+        self.screen = None;
         self.tell_preview(PreviewCmd::Stop);
         self.speech.clear();
         self.speech_samples = 0;
@@ -273,7 +285,7 @@ pub fn spawn(
     thread::Builder::new()
         .name("pipeline".into())
         .spawn(move || {
-            let mut st = State { cfg, dict, snippets, dict_file: DictionaryFile::new(dictionary::path()), tx, vad: None, rec: None, speech: vec![], speech_samples: 0, texts: vec![], recording: false, last_used: Instant::now(), preview };
+            let mut st = State { cfg, dict, snippets, dict_file: DictionaryFile::new(dictionary::path()), tx, vad: None, rec: None, speech: vec![], speech_samples: 0, texts: vec![], recording: false, last_used: Instant::now(), preview, screen: None };
             // Spec § Error handling: a panic is logged and the loop restarts; the tray survives.
             loop {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut st, &rx)));

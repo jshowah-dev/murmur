@@ -111,6 +111,7 @@ Settings live in `config.toml` in the config folder (`%APPDATA%\Murmur` on Windo
 | `self_corrections` | `true` | Keep the second item when you correct yourself: "Tuesday, no, Wednesday" becomes "Wednesday", "at 3, I mean 4" becomes "at 4" |
 | `[symbols]` | slash, backslash, dot, dash, hyphen, underscore, colon, at sign, open paren, close paren, percent | Spoken words that become symbols: "jeff at sign showah dot co" becomes "jeff@showah.co". Say "literal dot" to keep the word. A `[symbols]` table you write replaces the whole list; an empty one keeps every symbol a word |
 | `format_by_context` | `true` | Shape the text for the app it lands in. Today that means email: a greeting and a sign-off get their own lines. `false` = the same output everywhere |
+| `screen_words` | `true` | Spell names the way the field you're typing in already spells them (a reply that names "Vanaja" gets "Vanaja", not "Benaja"). The field's text is read as you press the key, used for that dictation only, and never saved or logged. `false` = never read |
 | `email_apps` | Outlook and Thunderbird on Windows; Mail, Outlook and Thunderbird on a Mac | Programs treated as email: exe names on Windows, bundle ids on a Mac (`com.apple.mail`). One list serves both; each system ignores the other's |
 | `email_titles` | `["Gmail", "Outlook", "Proton Mail", "Yahoo Mail"]` | Window-title text treated as email, in browsers only |
 | `mic_always_on` | `true` | Keep the mic open between dictations so the first word isn't clipped; closes after `idle_unload_minutes` |

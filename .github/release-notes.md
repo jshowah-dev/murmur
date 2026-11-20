@@ -2,11 +2,6 @@
 of the draft release, above GitHub's list of merged PRs. After publishing, empty everything below
 this comment for the release after. -->
 
-## Fixed
+## New
 
-- **One-word answers come through.** A quick "no", "yes" or "done" could be dropped as "Didn't catch that". Murmur now keeps speech as short as a tenth of a second.
-- **The last word isn't clipped.** Murmur keeps listening for a tenth of a second after you let go of the key, so a word you finish as you release it is heard in full.
-
-## Faster
-
-- The app and caret lookups now run while your speech is being transcribed, not after it, and the Mac pastes 25 ms sooner.
+- **Names come out spelled the way the screen spells them.** As you press the key, Murmur reads the text field you're dictating into for names, so a reply to Vanaja gets "Vanaja", not "Benaja". The text is used for that one dictation and never saved or logged. Turn it off with `screen_words = false`.

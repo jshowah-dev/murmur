@@ -47,6 +47,9 @@ pub struct Config {
     /// Say Murmur's messages ("Didn't catch that", an update) in a bubble at the caret or under
     /// the pill. false = as notifications; the dot still flies to the caret as you let go.
     pub message_bubbles: bool,
+    /// Spell names the way the field you're typing in already spells them: as you press the key,
+    /// the field's text is read for names, used for that dictation, and dropped. false = never read.
+    pub screen_words: bool,
 }
 
 impl Default for Config {
@@ -71,6 +74,7 @@ impl Default for Config {
             symbols: SYMBOLS.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
             live_preview: false,
             message_bubbles: false,
+            screen_words: true,
         }
     }
 }

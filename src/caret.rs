@@ -11,8 +11,8 @@ use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPRO
 use windows::Win32::System::Ole::{SafeArrayAccessData, SafeArrayDestroy, SafeArrayGetUBound, SafeArrayUnaccessData};
 #[cfg(windows)]
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomationTextPattern, IUIAutomationTextPattern2, IUIAutomationTextRange,
-    TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start, TextUnit_Character, UIA_TextPattern2Id, UIA_TextPatternId,
+    CUIAutomation, IUIAutomation, IUIAutomationTextPattern, IUIAutomationTextPattern2, IUIAutomationTextRange, IUIAutomationValuePattern,
+    TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start, TextUnit_Character, UIA_TextPattern2Id, UIA_TextPatternId, UIA_ValuePatternId,
 };
 #[cfg(windows)]
 use windows::Win32::UI::HiDpi::{SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
@@ -66,6 +66,18 @@ pub fn find(target: isize) -> Option<Anchor> {
 #[cfg(target_os = "macos")]
 pub fn char_before() -> Option<char> {
     ax::char_before()
+}
+
+/// Longest text read from the focused field; a web app's field can answer with its whole page.
+const FIELD_TEXT_MAX: usize = 20_000;
+
+/// The text of the focused field, if the app says: a native field's value, or a web view's text.
+#[cfg(target_os = "macos")]
+pub fn field_text() -> Option<String> {
+    ax::field_text().map(|t| {
+        let n = t.chars().count();
+        if n > FIELD_TEXT_MAX { t.chars().skip(n - FIELD_TEXT_MAX).collect() } else { t }
+    })
 }
 
 /// The usable part of the screen the anchor is on, or the nearest one.
@@ -264,6 +276,29 @@ mod ax {
         parameterized(&focused, "AXStringForTextMarkerRange", &range).and_then(|s| last_char(&s))
     }
 
+    fn string(s: &Owned) -> Option<String> {
+        unsafe {
+            if CFGetTypeID(s.0) != CFStringGetTypeID() {
+                return None;
+            }
+            Some((*(s.0 as *const CFString)).to_string())
+        }
+    }
+
+    pub(super) fn field_text() -> Option<String> {
+        let system = Owned(unsafe { AXUIElementCreateSystemWide() });
+        unsafe { AXUIElementSetMessagingTimeout(system.0, 0.25) };
+        let focused = attribute(&system, "AXFocusedUIElement")?;
+        if let Some(v) = attribute(&focused, "AXValue").and_then(|v| string(&v)).filter(|v| !v.trim().is_empty()) {
+            return Some(v);
+        }
+        // web views: everything between the first and last text markers
+        let start = attribute(&focused, "AXStartTextMarker")?;
+        let end = attribute(&focused, "AXEndTextMarker")?;
+        let range = marker_range(&focused, &start, &end)?;
+        parameterized(&focused, "AXStringForTextMarkerRange", &range).and_then(|s| string(&s))
+    }
+
     pub(super) fn find(pid: isize) -> Option<Anchor> {
         wake(pid as i32);
         let system = Owned(unsafe { AXUIElementCreateSystemWide() });
@@ -321,6 +356,25 @@ pub fn char_before() -> Option<char> {
             return None;
         }
         range.GetText(1).ok()?.to_string().chars().last()
+    }
+}
+
+/// The text of the focused control, if UI Automation says: its document, else its value.
+#[cfg(windows)]
+pub fn field_text() -> Option<String> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED); // already-initialized is fine
+        let uia: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()?;
+        let el = uia.GetFocusedElement().ok()?;
+        let doc = el
+            .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+            .and_then(|tp| tp.DocumentRange())
+            .and_then(|r| r.GetText(FIELD_TEXT_MAX as i32))
+            .map(|t| t.to_string());
+        match doc {
+            Ok(t) if !t.trim().is_empty() => Some(t),
+            _ => el.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId).ok()?.CurrentValue().ok().map(|v| v.to_string()),
+        }
     }
 }
 

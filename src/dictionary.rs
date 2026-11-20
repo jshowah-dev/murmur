@@ -25,6 +25,9 @@ pub struct Dictionary {
     pub terms: Vec<Term>,
     #[serde(skip, default = "default_loaded_cleanly")]
     loaded_cleanly: bool,
+    /// Names read from the field being dictated into, for this dictation only. Never saved.
+    #[serde(skip)]
+    screen: Vec<String>,
 }
 
 fn default_loaded_cleanly() -> bool {
@@ -67,13 +70,13 @@ fn strip_suffix(core: &str) -> (&str, &str) {
 
 impl Dictionary {
     pub fn from_terms(terms: Vec<Term>) -> Self {
-        Dictionary { terms, loaded_cleanly: true }
+        Dictionary { terms, loaded_cleanly: true, screen: vec![] }
     }
 
     /// An empty dictionary marked as not loaded cleanly; used as a fallback when the real
     /// dictionary failed to load so it can never overwrite the on-disk file.
     pub fn empty_unloaded() -> Self {
-        Dictionary { terms: vec![], loaded_cleanly: false }
+        Dictionary { terms: vec![], loaded_cleanly: false, screen: vec![] }
     }
 
     pub fn seed() -> Self {
@@ -179,6 +182,26 @@ impl Dictionary {
         None
     }
 
+    /// This dictionary plus names read from the screen, for one dictation.
+    pub fn with_screen_words(&self, words: Vec<String>) -> Dictionary {
+        Dictionary { screen: words, ..self.clone() }
+    }
+
+    /// A screen name the heard word is likely a mishearing of: the same word in other case
+    /// ("vanaja"), or one spelled within a letter or two of it ("Benaja"). The name is on screen,
+    /// in the very field being dictated into, so a looser match than the dictionary's is safe;
+    /// common words and acronyms are never changed.
+    fn screen_lookup(&self, core: &str) -> Option<&str> {
+        let n = core.chars().count();
+        if n < 3 || phonetic::is_common(core) || !core.chars().all(|c| c.is_alphabetic() || c == '\'') || core.chars().all(|c| c.is_uppercase()) {
+            return None;
+        }
+        if let Some(w) = self.screen.iter().find(|w| w.eq_ignore_ascii_case(core)) {
+            return Some(w);
+        }
+        self.screen.iter().map(String::as_str).find(|w| w.chars().count().abs_diff(n) <= 1 && phonetic::spelled_close(w, core))
+    }
+
     pub fn apply(&self, text: &str) -> String {
         let tokens: Vec<&str> = text.split(' ').collect();
         let phrases = self.phrases();
@@ -213,7 +236,13 @@ impl Dictionary {
             // phonetic, single token
             let (lead, core, trail) = split_token(tokens[i]);
             let (stem, suffix) = strip_suffix(core);
-            if let Some(written) = self.phonetic_lookup(stem) {
+            // a screen name whole first: "Jones" isn't "Jon" plus "es"
+            let found = self
+                .phonetic_lookup(stem)
+                .map(|w| (w, suffix))
+                .or_else(|| self.screen_lookup(core).map(|w| (w, "")))
+                .or_else(|| self.screen_lookup(stem).map(|w| (w, suffix)));
+            if let Some((written, suffix)) = found {
                 out.push(format!("{lead}{written}{suffix}{trail}"));
             } else {
                 out.push(tokens[i].to_string());
@@ -346,6 +375,36 @@ mod tests {
             Term { written: "BOL".into(), spoken: vec!["bee oh el".into()], phonetic: true },
             Term { written: "Delgado".into(), spoken: vec![], phonetic: true },
         ])
+    }
+
+    fn on_screen(words: &[&str]) -> Dictionary {
+        dict().with_screen_words(words.iter().map(|w| w.to_string()).collect())
+    }
+
+    #[test]
+    fn a_misheard_name_takes_the_screen_spelling() {
+        let d = on_screen(&["Vanaja", "Showah"]);
+        assert_eq!(d.apply("thanks benaja, talk soon"), "thanks Vanaja, talk soon");
+        assert_eq!(d.apply("ask vanaja's team"), "ask Vanaja's team");
+        assert_eq!(d.apply("from Shawa"), "from Showah");
+    }
+
+    #[test]
+    fn screen_names_leave_common_words_and_acronyms_alone() {
+        let d = on_screen(&["Mike", "Utah", "Will"]);
+        assert_eq!(d.apply("I like it, will do"), "I like it, will do");
+        assert_eq!(d.apply("deploy to UAT"), "deploy to UAT");
+    }
+
+    #[test]
+    fn a_whole_screen_name_beats_its_plural_stem() {
+        assert_eq!(on_screen(&["Reyes"]).apply("call reyes"), "call Reyes");
+    }
+
+    #[test]
+    fn screen_names_never_reach_the_saved_file() {
+        let toml = on_screen(&["Vanaja"]).to_toml().unwrap();
+        assert!(!toml.contains("Vanaja"));
     }
 
     #[test]

@@ -155,6 +155,28 @@ mod ax {
     }
 }
 
+/// Most names kept from one field.
+const SCREEN_WORDS_MAX: usize = 300;
+
+/// The names in `text` worth spelling the same way: capitalised words of three letters or more
+/// that aren't common words or acronyms ("Vanaja", "Delgado", "Brinks"), each once.
+pub fn screen_words(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in text.split(|c: char| !(c.is_alphabetic() || c == '\'' || c == '’')) {
+        let w = raw.trim_matches(|c| c == '\'' || c == '’');
+        let w = w.strip_suffix("'s").or_else(|| w.strip_suffix("’s")).unwrap_or(w);
+        let n = w.chars().count();
+        let capitalised = w.chars().next().is_some_and(char::is_uppercase) && !w.chars().all(char::is_uppercase);
+        if n >= 3 && capitalised && w.chars().all(char::is_alphabetic) && !crate::phonetic::is_common(w) && !out.iter().any(|o| o == w) {
+            out.push(w.to_string());
+            if out.len() == SCREEN_WORDS_MAX {
+                break;
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,5 +253,11 @@ mod tests {
     fn profile_names() {
         assert_eq!(Profile::Plain.name(), "plain");
         assert_eq!(Profile::Email.name(), "email");
+    }
+
+    #[test]
+    fn screen_words_are_the_names() {
+        let text = "Hi Vanaja,\n\nThanks for the HAWB list. Delgado's team and Brinks will ship it.\nThanks, Vanaja";
+        assert_eq!(screen_words(text), ["Vanaja", "Delgado", "Brinks"]);
     }
 }
