@@ -1905,7 +1905,7 @@ dependencies = [
 
 [[package]]
 name = "murmur"
-version = "0.5.21"
+version = "0.5.22"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -1926,6 +1926,7 @@ dependencies = [
  "raw-window-handle",
  "rphonetic",
  "serde",
+ "serde_json",
  "sha2",
  "sherpa-onnx",
  "similar",

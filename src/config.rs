@@ -50,6 +50,14 @@ pub struct Config {
     /// Spell names the way the field you're typing in already spells them: as you press the key,
     /// the field's text is read for names, used for that dictation, and dropped. false = never read.
     pub screen_words: bool,
+    /// Let a local AI model untangle self-corrections the rules can't ("ship it today, sorry,
+    /// Friday after QA signs off"). Runs only when a correction word opens a clause, gives up after
+    /// 1.5 s, and is never allowed to add a word. Needs Ollama (or another OpenAI-style server).
+    pub rewrite: bool,
+    /// The OpenAI-style endpoint the rewrite talks to.
+    pub rewrite_url: String,
+    /// The model the rewrite asks for.
+    pub rewrite_model: String,
 }
 
 impl Default for Config {
@@ -75,6 +83,9 @@ impl Default for Config {
             live_preview: false,
             message_bubbles: false,
             screen_words: true,
+            rewrite: false,
+            rewrite_url: "http://localhost:11434/v1".into(),
+            rewrite_model: "gemma3:4b".into(),
         }
     }
 }

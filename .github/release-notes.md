@@ -4,4 +4,4 @@ this comment for the release after. -->
 
 ## New
 
-- **Names come out spelled the way the screen spells them.** As you press the key, Murmur reads the text field you're dictating into for names, so a reply to Vanaja gets "Vanaja", not "Benaja". The text is used for that one dictation and never saved or logged. Turn it off with `screen_words = false`.
+- **An optional AI pass for messy self-corrections.** Say "ship it today, sorry, ship it Friday after QA signs off" and get "ship it Friday after QA signs off." A local model ([Ollama](https://ollama.com) with `gemma3:4b`) runs only when "actually", "sorry", "I mean", "no wait", "scratch that" or "never mind" follows a comma or full stop. It may only remove words, never add them, and must keep how you ended. After 1.5 s Murmur pastes its usual text instead. Off by default: set `rewrite = true`. Nothing leaves your computer.

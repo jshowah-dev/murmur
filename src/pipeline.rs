@@ -230,6 +230,7 @@ impl State {
                 cleanup::clean(&raw, &d.with_screen_words(screen), &self.snippets.current, &self.cfg, profile)
             }
         };
+        let cleaned = crate::rewrite::rewrite(&self.cfg, &cleaned).unwrap_or(cleaned);
         let cleaned_at = Instant::now();
         if cleanup::opens_with_scratch(&raw, &self.cfg) {
             log::info!("scratch that, then {} chars", cleaned.chars().count());

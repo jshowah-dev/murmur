@@ -10,6 +10,7 @@ pub mod model_fetch;
 pub mod notice;
 pub mod phonetic;
 pub mod preview;
+pub mod rewrite;
 pub mod snippets;
 pub mod snippets_edit;
 pub mod stt;
