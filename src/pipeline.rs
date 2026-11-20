@@ -18,6 +18,8 @@ pub enum PipelineCmd {
     Start,
     /// Carries the moment the hotkey was released, for the release-to-text timing.
     Stop(Instant),
+    /// Like Stop, but the words are an instruction for the selected text, which they rewrite.
+    Edit(Instant),
     Abort,
     Audio(Vec<f32>),
     Shutdown,
@@ -175,7 +177,7 @@ impl State {
         }
     }
 
-    fn stop(&mut self, released: Instant) {
+    fn stop(&mut self, released: Instant, edit: bool) {
         if !self.recording {
             return;
         }
@@ -207,6 +209,10 @@ impl State {
             return;
         }
         log::debug!("raw: {raw}");
+        if edit {
+            self.edit(raw);
+            return;
+        }
         if cleanup::scratches_itself(&raw, &self.cfg) {
             let undo = cleanup::is_scratch(&raw, &self.cfg);
             log::info!("scratch that (undo {undo})");
@@ -251,6 +257,28 @@ impl State {
             cleaned_at.elapsed().as_millis()
         );
         let _ = self.tx.send(PipelineMsg::Done(Entry { raw, cleaned, inject, at: Instant::now() }));
+    }
+
+    /// Rewrites the selected text by the spoken instruction and pastes the result over it.
+    fn edit(&mut self, instruction: String) {
+        let Some(selected) = crate::caret::selected_text().filter(|s| !s.trim().is_empty()) else {
+            let _ = self.tx.send(PipelineMsg::Error(notice::EDIT_NO_SELECTION.into()));
+            return;
+        };
+        let t0 = Instant::now();
+        let keep = self.dict.lock().unwrap_or_else(|e| e.into_inner()).terms_in(&selected);
+        let result = crate::rewrite::edit(&self.cfg, &instruction, &selected, &keep);
+        log::info!("edit: {} chars selected, {} in {} ms", selected.chars().count(), if result.is_ok() { "rewritten" } else { "failed" }, t0.elapsed().as_millis());
+        match result {
+            Ok(text) => {
+                let inject = inject::paste(&text).map_err(|e| log::error!("paste: {e:#}")).ok();
+                let _ = self.tx.send(PipelineMsg::Done(Entry { raw: instruction, cleaned: text, inject, at: Instant::now() }));
+            }
+            Err(e) => {
+                log::warn!("edit: {e:#}");
+                let _ = self.tx.send(PipelineMsg::Error(notice::EDIT_FAILED.into()));
+            }
+        }
     }
 
     fn abort(&mut self) {
@@ -311,7 +339,8 @@ fn run(st: &mut State, rx: &Receiver<PipelineCmd>) {
         match rx.recv_timeout(Duration::from_secs(30)) {
             Ok(PipelineCmd::Start) => st.start(),
             Ok(PipelineCmd::Audio(c)) => st.audio(c),
-            Ok(PipelineCmd::Stop(at)) => st.stop(at),
+            Ok(PipelineCmd::Stop(at)) => st.stop(at, false),
+            Ok(PipelineCmd::Edit(at)) => st.stop(at, true),
             Ok(PipelineCmd::Abort) => st.abort(),
             Ok(PipelineCmd::Shutdown) | Err(RecvTimeoutError::Disconnected) => return,
             Err(RecvTimeoutError::Timeout) => st.maybe_unload(),

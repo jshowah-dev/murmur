@@ -12,6 +12,8 @@ pub const MIC: &str = "Can't open the microphone";
 /// Said above the pill when the speech model fails to load for a dictation.
 pub const MODEL_LOAD: &str = "Couldn't load the speech model. Try again.";
 /// Said above the pill when the pipeline panicked and restarted.
+pub const EDIT_NO_SELECTION: &str = "Select the text to change first";
+pub const EDIT_FAILED: &str = "Couldn't rewrite it. Is Ollama running?";
 pub const RESTARTED: &str = "Something went wrong. Try again.";
 
 /// Longest a file's reason runs: alone in a balloon, and as one of several.

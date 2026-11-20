@@ -639,7 +639,7 @@ pub fn main() -> Result<()> {
                         capture.take();
                     }
                 }
-                HotkeyEvent::Release => {
+                ev @ (HotkeyEvent::Release | HotkeyEvent::Edit) => {
                     let released = Instant::now();
                     let dictating = forwarding;
                     // Keep listening a moment: the last word often ends as the key comes up, and
@@ -668,7 +668,7 @@ pub fn main() -> Result<()> {
                     forwarding = false;
                     listening = false;
                     locked = false;
-                    let _ = cmd_tx.send(PipelineCmd::Stop(released));
+                    let _ = cmd_tx.send(if ev == HotkeyEvent::Edit { PipelineCmd::Edit(released) } else { PipelineCmd::Stop(released) });
                     if !cfg.mic_always_on {
                         capture.take();
                     }
@@ -933,7 +933,7 @@ const PRE_ROLL_SAMPLES: usize = 8_000;
 fn drop_presses(rx: &crossbeam_channel::Receiver<HotkeyEvent>, recording: bool) -> Option<HotkeyEvent> {
     let mut end = None;
     while let Ok(ev) = rx.try_recv() {
-        if recording && end.is_none() && matches!(ev, HotkeyEvent::Release | HotkeyEvent::Cancel) {
+        if recording && end.is_none() && matches!(ev, HotkeyEvent::Release | HotkeyEvent::Edit | HotkeyEvent::Cancel) {
             end = Some(ev);
         }
     }

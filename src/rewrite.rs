@@ -28,6 +28,12 @@ fn words(s: &str) -> Vec<String> {
     s.split(|c: char| !(c.is_alphanumeric() || c == '\'' || c == '’')).filter(|w| !w.is_empty()).map(|w| w.to_lowercase().replace('’', "'")).collect()
 }
 
+/// True when `hay` has `needle`'s words in a row.
+fn holds(hay: &str, needle: &str) -> bool {
+    let (h, n) = (words(hay), words(needle));
+    !n.is_empty() && h.windows(n.len()).any(|w| w == n)
+}
+
 /// True when a correction marker opens a clause after something it could take back: the word
 /// before it ends with punctuation, as in "today, sorry, Friday" (not "I actually like it").
 pub fn wants_rewrite(text: &str) -> bool {
@@ -68,12 +74,36 @@ fn request_body(model: &str, text: &str) -> String {
     serde_json::json!({"model": model, "messages": messages, "temperature": 0, "max_tokens": 400}).to_string()
 }
 
-fn ask(cfg: &Config, text: &str) -> anyhow::Result<String> {
-    let agent = ureq::Agent::config_builder().timeout_global(Some(TIMEOUT)).build().new_agent();
+fn post(cfg: &Config, request: String, timeout: Duration) -> anyhow::Result<String> {
+    let agent = ureq::Agent::config_builder().timeout_global(Some(timeout)).build().new_agent();
     let url = format!("{}/chat/completions", cfg.rewrite_url.trim_end_matches('/'));
-    let body = agent.post(&url).header("Content-Type", "application/json").send(request_body(&cfg.rewrite_model, text))?.body_mut().read_to_string()?;
+    let body = agent.post(&url).header("Content-Type", "application/json").send(request)?.body_mut().read_to_string()?;
     let v: serde_json::Value = serde_json::from_str(&body)?;
     v["choices"][0]["message"]["content"].as_str().map(String::from).ok_or_else(|| anyhow::anyhow!("no text in the reply"))
+}
+
+/// How long an edit may take: you asked for it and are waiting, and the model may need loading.
+const EDIT_TIMEOUT: Duration = Duration::from_secs(10);
+
+const EDIT_SYSTEM: &str = "You edit text. The user message is JSON: {\"instruction\": ..., \"text\": ...}. \
+Rewrite the text as the instruction asks and output only the rewritten text: no preamble, no quotes, no notes. \
+Keep the text's language, names and facts unless the instruction says otherwise, and write every word in \"keep\" \
+exactly as it is given. If the instruction is not about changing the text, output the text unchanged.";
+
+fn edit_body(model: &str, instruction: &str, text: &str, keep: &[String]) -> String {
+    let user = serde_json::json!({"instruction": instruction, "text": text, "keep": keep}).to_string();
+    serde_json::json!({"model": model, "messages": [{"role": "system", "content": EDIT_SYSTEM}, {"role": "user", "content": user}], "temperature": 0.2}).to_string()
+}
+
+/// `text` rewritten by the spoken `instruction` ("make this friendlier"), with the words in
+/// `keep` (dictionary terms) spelled as given.
+pub fn edit(cfg: &Config, instruction: &str, text: &str, keep: &[String]) -> anyhow::Result<String> {
+    let out = post(cfg, edit_body(&cfg.rewrite_model, instruction, text, keep), EDIT_TIMEOUT)?;
+    let out = out.trim().trim_matches(|c| c == '"' || c == '`' || c == '“' || c == '”').trim();
+    anyhow::ensure!(!out.is_empty(), "the model sent back nothing");
+    // a question that wasn't an edit comes back inside the reply, to be pasted over your text
+    anyhow::ensure!(!holds(out, instruction) || holds(text, instruction), "the model echoed the instruction");
+    Ok(out.to_string())
 }
 
 /// `text` rewritten when it holds a correction the model can untangle, else None. Never logs the text.
@@ -82,7 +112,7 @@ pub fn rewrite(cfg: &Config, text: &str) -> Option<String> {
         return None;
     }
     let t0 = std::time::Instant::now();
-    let reply = ask(cfg, text);
+    let reply = post(cfg, request_body(&cfg.rewrite_model, text), TIMEOUT);
     let ms = t0.elapsed().as_millis();
     match reply {
         Ok(r) => {
@@ -133,6 +163,20 @@ mod tests {
     #[test]
     fn the_same_words_back_is_no_rewrite() {
         assert_eq!(accept("That's fine. Actually, I like it.", "That’s fine. Actually, I like it."), None);
+    }
+
+    #[test]
+    fn an_echoed_instruction_is_caught() {
+        assert!(holds("What's the weather tomorrow? hey so i looked", "What's the weather tomorrow?"));
+        assert!(!holds("Hey, I looked at the numbers.", "Make this more professional."));
+    }
+
+    #[test]
+    fn an_edit_sends_the_terms_to_keep() {
+        let v: serde_json::Value = serde_json::from_str(&edit_body("m", "Shorter.", "the hawb count", &["HAWB".into()])).unwrap();
+        let user: serde_json::Value = serde_json::from_str(v["messages"][1]["content"].as_str().unwrap()).unwrap();
+        assert_eq!(user["keep"][0], "HAWB");
+        assert_eq!(user["instruction"], "Shorter.");
     }
 
     #[test]

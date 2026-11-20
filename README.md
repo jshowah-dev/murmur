@@ -77,6 +77,7 @@ The default key is **Right Ctrl** on Windows and **Right Option** on a Mac.
 - **Dictate:** hold the key, speak, release. The text appears at the cursor.
 - **Hands-free:** double-tap the key. Tap once more to paste, or press Esc to discard.
 - **Fix the last dictation:** hold **Shift** and press the key.
+- **Edit by voice (Mac):** select some text, hold **Control** with the key and say what to do: "make this more professional", "shorter", "turn this into bullet points". The selection is rewritten by a local AI model and replaced. Needs [Ollama](https://ollama.com) with `ollama pull gemma3:4b` (the model named by `rewrite_model`); nothing leaves your computer, and Cmd+Z undoes it. Not available when your push-to-talk key is a Control key.
 
 Murmur lives in the system tray on Windows (teal microphone; grey when paused) and in the menu bar on a Mac. Right-click the tray icon, click the menu bar icon, or right-click the pill for:
 

@@ -4,4 +4,4 @@ this comment for the release after. -->
 
 ## New
 
-- **An optional AI pass for messy self-corrections.** Say "ship it today, sorry, ship it Friday after QA signs off" and get "ship it Friday after QA signs off." A local model ([Ollama](https://ollama.com) with `gemma3:4b`) runs only when "actually", "sorry", "I mean", "no wait", "scratch that" or "never mind" follows a comma or full stop. It may only remove words, never add them, and must keep how you ended. After 1.5 s Murmur pastes its usual text instead. Off by default: set `rewrite = true`. Nothing leaves your computer.
+- **Edit by voice (Mac).** Select some text, hold Control with your push-to-talk key and say what to do: "make this more professional", "shorter", "turn this into bullet points". A local AI model rewrites the selection and puts the result in its place, keeping your dictionary's terms as written. Needs [Ollama](https://ollama.com) with `gemma3:4b`. Nothing leaves your computer, and Cmd+Z undoes it.

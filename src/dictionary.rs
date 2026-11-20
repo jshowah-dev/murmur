@@ -182,6 +182,12 @@ impl Dictionary {
         None
     }
 
+    /// The written forms of the terms `text` holds, in any case: what an AI edit must keep as is.
+    pub fn terms_in(&self, text: &str) -> Vec<String> {
+        let lower = text.to_lowercase();
+        self.terms.iter().filter(|t| !t.written.trim().is_empty() && lower.contains(&t.written.to_lowercase())).map(|t| t.written.clone()).collect()
+    }
+
     /// This dictionary plus names read from the screen, for one dictation.
     pub fn with_screen_words(&self, words: Vec<String>) -> Dictionary {
         Dictionary { screen: words, ..self.clone() }
@@ -399,6 +405,11 @@ mod tests {
     #[test]
     fn a_whole_screen_name_beats_its_plural_stem() {
         assert_eq!(on_screen(&["Reyes"]).apply("call reyes"), "call Reyes");
+    }
+
+    #[test]
+    fn terms_in_finds_terms_in_any_case() {
+        assert_eq!(dict().terms_in("the hawb count and the delgado file"), ["HAWB", "Delgado"]);
     }
 
     #[test]

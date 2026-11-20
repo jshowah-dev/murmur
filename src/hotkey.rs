@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 
 // virtual-key codes
 const VK_SHIFT: u16 = 0x10;
+#[cfg(target_os = "macos")]
+const VK_CONTROL: u16 = 0x11;
 const VK_ESCAPE: u16 = 0x1B;
 const VK_LSHIFT: u16 = 0xA0;
 const VK_RSHIFT: u16 = 0xA1;
@@ -18,6 +20,8 @@ pub enum HotkeyEvent {
     FixLast,
     /// Second press of a double-tap: recording stays on after the key is let go.
     Latch,
+    /// A Release with Control held during the hold: the words are an instruction for the selection.
+    Edit,
 }
 
 const POLL: Duration = Duration::from_millis(30);
@@ -30,13 +34,14 @@ pub struct Input {
     pub ptt: bool,
     pub shift: bool,
     pub esc: bool,
+    pub ctrl: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
 enum Phase {
     /// Key up. `last_tap` is when a too-short press was released, for double-tap detection.
     Idle { last_tap: Option<Instant> },
-    Held { t0: Instant, shift: bool, sent_down: bool, sent_press: bool },
+    Held { t0: Instant, shift: bool, ctrl: bool, sent_down: bool, sent_press: bool },
     /// Hands-free recording. `armed` once the latching press has been let go; the next press stops.
     Latched { since: Instant, armed: bool },
     /// Recording is over but the key is still down; wait for key-up so it does not start another.
@@ -46,7 +51,8 @@ enum Phase {
 /// Push-to-talk state machine, fed one key snapshot per poll.
 /// Down fires immediately on key-down (unless Shift is held) so capture starts early;
 /// Press is reported only after MIN_HOLD; a release before MIN_HOLD sends Cancel instead of Release.
-/// Shift at any point during the hold means FixLast instead of a recording.
+/// Shift at any point during the hold means FixLast instead of a recording; Control means the
+/// recording ends in Edit instead of Release.
 /// A second press within DOUBLE_TAP of a cancelled tap sends Down + Latch; while latched, a press
 /// sends Release, Esc sends Cancel, and `max` after latching sends Release.
 pub struct Machine {
@@ -71,18 +77,18 @@ impl Machine {
             Phase::Idle { last_tap } if i.ptt => {
                 log::info!("ptt down, shift={}", i.shift);
                 if i.shift {
-                    Phase::Held { t0: now, shift: true, sent_down: false, sent_press: false }
+                    Phase::Held { t0: now, shift: true, ctrl: false, sent_down: false, sent_press: false }
                 } else if last_tap.is_some_and(|t| now.duration_since(t) <= DOUBLE_TAP) {
                     log::info!("hands-free latched");
                     out.extend([Down, Latch]);
                     Phase::Latched { since: now, armed: false }
                 } else {
                     out.push(Down);
-                    Phase::Held { t0: now, shift: false, sent_down: true, sent_press: false }
+                    Phase::Held { t0: now, shift: false, ctrl: i.ctrl, sent_down: true, sent_press: false }
                 }
             }
             p @ Phase::Idle { .. } => p,
-            Phase::Held { t0, mut shift, mut sent_down, mut sent_press } if i.ptt => {
+            Phase::Held { t0, mut shift, ctrl, mut sent_down, mut sent_press } if i.ptt => {
                 // Shift is often reported a poll or two late; any Shift during the hold
                 // turns the press into fix-last and abandons the capture.
                 if !shift && i.shift {
@@ -98,14 +104,15 @@ impl Machine {
                     out.push(Press);
                     sent_press = true;
                 }
-                Phase::Held { t0, shift, sent_down, sent_press }
+                // Control too may land a poll late
+                Phase::Held { t0, shift, ctrl: ctrl || i.ctrl, sent_down, sent_press }
             }
-            Phase::Held { shift, sent_press, .. } => {
+            Phase::Held { shift, ctrl, sent_press, .. } => {
                 if shift {
                     out.push(FixLast);
                     Phase::Idle { last_tap: None }
                 } else if sent_press {
-                    out.push(Release);
+                    out.push(if ctrl { Edit } else { Release });
                     Phase::Idle { last_tap: None }
                 } else {
                     out.push(Cancel);
@@ -125,7 +132,7 @@ impl Machine {
             Phase::Latched { armed: false, .. } if i.ptt && i.shift => {
                 // Shift on the latching press still means fix-last.
                 out.push(Cancel);
-                Phase::Held { t0: now, shift: true, sent_down: false, sent_press: false }
+                Phase::Held { t0: now, shift: true, ctrl: false, sent_down: false, sent_press: false }
             }
             Phase::Latched { since, armed: false } => Phase::Latched { since, armed: !i.ptt },
             Phase::Latched { .. } if i.ptt => {
@@ -149,6 +156,21 @@ fn shift_down() -> bool {
     down(VK_SHIFT) || down(VK_LSHIFT) || down(VK_RSHIFT)
 }
 
+/// Mac only: on Windows, Right Alt is AltGr on many layouts and reports Control as held.
+#[cfg(target_os = "macos")]
+fn ctrl_down() -> bool {
+    down(VK_CONTROL)
+}
+#[cfg(not(target_os = "macos"))]
+fn ctrl_down() -> bool {
+    false
+}
+
+/// Whether the PTT key is, or includes, a Control key.
+fn is_control(vks: &[u16]) -> bool {
+    vks.iter().any(|vk| matches!(vk, 0x11 | 0xA2 | 0xA3))
+}
+
 /// Whether the PTT key is held: every key of a chord is down. No keys is no PTT key, so the
 /// thread isn't listening for one.
 fn all_down(vks: &[u16], down: impl Fn(u16) -> bool) -> bool {
@@ -163,8 +185,9 @@ pub fn spawn(ptt_vks: Arc<Mutex<Vec<u16>>>, max: Duration, tx: Sender<HotkeyEven
         .spawn(move || {
             let mut m = Machine::new(max);
             loop {
-                let ptt = ptt_vks.lock().map(|vks| all_down(&vks, down)).unwrap_or(false);
-                let input = Input { ptt, shift: shift_down(), esc: down(VK_ESCAPE) };
+                let (ptt, ctrl_key) = ptt_vks.lock().map(|vks| (all_down(&vks, down), is_control(&vks))).unwrap_or((false, false));
+                // a Control push-to-talk key holds Control on every dictation, so it can't mean edit
+                let input = Input { ptt, shift: shift_down(), esc: down(VK_ESCAPE), ctrl: !ctrl_key && ctrl_down() };
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| m.step(input, Instant::now()))) {
                     Ok(evs) => {
                         for ev in evs {
@@ -198,8 +221,27 @@ mod tests {
         let mut m = Machine::new(MAX);
         steps
             .iter()
-            .flat_map(|&(ms, ptt, shift, esc)| m.step(Input { ptt, shift, esc }, t0 + Duration::from_millis(ms)))
+            .flat_map(|&(ms, ptt, shift, esc)| m.step(Input { ptt, shift, esc, ctrl: false }, t0 + Duration::from_millis(ms)))
             .collect()
+    }
+
+    #[test]
+    fn a_control_ptt_key_never_means_edit() {
+        assert!(is_control(&[0xA3]));
+        assert!(is_control(&[0xA2, 0xA4]));
+        assert!(!is_control(&[0xA5]));
+    }
+
+    #[test]
+    fn control_during_the_hold_ends_in_edit() {
+        let t0 = Instant::now();
+        let mut m = Machine::new(MAX);
+        let mut evs = vec![];
+        // Control lands a poll after the key, as it often does
+        for (ms, ptt, ctrl) in [(0, true, false), (30, true, true), (200, true, true), (400, false, false)] {
+            evs.extend(m.step(Input { ptt, ctrl, ..Default::default() }, t0 + Duration::from_millis(ms)));
+        }
+        assert_eq!(evs, [Down, Press, Edit]);
     }
 
     #[test]

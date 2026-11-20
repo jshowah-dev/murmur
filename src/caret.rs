@@ -68,6 +68,18 @@ pub fn char_before() -> Option<char> {
     ax::char_before()
 }
 
+/// The text selected in the focused field, if the app says.
+#[cfg(target_os = "macos")]
+pub fn selected_text() -> Option<String> {
+    ax::selected_text()
+}
+
+/// Edit by voice is Mac only for now, so Windows never asks.
+#[cfg(windows)]
+pub fn selected_text() -> Option<String> {
+    None
+}
+
 /// Longest text read from the focused field; a web app's field can answer with its whole page.
 const FIELD_TEXT_MAX: usize = 20_000;
 
@@ -283,6 +295,18 @@ mod ax {
             }
             Some((*(s.0 as *const CFString)).to_string())
         }
+    }
+
+    pub(super) fn selected_text() -> Option<String> {
+        let system = Owned(unsafe { AXUIElementCreateSystemWide() });
+        unsafe { AXUIElementSetMessagingTimeout(system.0, 0.25) };
+        let focused = attribute(&system, "AXFocusedUIElement")?;
+        if let Some(s) = attribute(&focused, "AXSelectedText").and_then(|v| string(&v)).filter(|s| !s.is_empty()) {
+            return Some(s);
+        }
+        // web views: the selected text-marker range
+        let range = attribute(&focused, "AXSelectedTextMarkerRange")?;
+        parameterized(&focused, "AXStringForTextMarkerRange", &range).and_then(|s| string(&s))
     }
 
     pub(super) fn field_text() -> Option<String> {

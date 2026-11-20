@@ -1,6 +1,6 @@
 [package]
 name = "murmur"
-version = "0.5.22"
+version = "0.5.23"
 license = "MIT"
 edition = "2021"
 build = "build.rs"
