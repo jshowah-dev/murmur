@@ -192,9 +192,16 @@ impl State {
         // decodes. Read at release: the profile belongs to the window that receives the text.
         let lookup = {
             let cfg = self.cfg.clone();
+            let screen = self.screen.take();
             thread::spawn(move || {
                 let profile = if cfg.format_by_context { context::detect(&cfg) } else { Profile::Plain };
-                (profile, crate::caret::char_before())
+                let before = crate::caret::char_before();
+                // An app's first Accessibility query can come back empty while it builds its tree
+                // (Outlook, 2026-11-20: 0 names at key-down, 24 once asked again), so ask again.
+                let screen = screen.map(|h| h.join().unwrap_or_default()).map(|w| {
+                    if w.is_empty() { crate::caret::field_text().map(|t| context::screen_words(&t)).unwrap_or_default() } else { w }
+                });
+                (profile, before, screen.unwrap_or_default())
             })
         };
         self.last_used = Instant::now();
@@ -226,8 +233,7 @@ impl State {
         if let Some(p) = self.dict_file.refresh(&self.dict) {
             let _ = self.tx.send(PipelineMsg::FileProblem(p));
         }
-        let (profile, before) = lookup.join().unwrap_or((Profile::Plain, None));
-        let screen = self.screen.take().and_then(|h| h.join().ok()).unwrap_or_default();
+        let (profile, before, screen) = lookup.join().unwrap_or((Profile::Plain, None, Vec::new()));
         log::info!("profile: {}, {} names on screen", profile.name(), screen.len());
         let cleaned = {
             let d = self.dict.lock().unwrap_or_else(|e| e.into_inner());
