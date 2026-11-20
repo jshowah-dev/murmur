@@ -94,7 +94,8 @@ pub fn paste(text: &str) -> Result<InjectRecord> {
     if !crate::platform::accessibility_trusted(false) {
         return Err(anyhow!("Accessibility isn't allowed for Murmur, so the text was left on the clipboard"));
     }
-    sleep(Duration::from_millis(30));
+    // the pasteboard write above is synchronous; this is only a margin
+    sleep(Duration::from_millis(5));
     let pid = foreground_hwnd();
     command(KEY_V);
     CLIPBOARD.restore_later(swapped);

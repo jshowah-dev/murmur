@@ -41,7 +41,8 @@ impl Vad {
         config.silero_vad.model = Some(model.to_string_lossy().into_owned());
         config.silero_vad.threshold = 0.5;
         config.silero_vad.min_silence_duration = min_silence_ms as f32 / 1000.0;
-        config.silero_vad.min_speech_duration = 0.25;
+        // short enough for a one-word "yes" or "done"
+        config.silero_vad.min_speech_duration = 0.1;
         config.silero_vad.max_speech_duration = 15.0;
         config.silero_vad.window_size = WINDOW as i32;
         config.sample_rate = 16_000;

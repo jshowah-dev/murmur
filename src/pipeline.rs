@@ -38,7 +38,8 @@ pub enum PipelineMsg {
     FileProblem(FileProblem),
 }
 
-const MIN_SPEECH_SAMPLES: usize = 16_000 * 300 / 1000;
+/// A one-word answer ("yes", "done") can have under 300 ms of voiced speech.
+const MIN_SPEECH_SAMPLES: usize = 16_000 * 120 / 1000;
 // silence inserted between VAD segments so the model hears the pause but sees one utterance
 const SEGMENT_GAP: usize = 16_000 * 200 / 1000;
 /// Long recordings are decoded in chunks while they are still being made: whole-utterance
@@ -178,6 +179,15 @@ impl State {
         let _ = self.tx.send(PipelineMsg::Processing);
         let segs = self.vad.as_mut().map(|v| v.flush()).unwrap_or_default();
         self.collect_segments(segs);
+        // Both are Accessibility round trips to the app in front, so they run while the speech
+        // decodes. Read at release: the profile belongs to the window that receives the text.
+        let lookup = {
+            let cfg = self.cfg.clone();
+            thread::spawn(move || {
+                let profile = if cfg.format_by_context { context::detect(&cfg) } else { Profile::Plain };
+                (profile, crate::caret::char_before())
+            })
+        };
         self.last_used = Instant::now();
         let tail_secs = self.speech.len() as f32 / 16_000.0;
         if self.speech_samples >= MIN_SPEECH_SAMPLES && !self.speech.is_empty() {
@@ -203,8 +213,7 @@ impl State {
         if let Some(p) = self.dict_file.refresh(&self.dict) {
             let _ = self.tx.send(PipelineMsg::FileProblem(p));
         }
-        // read now, as the text is about to be pasted: the profile belongs to the window that receives it
-        let profile = if self.cfg.format_by_context { context::detect(&self.cfg) } else { Profile::Plain };
+        let (profile, before) = lookup.join().unwrap_or((Profile::Plain, None));
         log::info!("profile: {}", profile.name());
         let cleaned = {
             let d = self.dict.lock().unwrap_or_else(|e| e.into_inner());
@@ -217,7 +226,7 @@ impl State {
             return;
         }
         // paste falls back to typing the text in, so an error here is only logged
-        let pasted = cleanup::spaced_after(crate::caret::char_before(), &cleaned);
+        let pasted = cleanup::spaced_after(before, &cleaned);
         let inject = inject::paste(&pasted).map_err(|e| log::error!("paste: {e:#}")).ok();
         let ms = |a: Instant, b: Instant| b.duration_since(a).as_millis();
         log::info!(

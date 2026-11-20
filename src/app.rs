@@ -642,6 +642,18 @@ pub fn main() -> Result<()> {
                 HotkeyEvent::Release => {
                     let released = Instant::now();
                     let dictating = forwarding;
+                    // Keep listening a moment: the last word often ends as the key comes up, and
+                    // the mic still holds audio from before the release.
+                    let until = released + RELEASE_TAIL;
+                    while let Some(left) = until.checked_duration_since(Instant::now()).filter(|_| dictating) {
+                        match audio_rx.recv_timeout(left) {
+                            Ok(chunk) => {
+                                loudest = loudest.max(audio::rms(&chunk));
+                                let _ = cmd_tx.send(PipelineCmd::Audio(chunk));
+                            }
+                            Err(_) => break,
+                        }
+                    }
                     while let Ok(chunk) = audio_rx.try_recv() {
                         loudest = loudest.max(audio::rms(&chunk));
                         let _ = cmd_tx.send(PipelineCmd::Audio(chunk));
@@ -908,6 +920,9 @@ const QUIT_WAIT: Duration = Duration::from_secs(10);
 const METER_GAIN: f32 = 11.0;
 #[cfg(target_os = "macos")]
 const METER_GAIN: f32 = 40.0;
+
+/// How long a dictation keeps hearing after the key comes up, so its last word isn't clipped.
+const RELEASE_TAIL: Duration = Duration::from_millis(100);
 
 /// Audio kept while idle and prepended on key-down: 500 ms at 16 kHz.
 const PRE_ROLL_SAMPLES: usize = 8_000;
