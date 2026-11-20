@@ -148,11 +148,13 @@ impl Tray {
             (about.id().clone(), TrayEvent::About),
             (quit.id().clone(), TrayEvent::Quit),
         ];
-        let builder = TrayIconBuilder::new().with_menu(Box::new(menu.clone())).with_tooltip("Murmur");
+        let builder = TrayIconBuilder::new().with_menu(Box::new(menu.clone()));
+        // No tooltip on the Mac: its hover area goes stale as other menu bar items shift, so a
+        // "Murmur" box popped up under whatever icon now sits there.
         #[cfg(target_os = "macos")]
         let builder = builder.with_icon_templated(icon(false, false));
         #[cfg(not(target_os = "macos"))]
-        let builder = builder.with_icon(icon(false, false));
+        let builder = builder.with_tooltip("Murmur").with_icon(icon(false, false));
         let _icon = builder.build()?;
         // tray-icon reports clicks on the icon but not on a balloon, so listen on its window for those
         #[cfg(windows)]
