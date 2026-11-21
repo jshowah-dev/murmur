@@ -251,5 +251,7 @@ It builds on:
 - **[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)** by k2-fsa (Apache-2.0), which bundles [ONNX Runtime](https://github.com/microsoft/onnxruntime) (MIT).
 - **[Silero VAD](https://github.com/snakers4/silero-vad)** (MIT), for voice activity detection.
 - **[Parakeet TDT-CTC 110M](https://huggingface.co/nvidia/parakeet-tdt_ctc-110m)** by NVIDIA, licensed under [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/), for the live preview. Murmur uses the int8 ONNX conversion published by the sherpa-onnx project, downloaded on first run and not distributed with Murmur.
+- **[Ollama](https://ollama.com)** (MIT), optional, which runs the local model for the AI correction pass and edit by voice. You install it yourself; Murmur talks to it on your own computer.
+- **[Gemma 3 4B](https://ollama.com/library/gemma3)** by Google, licensed under the [Gemma Terms of Use](https://ai.google.dev/gemma/terms), the default `rewrite_model`. You pull it with Ollama; it is not distributed with Murmur.
 
 The [website](https://jshowah-dev.github.io/murmur/) uses the Fraunces, Hanken Grotesk and JetBrains Mono typefaces, licensed under the [SIL Open Font License 1.1](site/fonts/); they are served from this repository.
