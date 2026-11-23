@@ -676,11 +676,8 @@ impl Mote {
         self.flight.say_until_dismissed(m, self.px(from), self.target(to), Instant::now());
     }
 
-    /// Without bubbles there's no note to fill: the caller's own notification says it's updating.
+    /// Shown even without bubbles: you asked for the update and are waiting on it.
     pub(crate) fn say_progress(&mut self, m: Message, from: Pt, to: Target) {
-        if !self.bubbles {
-            return;
-        }
         self.layout = None;
         self.flight.say_progress(m, self.px(from), self.target(to), Instant::now());
     }
