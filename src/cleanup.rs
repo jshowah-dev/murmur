@@ -52,7 +52,8 @@ fn stutters(prev: &str, next: &str, dict: &Dictionary) -> bool {
         return false;
     }
     if p == n {
-        return !DOUBLED_ON_PURPOSE.contains(&p.as_str()) && !DIGIT_WORDS.contains(&p.as_str());
+        // "on eleven eleven" is a date
+        return !DOUBLED_ON_PURPOSE.contains(&p.as_str()) && !DIGIT_WORDS.contains(&p.as_str()) && !NUMBER_WORDS.contains(&p.as_str());
     }
     if inflects(&p, &n) {
         return true;
@@ -478,6 +479,66 @@ fn join_decimals(text: &str) -> String {
     out.join(" ")
 }
 
+const ONES: &[&str] = &[
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
+    "fifteen", "sixteen", "seventeen", "eighteen", "nineteen",
+];
+
+/// 1 to 39 said as digits or words: "29", "eleven", "twenty-nine".
+fn small_number(w: &str) -> Option<u32> {
+    let one = |w: &str| ONES.iter().position(|o| *o == w).map(|i| i as u32 + 1);
+    let tens = |w: &str| match w {
+        "twenty" => Some(20),
+        "thirty" => Some(30),
+        _ => None,
+    };
+    if !w.is_empty() && w.chars().all(|c| c.is_ascii_digit()) {
+        return w.parse().ok().filter(|n| (1..40).contains(n));
+    }
+    match w.split_once('-') {
+        Some((t, o)) => Some(tens(t)? + one(o).filter(|n| *n < 10)?),
+        None => one(w).or_else(|| tens(w)),
+    }
+}
+
+/// "on eleven twenty-nine" → "on 11/29". Only after "on", since "by three thirty" is a time,
+/// and only for a real date, so "on two thirty" keeps its words.
+fn join_dates(text: &str) -> String {
+    let tokens: Vec<&str> = text.split(' ').collect();
+    let plain = |t: &str| !t.is_empty() && t.chars().all(char::is_alphanumeric);
+    let mut out: Vec<String> = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        let after_on = out.last().is_some_and(|p| p.eq_ignore_ascii_case("on"));
+        let month = tokens.get(i).filter(|t| plain(t)).and_then(|t| small_number(&bare(t))).filter(|m| *m <= 12);
+        // the day, with how many tokens it takes: "twenty-nine" or "twenty nine"
+        let day = tokens.get(i + 1).and_then(|t| {
+            let d = small_number(&bare(t))?;
+            let ones = tokens.get(i + 2).filter(|_| plain(t) && (d == 20 || d == 30)).and_then(|o| small_number(&bare(o)));
+            match ones {
+                Some(o) if o < 10 => Some((d + o, 2)),
+                _ => Some((d, 1)),
+            }
+        });
+        if let (true, Some(m), Some((d, n))) = (after_on, month, day) {
+            let last = tokens[i + n];
+            let trail = &last[last.trim_end_matches(|c: char| !c.is_alphanumeric()).len()..];
+            let days = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m as usize - 1];
+            // "on two thirty pm" is a time, "on one two three" a count
+            let next = tokens.get(i + 1 + n).filter(|_| trail.is_empty()).map(|t| bare(t));
+            let runs_on = next.is_some_and(|w| matches!(w.as_str(), "am" | "pm" | "a.m" | "p.m" | "o'clock") || small_number(&w).is_some());
+            if d <= days && !runs_on {
+                out.push(format!("{m}/{d}{trail}"));
+                i += 1 + n;
+                continue;
+            }
+        }
+        out.push(tokens[i].to_string());
+        i += 1;
+    }
+    out.join(" ")
+}
+
 /// Spoken punctuation. No "period": it is too common a word ("the trial period ends").
 const PUNCTUATION: &[(&[&str], &str)] = &[
     (&["comma"], ","),
@@ -546,7 +607,7 @@ pub fn clean(text: &str, dict: &Dictionary, snippets: &Snippets, cfg: &Config, p
         s = apply_punctuation(&s);
     }
     // before the dictionary too, so a sound-alike term cannot take "dot" or "dash"
-    s = apply_symbols(&join_decimals(&s), &cfg.symbols, profile);
+    s = apply_symbols(&join_dates(&join_decimals(&s)), &cfg.symbols, profile);
     s = dict.apply(&s);
     if cfg.spoken_commands {
         s = apply_commands(&s);
@@ -889,6 +950,31 @@ best,
             ("It weighs 2 point 75kg.", "It weighs 2.75kg."),
             ("That's 3 point.", "That's 3 point."),
             ("Make a point 2 times.", "Make a point 2 times."),
+        ] {
+            assert_eq!(clean(said, &d, &Snippets::default(), &c), want, "{said}");
+        }
+    }
+
+    #[test]
+    fn spoken_dates_after_on_become_digits() {
+        let (d, c) = bare_env();
+        for (said, want) in [
+            (
+                "I'm using the App, then this item should be on eleven twenty-nine, right? Not today.",
+                "I'm using the App, then this item should be on 11/29, right? Not today.",
+            ),
+            ("Move it on eleven twenty nine.", "Move it on 11/29."),
+            ("It ships on 3 15.", "It ships on 3/15."),
+            ("Due on eleven eleven.", "Due on 11/11."),
+            ("Due on seven seventeen.", "Due on 7/17."),
+            ("Call on two thirty.", "Call on two thirty."),
+            ("Call on two thirty pm.", "Call on two thirty pm."),
+            ("Done by three thirty.", "Done by three thirty."),
+            ("Focus on one two three.", "Focus on one two three."),
+            ("Focus on one thing.", "Focus on one thing."),
+            ("Ready on eleven, twenty people.", "Ready on eleven, twenty people."),
+            ("On twelve thirty-one we close.", "On 12/31 we close."),
+            ("We close on twelve thirty-one.", "We close on 12/31."),
         ] {
             assert_eq!(clean(said, &d, &Snippets::default(), &c), want, "{said}");
         }
