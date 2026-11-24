@@ -527,7 +527,7 @@ fn number_at(tokens: &[&str], i: usize) -> Option<(u32, bool, usize)> {
 /// A month and day or an hour and minute the speech model wrote as words come out as digits:
 /// "on eleven twenty-nine" → "on 11/29", "at three thirty" → "at 3:30". The words around the pair
 /// pick which: "on", "the … date", a year or an ordinal mean a date; "at", "by", "pm" or "o'clock"
-/// mean a time. With no such word, a real date wins, then a time.
+/// mean a time. With no such word, each number is written on its own.
 fn join_dates(text: &str) -> String {
     let tokens: Vec<&str> = text.split(' ').collect();
     let plain = |t: &str| !t.is_empty() && t.chars().all(char::is_alphanumeric);
@@ -553,6 +553,10 @@ fn date_or_time(tokens: &[&str], i: usize, out: &[String]) -> Option<(String, us
     }
     let oh = tokens.get(i + 1).is_some_and(|t| t.eq_ignore_ascii_case("oh"));
     let (second, ord, n) = number_at(tokens, i + 1 + oh as usize)?;
+    // "one second" is a moment, not January 2nd
+    if ord && second < 10 {
+        return None;
+    }
     let n = n + oh as usize;
     // the end of what is taken so far, and any punctuation after it
     let ends = |taken: usize| {
@@ -602,11 +606,240 @@ fn date_or_time(tokens: &[&str], i: usize, out: &[String]) -> Option<(String, us
     if before(&["at", "around", "by", "until", "till", "before", "after"]) {
         return if time_ok { Some(time()) } else { date_ok.then(date) };
     }
-    // no word to go by: "eleven twenty-two", not "one two"
-    if second < 10 {
+    // no word to go by: words_to_digits writes each number on its own
+    None
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Part {
+    /// one to nineteen, or a one- or two-digit number
+    Unit,
+    /// twenty, thirty, ... with no ones yet
+    Tens,
+    /// twenty-seven, or twenty and then seven
+    TensUnit,
+    Hundred,
+    /// thousand, million, billion
+    Scale,
+}
+
+/// One cardinal said in words, possibly with digits mixed in: "twenty 7", "two hundred and five".
+struct Run {
+    /// tokens taken
+    len: usize,
+    value: u64,
+    /// "five million" stays "5 million"
+    big: Option<&'static str>,
+    ordinal: bool,
+    /// a single word under ten, as said
+    small_word: bool,
+    trail: String,
+}
+
+/// The cardinal or ordinal starting at token i, said as words or mixed with digits.
+fn number_run(tokens: &[&str], i: usize) -> Option<Run> {
+    // "a hundred and fifty" is 150, but "a hundred reasons" keeps its words
+    if matches!(tokens[i], "a" | "A") && tokens.get(i + 1).is_some_and(|t| matches!(*t, "hundred" | "thousand")) {
+        let run = number_run_from(tokens, i + 1, 1, Some(Part::Unit))?;
+        return (run.len > 1).then(|| Run { len: run.len + 1, small_word: false, ..run });
+    }
+    number_run_from(tokens, i, 0, None)
+}
+
+fn number_run_from(tokens: &[&str], i: usize, start: u64, start_part: Option<Part>) -> Option<Run> {
+    let mut total = 0u64;
+    let mut current = start;
+    let mut last: Option<Part> = start_part;
+    let mut big = None;
+    let mut last_scale = 0u64;
+    let mut ordinal = false;
+    let mut words = start as usize;
+    let mut k = i;
+    let mut trail = String::new();
+    while let Some(t) = tokens.get(k) {
+        if t.starts_with(|c: char| !c.is_alphanumeric()) {
+            break;
+        }
+        let w = bare(t);
+        let is_digits = w.chars().all(|c| c.is_ascii_digit());
+        let (part, v, ord) = match w.as_str() {
+            "hundred" => (Part::Hundred, 100, false),
+            "thousand" => (Part::Scale, 1_000, false),
+            "million" => (Part::Scale, 1_000_000, false),
+            "billion" => (Part::Scale, 1_000_000_000, false),
+            "and" if matches!(last, Some(Part::Hundred | Part::Scale))
+                && tokens.get(k + 1).is_some_and(|n| !n.starts_with(|c: char| !c.is_alphanumeric()) && number(&bare(n)).is_some_and(|(v, o)| v > 0 && !o))
+                && !t.ends_with(|c: char| !c.is_alphanumeric()) =>
+            {
+                k += 1;
+                continue;
+            }
+            _ if is_digits && !w.is_empty() && w.len() <= 2 => (Part::Unit, w.parse().unwrap_or(0), false),
+            "zero" => (Part::Unit, 0, false),
+            _ => {
+                let Some((v, ord)) = number(&w) else { break };
+                let part = match (w.contains('-'), v) {
+                    (true, _) => Part::TensUnit,
+                    (false, v) if v >= 20 && v % 10 == 0 && !ord => Part::Tens,
+                    (false, v) if v >= 20 => Part::TensUnit,
+                    _ => Part::Unit,
+                };
+                (part, v as u64, ord)
+            }
+        };
+        // whether this token carries on the number said so far
+        let fits = match (last, part) {
+            (None, Part::Hundred | Part::Scale) => false,
+            (None, _) => true,
+            // "a thirty second clip" is a length of time
+            (Some(Part::Tens), Part::Unit) => (1..10).contains(&v) && w != "second",
+            (Some(Part::Hundred | Part::Scale), Part::Unit | Part::Tens | Part::TensUnit) => v > 0,
+            (Some(Part::Unit | Part::Tens | Part::TensUnit), Part::Hundred) => (1..100).contains(&current),
+            // "two million three thousand", never "three thousand two million"
+            (Some(Part::Unit | Part::Tens | Part::TensUnit | Part::Hundred), Part::Scale) => current > 0 && (last_scale == 0 || v < last_scale),
+            _ => false,
+        };
+        if !fits {
+            break;
+        }
+        match part {
+            Part::Hundred => current *= 100,
+            Part::Scale => {
+                last_scale = v;
+                if v >= 1_000_000 && total == 0 && current < 1000 && tokens.get(k + 1).is_none_or(|n| number(&bare(n)).is_none()) {
+                    big = Some(if v == 1_000_000 { "million" } else { "billion" });
+                } else {
+                    total += current * v;
+                    current = 0;
+                }
+            }
+            _ => current += v,
+        }
+        if !is_digits {
+            words += 1;
+        }
+        last = Some(if part == Part::Unit && last == Some(Part::Tens) { Part::TensUnit } else { part });
+        k += 1;
+        let tail = &t[t.trim_end_matches(|c: char| !c.is_alphanumeric()).len()..];
+        if ord || big.is_some() || !tail.is_empty() {
+            ordinal = ord;
+            trail = tail.to_string();
+            break;
+        }
+    }
+    // "twenty five-year-old" stays words
+    if last == Some(Part::Tens)
+        && tokens.get(k).is_some_and(|t| t.split_once('-').is_some_and(|(u, _)| number(&u.to_ascii_lowercase()).is_some_and(|(v, _)| v < 10)))
+    {
         return None;
     }
-    if date_ok { Some(date()) } else { time_ok.then(time) }
+    let len = k - i;
+    if len == 0 || words == 0 || matches!(last, Some(Part::Hundred | Part::Scale)) && total + current == 0 {
+        return None;
+    }
+    let value = total + current;
+    Some(Run { len, value, big, ordinal, small_word: len == 1 && value < 10, trail })
+}
+
+fn with_suffix(n: u64) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
+}
+
+/// "Q 3" or "Q three" → "Q3". First, so "Q 3 twenty twenty 7" is not read as March 20th.
+fn join_quarters(text: &str) -> String {
+    let tokens: Vec<&str> = text.split(' ').collect();
+    let mut out: Vec<String> = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        let quarter = matches!(tokens[i], "Q" | "q")
+            .then(|| tokens.get(i + 1))
+            .flatten()
+            .filter(|t| !t.starts_with(|c: char| !c.is_alphanumeric()))
+            .and_then(|t| number(&bare(t)).filter(|(n, ord)| (1..=4).contains(n) && !ord).map(|(n, _)| (n, t)));
+        if let Some((n, t)) = quarter {
+            let trail = &t[t.trim_end_matches(|c: char| !c.is_alphanumeric()).len()..];
+            out.push(format!("Q{n}{trail}"));
+            i += 2;
+            continue;
+        }
+        out.push(tokens[i].to_string());
+        i += 1;
+    }
+    out.join(" ")
+}
+
+/// Numbers the speech model wrote as words come out as digits: "twenty twenty 7" → "2027",
+/// "two hundred and fifty" → "250", "twenty-first" → "21st". A single word under
+/// ten stays a word ("one thing", "the second time") unless a digit is needed: "five percent",
+/// "five point two".
+fn words_to_digits(text: &str) -> String {
+    let tokens: Vec<&str> = text.split(' ').collect();
+    let mut out: Vec<String> = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        let Some(run) = number_run(&tokens, i) else {
+            out.push(tokens[i].to_string());
+            i += 1;
+            continue;
+        };
+        let next = tokens.get(i + run.len).filter(|_| run.trail.is_empty()).map(|t| bare(t));
+        // "twenty twenty-seven", "nineteen ninety nine": a year said in pairs
+        let year = (run.trail.is_empty() && run.big.is_none() && !run.ordinal && run.len <= 1 && matches!(run.value, 19 | 20))
+            .then(|| number_run(&tokens, i + run.len))
+            .flatten()
+            .filter(|y| (10..100).contains(&y.value) && !y.ordinal && y.big.is_none() && y.len <= 2);
+        if let Some(y) = year {
+            out.push(format!("{}{}{}", run.value, y.value, y.trail));
+            i += run.len + y.len;
+            continue;
+        }
+        let prev = out.last().map(|p| bare(p));
+        let digit = |t: &str| t.len() == 1 && t.chars().all(|c| c.is_ascii_digit()) || ONES[..9].contains(&t) || t == "zero";
+        let after_point = prev.as_deref() == Some("point")
+            && out.len() >= 2
+            && out[out.len() - 2].ends_with(|c: char| c.is_ascii_digit())
+            && out[out.len() - 2].chars().all(|c| c.is_ascii_digit() || c == '.');
+        // "point two five": each digit after the point, as one number
+        if after_point && run.small_word && !run.ordinal {
+            let mut frac = String::new();
+            let mut k = i;
+            while let Some(t) = tokens.get(k).filter(|t| digit(&bare(t)) && !t.starts_with(|c: char| !c.is_alphanumeric())) {
+                let w = bare(t);
+                frac.push_str(&if w.len() == 1 && w.chars().all(|c| c.is_ascii_digit()) { w.clone() } else { number(&w).map_or("0".into(), |(v, _)| v.to_string()) });
+                k += 1;
+                if t.ends_with(|c: char| !c.is_alphanumeric()) {
+                    break;
+                }
+            }
+            let last = tokens[k - 1];
+            out.push(format!("{frac}{}", &last[last.trim_end_matches(|c: char| !c.is_alphanumeric()).len()..]));
+            i = k;
+            continue;
+        }
+        // "five percent", "five point two"; not "one point I want to make"
+        let needs_digit = next.as_deref() == Some("percent")
+            || next.as_deref() == Some("point") && tokens.get(i + run.len + 1).is_some_and(|t| digit(&bare(t)));
+        if run.small_word && !needs_digit {
+            out.push(tokens[i].to_string());
+            i += 1;
+            continue;
+        }
+        let digits = match (run.big, run.ordinal) {
+            (Some(b), _) => format!("{} {b}", run.value),
+            (None, true) => with_suffix(run.value),
+            (None, false) => run.value.to_string(),
+        };
+        out.push(format!("{digits}{}", run.trail));
+        i += run.len;
+    }
+    out.join(" ")
 }
 
 /// Spoken punctuation. No "period": it is too common a word ("the trial period ends").
@@ -677,7 +910,7 @@ pub fn clean(text: &str, dict: &Dictionary, snippets: &Snippets, cfg: &Config, p
         s = apply_punctuation(&s);
     }
     // before the dictionary too, so a sound-alike term cannot take "dot" or "dash"
-    s = apply_symbols(&join_dates(&join_decimals(&s)), &cfg.symbols, profile);
+    s = apply_symbols(&join_decimals(&words_to_digits(&join_dates(&join_quarters(&s)))), &cfg.symbols, profile);
     s = dict.apply(&s);
     if cfg.spoken_commands {
         s = apply_commands(&s);
@@ -1053,9 +1286,10 @@ best,
             ("Ship it eleven 22nd.", "Ship it 11/22."),
             ("Due on eleven twenty two twenty twenty-six.", "Due on 11/22/2026."),
             ("Due eleven twenty-two 2026.", "Due 11/22/2026."),
-            // no word to go by: a real date
-            ("Eleven twenty-two works for me.", "11/22 works for me."),
-            ("I picked eleven twenty 2 for it.", "I picked 11/22 for it."),
+            // no word to go by: each number on its own
+            ("Eleven twenty-two works for me.", "11 22 works for me."),
+            ("Give me one second.", "Give me one second."),
+            ("Room two twenty.", "Room two 20."),
             // the words around it say time
             ("Call on two thirty.", "Call on 2:30."),
             ("Call on two thirty pm.", "Call on 2:30 pm."),
@@ -1065,13 +1299,53 @@ best,
             ("From eleven twenty to noon.", "From 11:20 to noon."),
             ("Lunch at twelve forty-five.", "Lunch at 12:45."),
             ("Eleven twenty-two time works.", "11:22 time works."),
-            ("Nine fifty works for me.", "9:50 works for me."),
             // not a date or a time
             ("Focus on one two three.", "Focus on one two three."),
             ("Focus on one thing.", "Focus on one thing."),
             ("Pick one two.", "Pick one two."),
-            ("Ready on eleven, twenty people.", "Ready on eleven, twenty people."),
-            ("Twenty two people came.", "Twenty two people came."),
+            ("Ready on eleven, twenty people.", "Ready on 11, 20 people."),
+        ] {
+            assert_eq!(clean(said, &d, &Snippets::default(), &c), want, "{said}");
+        }
+    }
+
+    #[test]
+    fn spoken_numbers_become_digits() {
+        let (d, c) = bare_env();
+        for (said, want) in [
+            (
+                "Well, the Q 3 twenty twenty 7, once again, is for applications in general.",
+                "Well, the Q3 2027, once again, is for applications in general.",
+            ),
+            ("I think that would go well into twenty twenty-eight.", "I think that would go well into 2028."),
+            ("Back in nineteen ninety nine.", "Back in 1999."),
+            ("By two thousand twenty six.", "By 2026."),
+            ("Q three numbers are up.", "Q3 numbers are up."),
+            ("Twenty two people came.", "22 people came."),
+            ("We have twenty-five open tickets.", "We have 25 open tickets."),
+            ("About two hundred and fifty users.", "About 250 users."),
+            ("Three thousand five hundred rows.", "3500 rows."),
+            ("It cost five million.", "It cost 5 million."),
+            ("The twenty-first century.", "The 21st century."),
+            ("Ten items, then eleven.", "10 items, then 11."),
+            ("It grew five percent.", "It grew 5%."),
+            ("Version five point two.", "Version 5.2."),
+            ("Rate is five point two five percent.", "Rate is 5.25%."),
+            ("There is one point I want to make.", "There is one point I want to make."),
+            ("A three point turn.", "A three point turn."),
+            ("A thirty second clip.", "A 30 second clip."),
+            ("The twenty-second item.", "The 22nd item."),
+            ("I paid a hundred and fifty.", "I paid 150."),
+            ("A hundred twenty people.", "120 people."),
+            ("A twenty five-year-old.", "A twenty five-year-old."),
+            ("Twenty zero.", "20 zero."),
+            ("It's 20 twenty-five now.", "It's 20 25 now."),
+            // a single word under ten stays a word
+            ("Focus on one thing.", "Focus on one thing."),
+            ("No one came the second time.", "No one came the second time."),
+            ("I have three kids.", "I have three kids."),
+            ("A hundred reasons.", "A hundred reasons."),
+            ("Hundreds of them.", "Hundreds of them."),
         ] {
             assert_eq!(clean(said, &d, &Snippets::default(), &c), want, "{said}");
         }
