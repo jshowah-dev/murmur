@@ -483,62 +483,130 @@ const ONES: &[&str] = &[
     "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
     "fifteen", "sixteen", "seventeen", "eighteen", "nineteen",
 ];
+const ORDINALS: &[&str] = &[
+    "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth", "eleventh", "twelfth",
+    "thirteenth", "fourteenth", "fifteenth", "sixteenth", "seventeenth", "eighteenth", "nineteenth",
+];
+const TENS: &[&str] = &["twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
 
-/// 1 to 39 said as digits or words: "29", "eleven", "twenty-nine".
-fn small_number(w: &str) -> Option<u32> {
-    let one = |w: &str| ONES.iter().position(|o| *o == w).map(|i| i as u32 + 1);
-    let tens = |w: &str| match w {
-        "twenty" => Some(20),
-        "thirty" => Some(30),
-        _ => None,
+/// 0 to 99 said as digits or words, and whether it was an ordinal: "29", "eleven", "twenty-nine", "22nd", "twenty-second".
+fn number(w: &str) -> Option<(u32, bool)> {
+    let unit = |w: &str| {
+        let pos = |list: &[&str]| list.iter().position(|o| *o == w).map(|i| i as u32 + 1);
+        pos(ONES).map(|n| (n, false)).or_else(|| pos(ORDINALS).map(|n| (n, true)))
     };
-    if !w.is_empty() && w.chars().all(|c| c.is_ascii_digit()) {
-        return w.parse().ok().filter(|n| (1..40).contains(n));
+    let tens = |w: &str| TENS.iter().position(|t| *t == w).map(|i| i as u32 * 10 + 20);
+    let digits = w.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+    if !digits.is_empty() && digits.len() <= 2 && digits.chars().all(|c| c.is_ascii_digit()) {
+        let suffix = &w[digits.len()..];
+        let ordinal = matches!(suffix, "st" | "nd" | "rd" | "th");
+        return (suffix.is_empty() || ordinal).then(|| digits.parse().ok().map(|n| (n, ordinal))).flatten();
     }
     match w.split_once('-') {
-        Some((t, o)) => Some(tens(t)? + one(o).filter(|n| *n < 10)?),
-        None => one(w).or_else(|| tens(w)),
+        Some((t, o)) => unit(o).filter(|(n, _)| *n < 10).and_then(|(n, ord)| Some((tens(t)? + n, ord))),
+        None => unit(w).or_else(|| tens(w).map(|n| (n, false))).or(match w {
+            "twentieth" => Some((20, true)),
+            "thirtieth" => Some((30, true)),
+            _ => None,
+        }),
     }
 }
 
-/// "on eleven twenty-nine" → "on 11/29". Only after "on" or before "date", since "by three thirty"
-/// is a time, and only for a real date, so "on two thirty" keeps its words.
+/// The number starting at token i, with how many tokens it takes: "twenty-two", "twenty two", "twenty 2".
+fn number_at(tokens: &[&str], i: usize) -> Option<(u32, bool, usize)> {
+    let t = tokens.get(i)?;
+    let (n, ord) = number(&bare(t))?;
+    let plain = t.chars().all(char::is_alphanumeric);
+    let ones = tokens.get(i + 1).filter(|_| plain && !ord && n >= 20 && n % 10 == 0 && !t.contains(|c: char| c.is_ascii_digit()));
+    match ones.and_then(|o| number(&bare(o))) {
+        Some((o, ord)) if (1..10).contains(&o) => Some((n + o, ord, 2)),
+        _ => Some((n, ord, 1)),
+    }
+}
+
+/// A month and day or an hour and minute the speech model wrote as words come out as digits:
+/// "on eleven twenty-nine" → "on 11/29", "at three thirty" → "at 3:30". The words around the pair
+/// pick which: "on", "the … date", a year or an ordinal mean a date; "at", "by", "pm" or "o'clock"
+/// mean a time. With no such word, a real date wins, then a time.
 fn join_dates(text: &str) -> String {
     let tokens: Vec<&str> = text.split(' ').collect();
     let plain = |t: &str| !t.is_empty() && t.chars().all(char::is_alphanumeric);
     let mut out: Vec<String> = Vec::with_capacity(tokens.len());
     let mut i = 0;
     while i < tokens.len() {
-        let after_on = out.last().is_some_and(|p| p.eq_ignore_ascii_case("on"));
-        let month = tokens.get(i).filter(|t| plain(t)).and_then(|t| small_number(&bare(t))).filter(|m| *m <= 12);
-        // the day, with how many tokens it takes: "twenty-nine" or "twenty nine"
-        let day = tokens.get(i + 1).and_then(|t| {
-            let d = small_number(&bare(t))?;
-            let ones = tokens.get(i + 2).filter(|_| plain(t) && (d == 20 || d == 30)).and_then(|o| small_number(&bare(o)));
-            match ones {
-                Some(o) if o < 10 => Some((d + o, 2)),
-                _ => Some((d, 1)),
-            }
-        });
-        if let (Some(m), Some((d, n))) = (month, day) {
-            let last = tokens[i + n];
-            let trail = &last[last.trim_end_matches(|c: char| !c.is_alphanumeric()).len()..];
-            let days = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m as usize - 1];
-            // "on two thirty pm" is a time, "on one two three" a count
-            let next = tokens.get(i + 1 + n).filter(|_| trail.is_empty()).map(|t| bare(t));
-            let runs_on = next.as_deref().is_some_and(|w| matches!(w, "am" | "pm" | "a.m" | "p.m" | "o'clock") || small_number(w).is_some());
-            // "the eleven twenty-two date" names its own kind
-            let dated = next.as_deref().is_some_and(|w| matches!(w, "date" | "dates" | "deadline"));
-            if d <= days && !runs_on && (after_on || dated) {
-                out.push(format!("{m}/{d}{trail}"));
-                i += 1 + n;
-                continue;
-            }
+        if let Some(done) = date_or_time(&tokens, i, &out).filter(|_| plain(tokens[i])) {
+            out.push(done.0);
+            i += done.1;
+            continue;
         }
         out.push(tokens[i].to_string());
         i += 1;
     }
     out.join(" ")
+}
+
+/// The pair starting at token i written as digits, with how many tokens it took.
+fn date_or_time(tokens: &[&str], i: usize, out: &[String]) -> Option<(String, usize)> {
+    let (lead, lead_ord, 1) = number_at(tokens, i)? else { return None };
+    if lead_ord || !(1..=12).contains(&lead) {
+        return None;
+    }
+    let oh = tokens.get(i + 1).is_some_and(|t| t.eq_ignore_ascii_case("oh"));
+    let (second, ord, n) = number_at(tokens, i + 1 + oh as usize)?;
+    let n = n + oh as usize;
+    // the end of what is taken so far, and any punctuation after it
+    let ends = |taken: usize| {
+        let last = tokens[i + taken];
+        let trail = &last[last.trim_end_matches(|c: char| !c.is_alphanumeric()).len()..];
+        (trail, tokens.get(i + 1 + taken).filter(|_| trail.is_empty()).map(|t| bare(t)))
+    };
+    let (trail, next) = ends(n);
+    // "eleven twenty-two twenty twenty-six" or "11 22 2026"
+    let year = next.as_deref().and_then(|w| {
+        if w.len() == 4 && w.starts_with("20") && w.chars().all(|c| c.is_ascii_digit()) {
+            return Some((w.to_string(), 1));
+        }
+        let (y, yord, yn) = number_at(tokens, i + 1 + n + 1).filter(|_| w == "twenty")?;
+        (!yord && y >= 10).then(|| (format!("20{y}"), yn + 1))
+    });
+    let (dtrail, dnext) = year.as_ref().map_or((trail, next.clone()), |(_, yn)| ends(n + yn));
+    let word = |o: &Option<String>, list: &[&str]| o.as_deref().is_some_and(|w| list.contains(&w));
+    let prev = out.last().map(|p| bare(p));
+    let prev2 = out.len().checked_sub(2).map(|k| bare(&out[k]));
+    let before = |list: &[&str]| word(&prev, list) || (prev.as_deref() == Some("the") && word(&prev2, list));
+    let after_to_noon =
+        word(&next, &["to", "until", "till"]) && tokens.get(i + 2 + n).is_some_and(|t| matches!(bare(t).as_str(), "noon" | "midnight"));
+
+    let days = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][lead as usize - 1];
+    let date_ok = !oh && (1..=days).contains(&second);
+    let time_ok = !ord && second <= 59 && (second >= 10 || oh);
+    let date = || {
+        let y = year.as_ref().map_or(String::new(), |(y, _)| format!("/{y}"));
+        (format!("{lead}/{second}{y}{dtrail}"), 1 + n + year.as_ref().map_or(0, |(_, yn)| *yn))
+    };
+    let time = || (format!("{lead}:{second:02}{trail}"), 1 + n);
+    // "on one two three" is a count
+    let counting = year.is_none() && dnext.as_deref().is_some_and(|w| number(w).is_some());
+    if counting && !word(&next, &["am", "pm", "a.m", "p.m"]) {
+        return None;
+    }
+
+    if oh || word(&next, &["am", "pm", "a.m", "p.m", "o'clock", "time"]) || after_to_noon {
+        return time_ok.then(time);
+    }
+    if ord || year.is_some() || word(&dnext, &["date", "dates", "dated", "deadline"]) || before(&["on", "due", "dated", "since", "through"])
+        || (prev.as_deref() == Some("the") && before(&["from", "until", "till", "by", "before", "after"]))
+    {
+        return if date_ok { Some(date()) } else { time_ok.then(time) };
+    }
+    if before(&["at", "around", "by", "until", "till", "before", "after"]) {
+        return if time_ok { Some(time()) } else { date_ok.then(date) };
+    }
+    // no word to go by: "eleven twenty-two", not "one two"
+    if second < 10 {
+        return None;
+    }
+    if date_ok { Some(date()) } else { time_ok.then(time) }
 }
 
 /// Spoken punctuation. No "period": it is too common a word ("the trial period ends").
@@ -958,7 +1026,7 @@ best,
     }
 
     #[test]
-    fn spoken_dates_after_on_become_digits() {
+    fn spoken_dates_and_times_become_digits() {
         let (d, c) = bare_env();
         for (said, want) in [
             (
@@ -969,14 +1037,9 @@ best,
             ("It ships on 3 15.", "It ships on 3/15."),
             ("Due on eleven eleven.", "Due on 11/11."),
             ("Due on seven seventeen.", "Due on 7/17."),
-            ("Call on two thirty.", "Call on two thirty."),
-            ("Call on two thirty pm.", "Call on two thirty pm."),
-            ("Done by three thirty.", "Done by three thirty."),
-            ("Focus on one two three.", "Focus on one two three."),
-            ("Focus on one thing.", "Focus on one thing."),
-            ("Ready on eleven, twenty people.", "Ready on eleven, twenty people."),
             ("On twelve thirty-one we close.", "On 12/31 we close."),
             ("We close on twelve thirty-one.", "We close on 12/31."),
+            // the words around it say date
             (
                 "So I'm considering everything from the eleven twenty 2 date.",
                 "So I'm considering everything from the 11/22 date.",
@@ -984,8 +1047,31 @@ best,
             ("From the eleven twenty-two date on.", "From the 11/22 date on."),
             ("Past the eleven twenty two deadline.", "Past the 11/22 deadline."),
             ("Since the 11 22 date.", "Since the 11/22 date."),
-            ("The eleven twenty people came.", "The eleven twenty people came."),
-            ("From eleven twenty to noon.", "From eleven twenty to noon."),
+            ("Everything from the eleven twenty-two forward.", "Everything from the 11/22 forward."),
+            ("It's due eleven twenty-two.", "It's due 11/22."),
+            ("Ship it eleven twenty-second.", "Ship it 11/22."),
+            ("Ship it eleven 22nd.", "Ship it 11/22."),
+            ("Due on eleven twenty two twenty twenty-six.", "Due on 11/22/2026."),
+            ("Due eleven twenty-two 2026.", "Due 11/22/2026."),
+            // no word to go by: a real date
+            ("Eleven twenty-two works for me.", "11/22 works for me."),
+            ("I picked eleven twenty 2 for it.", "I picked 11/22 for it."),
+            // the words around it say time
+            ("Call on two thirty.", "Call on 2:30."),
+            ("Call on two thirty pm.", "Call on 2:30 pm."),
+            ("Done by three thirty.", "Done by 3:30."),
+            ("Meet at eleven twenty-two.", "Meet at 11:22."),
+            ("Meet at eleven oh five.", "Meet at 11:05."),
+            ("From eleven twenty to noon.", "From 11:20 to noon."),
+            ("Lunch at twelve forty-five.", "Lunch at 12:45."),
+            ("Eleven twenty-two time works.", "11:22 time works."),
+            ("Nine fifty works for me.", "9:50 works for me."),
+            // not a date or a time
+            ("Focus on one two three.", "Focus on one two three."),
+            ("Focus on one thing.", "Focus on one thing."),
+            ("Pick one two.", "Pick one two."),
+            ("Ready on eleven, twenty people.", "Ready on eleven, twenty people."),
+            ("Twenty two people came.", "Twenty two people came."),
         ] {
             assert_eq!(clean(said, &d, &Snippets::default(), &c), want, "{said}");
         }
