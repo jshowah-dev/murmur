@@ -501,8 +501,8 @@ fn small_number(w: &str) -> Option<u32> {
     }
 }
 
-/// "on eleven twenty-nine" → "on 11/29". Only after "on", since "by three thirty" is a time,
-/// and only for a real date, so "on two thirty" keeps its words.
+/// "on eleven twenty-nine" → "on 11/29". Only after "on" or before "date", since "by three thirty"
+/// is a time, and only for a real date, so "on two thirty" keeps its words.
 fn join_dates(text: &str) -> String {
     let tokens: Vec<&str> = text.split(' ').collect();
     let plain = |t: &str| !t.is_empty() && t.chars().all(char::is_alphanumeric);
@@ -520,14 +520,16 @@ fn join_dates(text: &str) -> String {
                 _ => Some((d, 1)),
             }
         });
-        if let (true, Some(m), Some((d, n))) = (after_on, month, day) {
+        if let (Some(m), Some((d, n))) = (month, day) {
             let last = tokens[i + n];
             let trail = &last[last.trim_end_matches(|c: char| !c.is_alphanumeric()).len()..];
             let days = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m as usize - 1];
             // "on two thirty pm" is a time, "on one two three" a count
             let next = tokens.get(i + 1 + n).filter(|_| trail.is_empty()).map(|t| bare(t));
-            let runs_on = next.is_some_and(|w| matches!(w.as_str(), "am" | "pm" | "a.m" | "p.m" | "o'clock") || small_number(&w).is_some());
-            if d <= days && !runs_on {
+            let runs_on = next.as_deref().is_some_and(|w| matches!(w, "am" | "pm" | "a.m" | "p.m" | "o'clock") || small_number(w).is_some());
+            // "the eleven twenty-two date" names its own kind
+            let dated = next.as_deref().is_some_and(|w| matches!(w, "date" | "dates" | "deadline"));
+            if d <= days && !runs_on && (after_on || dated) {
                 out.push(format!("{m}/{d}{trail}"));
                 i += 1 + n;
                 continue;
@@ -975,6 +977,15 @@ best,
             ("Ready on eleven, twenty people.", "Ready on eleven, twenty people."),
             ("On twelve thirty-one we close.", "On 12/31 we close."),
             ("We close on twelve thirty-one.", "We close on 12/31."),
+            (
+                "So I'm considering everything from the eleven twenty 2 date.",
+                "So I'm considering everything from the 11/22 date.",
+            ),
+            ("From the eleven twenty-two date on.", "From the 11/22 date on."),
+            ("Past the eleven twenty two deadline.", "Past the 11/22 deadline."),
+            ("Since the 11 22 date.", "Since the 11/22 date."),
+            ("The eleven twenty people came.", "The eleven twenty people came."),
+            ("From eleven twenty to noon.", "From eleven twenty to noon."),
         ] {
             assert_eq!(clean(said, &d, &Snippets::default(), &c), want, "{said}");
         }
