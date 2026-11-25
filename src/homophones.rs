@@ -24,16 +24,22 @@ const PAIRS: &[Pair] = &[Pair {
     name: "Claude",
     word: "cloud",
     name_next: &[
-        "code", "opus", "sonnet", "haiku", "fable", "app", "apps", "website", "session", "sessions", "said", "says", "wrote", "writes", "thinks", "thought",
-        "suggested", "suggests", "knows", "answered", "replied", "found", "missed",
+        "code", "opus", "sonnet", "haiku", "fable", "max", "app", "apps", "website", "session", "sessions", "plugin", "plugins",
+        "subagent", "subagents", "mcp", "said", "says", "wrote", "writes", "thinks", "thought", "suggested", "suggests", "knows",
+        "answered", "replied", "found", "missed", "fixed", "built", "added", "broke", "changed", "reviewed", "remembered",
+        "understands", "understood",
     ],
-    name_prev: &["ask", "asked", "asking", "tell", "told", "telling", "thanks", "hey", "hi", "anthropic", "anthropic's"],
+    name_prev: &[
+        "ask", "asked", "asking", "tell", "told", "telling", "thanks", "thank", "hey", "hi", "let", "prompt", "prompted", "prompting",
+        "anthropic", "anthropic's",
+    ],
     word_next: &[
         "storage", "computing", "infrastructure", "environment", "environments", "function", "functions", "hosting", "native", "sync",
-        "backup", "backups", "vm", "vms", "region", "regions", "model", "models",
+        "backup", "backups", "vm", "vms", "region", "regions", "model", "models", "bucket", "buckets", "drive", "photos", "network",
+        "networks", "security", "migration", "cover", "nine",
     ],
-    word_prev: &["private", "public", "hybrid"],
-    word_prev_the: &["in", "into", "to", "from", "on", "onto", "off"],
+    word_prev: &["private", "public", "hybrid", "dark", "rain", "storm", "white", "grey", "gray"],
+    word_prev_the: &["in", "into", "to", "from", "on", "onto", "off", "above", "behind", "through"],
 }];
 
 const CURLY: char = '\u{2019}';
@@ -113,6 +119,11 @@ mod tests {
         assert_eq!(apply("log in to the cloud app"), "log in to the Claude app");
         assert_eq!(apply("start a cloud session"), "start a Claude session");
         assert_eq!(apply("run it in the cloud sessions"), "run it in the Claude sessions");
+        assert_eq!(apply("I'm on cloud max"), "I'm on Claude max");
+        assert_eq!(apply("install the cloud plugin"), "install the Claude plugin");
+        assert_eq!(apply("cloud fixed the bug"), "Claude fixed the bug");
+        assert_eq!(apply("let cloud handle it"), "let Claude handle it");
+        assert_eq!(apply("I prompted cloud twice"), "I prompted Claude twice");
     }
 
     #[test]
@@ -122,6 +133,10 @@ mod tests {
         assert_eq!(apply("a private Claude, mostly"), "a private cloud, mostly");
         assert_eq!(apply("a Claude model or a local model"), "a cloud model or a local model");
         assert_eq!(apply("Claude models cost more"), "cloud models cost more");
+        assert_eq!(apply("upload to a Claude bucket"), "upload to a cloud bucket");
+        assert_eq!(apply("a dark Claude overhead"), "a dark cloud overhead");
+        assert_eq!(apply("light through the Claude"), "light through the cloud");
+        assert_eq!(apply("Claude cover all day"), "cloud cover all day");
         assert_eq!(apply("pushed it to the Claude yesterday"), "pushed it to the cloud yesterday");
     }
 
