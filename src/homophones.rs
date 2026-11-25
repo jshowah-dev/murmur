@@ -16,7 +16,7 @@ struct Pair {
     /// a word right before that means the word: "private cloud"
     word_prev: &'static [&'static str],
     /// a word two before, with "the" between, that means the word: "in the cloud". "The" alone
-    /// is no clue: "the Claude session" is as likely as "the cloud session".
+    /// is no clue: "the Claude model" is as likely as "the cloud model".
     word_prev_the: &'static [&'static str],
 }
 
@@ -24,7 +24,7 @@ const PAIRS: &[Pair] = &[Pair {
     name: "Claude",
     word: "cloud",
     name_next: &[
-        "code", "opus", "sonnet", "haiku", "fable", "app", "apps", "website", "said", "says", "wrote", "writes", "thinks", "thought",
+        "code", "opus", "sonnet", "haiku", "fable", "app", "apps", "website", "session", "sessions", "said", "says", "wrote", "writes", "thinks", "thought",
         "suggested", "suggests", "knows", "answered", "replied", "found", "missed",
     ],
     name_prev: &["ask", "asked", "asking", "tell", "told", "telling", "thanks", "hey", "hi", "anthropic", "anthropic's"],
@@ -111,6 +111,8 @@ mod tests {
         assert_eq!(apply("cloud said the tests pass"), "Claude said the tests pass");
         assert_eq!(apply("switch to cloud opus"), "switch to Claude opus");
         assert_eq!(apply("log in to the cloud app"), "log in to the Claude app");
+        assert_eq!(apply("start a cloud session"), "start a Claude session");
+        assert_eq!(apply("run it in the cloud sessions"), "run it in the Claude sessions");
     }
 
     #[test]
@@ -130,7 +132,7 @@ mod tests {
     #[test]
     fn words_said_of_both_are_no_clue() {
         for s in [
-            "start a Claude session", "open the cloud session", "a cloud model or a local model", "the Claude Console", "the cloud console",
+            "a cloud model or a local model", "the Claude Console", "the cloud console",
             "Claude costs too much", "run Claude instances", "the cloud API is down", "AWS Claude via Bedrock", "I like cloud",
         ] {
             assert_eq!(apply(s), s);
