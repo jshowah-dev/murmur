@@ -912,6 +912,8 @@ pub fn clean(text: &str, dict: &Dictionary, snippets: &Snippets, cfg: &Config, p
     // before the dictionary too, so a sound-alike term cannot take "dot" or "dash"
     s = apply_symbols(&join_decimals(&words_to_digits(&join_dates(&join_quarters(&s)))), &cfg.symbols, profile);
     s = dict.apply(&s);
+    // after the dictionary, so a swap there ("claude" → "cloud") can't overrule the context
+    s = crate::homophones::apply(&s);
     if cfg.spoken_commands {
         s = apply_commands(&s);
     }
@@ -978,6 +980,14 @@ best,
         let (d, c) = env();
         assert_eq!(clean("um, the hob number is, uh, late.", &d, &snips(), &c), "The hawb-123 is late.");
         assert_eq!(clean("Hob number.", &d, &snips(), &c), "hawb-123.");
+    }
+
+    #[test]
+    fn claude_or_cloud_is_picked_by_context_even_against_a_dictionary_swap() {
+        let d = Dictionary::from_terms(vec![Term { written: "cloud".into(), spoken: vec!["claude".into()], phonetic: true }]);
+        let c = Config::default();
+        assert_eq!(clean("ask claude to run it in the claude", &d, &Snippets::default(), &c), "Ask Claude to run it in the cloud");
+        assert_eq!(clean("claude storage is cheap", &d, &Snippets::default(), &c), "Cloud storage is cheap");
     }
 
     fn env() -> (Dictionary, Config) {

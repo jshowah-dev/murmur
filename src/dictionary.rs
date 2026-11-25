@@ -287,7 +287,7 @@ impl Dictionary {
                 };
                 // Never learn a common word as a spoken form: exact matching would then
                 // rewrite it everywhere ("all" -> "Call" after a clipped first word).
-                if !o_core.is_empty() && !n_core.is_empty() && !phonetic::is_common(o_core) && !o_core.eq_ignore_ascii_case(n_core) && phonetic::similar(o_core, n_core) {
+                if !o_core.is_empty() && !n_core.is_empty() && !phonetic::is_common(o_core) && !o_core.eq_ignore_ascii_case(n_core) && !crate::homophones::paired(o_core, n_core) && phonetic::similar(o_core, n_core) {
                     let spoken = o_core.to_ascii_lowercase();
                     if let Some(t) = this.terms.iter_mut().find(|t| t.written == n_core) {
                         if !t.spoken.contains(&spoken) {
@@ -405,6 +405,13 @@ mod tests {
     #[test]
     fn a_whole_screen_name_beats_its_plural_stem() {
         assert_eq!(on_screen(&["Reyes"]).apply("call reyes"), "call Reyes");
+    }
+
+    #[test]
+    fn a_fix_between_paired_words_is_not_learned() {
+        let mut d = dict();
+        assert!(d.learn("ask Claude about it", "ask cloud about it").is_empty());
+        assert!(!d.terms.iter().any(|t| t.written == "cloud"));
     }
 
     #[test]

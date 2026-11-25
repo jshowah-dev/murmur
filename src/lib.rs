@@ -6,6 +6,7 @@ pub mod dictionary;
 pub mod dictionary_edit;
 pub mod email;
 pub mod history;
+pub mod homophones;
 pub mod model_fetch;
 pub mod notice;
 pub mod phonetic;
