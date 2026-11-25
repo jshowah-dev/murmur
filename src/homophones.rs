@@ -1,7 +1,7 @@
 //! Words the speech model mixes up that no dictionary swap can settle: "Claude" and "cloud"
 //! are both real, so the words around one decide which was meant. With no clue either way the
-//! model's word stays. A clue word must point one way only: "cloud model" and "Claude model",
-//! "Claude Console" and "cloud console" are all said, so none of those words is a clue.
+//! model's word stays. A clue word should point one way only: "Claude Console" and "cloud
+//! console" are both said, so "console" is no clue.
 
 /// One pair: the two spellings, and the neighbouring words that point to each.
 struct Pair {
@@ -16,7 +16,7 @@ struct Pair {
     /// a word right before that means the word: "private cloud"
     word_prev: &'static [&'static str],
     /// a word two before, with "the" between, that means the word: "in the cloud". "The" alone
-    /// is no clue: "the Claude model" is as likely as "the cloud model".
+    /// is no clue: "the Claude API" is as likely as "the cloud API".
     word_prev_the: &'static [&'static str],
 }
 
@@ -30,7 +30,7 @@ const PAIRS: &[Pair] = &[Pair {
     name_prev: &["ask", "asked", "asking", "tell", "told", "telling", "thanks", "hey", "hi", "anthropic", "anthropic's"],
     word_next: &[
         "storage", "computing", "infrastructure", "environment", "environments", "function", "functions", "hosting", "native", "sync",
-        "backup", "backups", "vm", "vms", "region", "regions",
+        "backup", "backups", "vm", "vms", "region", "regions", "model", "models",
     ],
     word_prev: &["private", "public", "hybrid"],
     word_prev_the: &["in", "into", "to", "from", "on", "onto", "off"],
@@ -120,6 +120,8 @@ mod tests {
         assert_eq!(apply("it runs in the Claude"), "it runs in the cloud");
         assert_eq!(apply("move it to Claude storage"), "move it to cloud storage");
         assert_eq!(apply("a private Claude, mostly"), "a private cloud, mostly");
+        assert_eq!(apply("a Claude model or a local model"), "a cloud model or a local model");
+        assert_eq!(apply("Claude models cost more"), "cloud models cost more");
         assert_eq!(apply("pushed it to the Claude yesterday"), "pushed it to the cloud yesterday");
     }
 
@@ -127,12 +129,13 @@ mod tests {
     fn the_word_after_beats_the_word_before() {
         assert_eq!(apply("in the cloud app"), "in the Claude app");
         assert_eq!(apply("ask Claude storage"), "ask cloud storage");
+        assert_eq!(apply("ask Claude model"), "ask cloud model");
     }
 
     #[test]
     fn words_said_of_both_are_no_clue() {
         for s in [
-            "a cloud model or a local model", "the Claude Console", "the cloud console",
+            "the Claude Console", "the cloud console",
             "Claude costs too much", "run Claude instances", "the cloud API is down", "AWS Claude via Bedrock", "I like cloud",
         ] {
             assert_eq!(apply(s), s);
